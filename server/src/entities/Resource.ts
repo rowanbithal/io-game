@@ -15,10 +15,10 @@ const RESOURCE_HP: Record<ResourceType, number> = {
 const RESOURCE_RESPAWN: Record<ResourceType, number> = {
   tree: 45,
   rock: 90,
-  berry: 20,
-  mushroom: 15,
+  berry: 30,
+  mushroom: 30,
   wheat: 18,
-  purple_berry: 20,
+  purple_berry: 30,
   gold: 150, // Rare and confined to the top of the dark forest — respawns slowly
 };
 
@@ -28,7 +28,7 @@ export const RESOURCE_DROPS: Record<ResourceType, { type: string; count: number 
     { type: 'berry', count: 1 },
   ],
   rock: [{ type: 'stone', count: 3 }],
-  berry: [{ type: 'berry', count: 2 }],
+  berry: [{ type: 'berry', count: 1 }],
   mushroom: [{ type: 'mushroom', count: 1 }],
   wheat: [{ type: 'wheat', count: 2 }],
   purple_berry: [{ type: 'purple_berry', count: 3 }], // A dark-forest delicacy — richer than a plains berry bush

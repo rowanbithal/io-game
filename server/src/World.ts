@@ -131,9 +131,9 @@ interface SpawnConfig {
 }
 
 const SCATTER_CONFIG: SpawnConfig[] = [
-  { type: 'berry', density: 0.00003 },
-  { type: 'mushroom', density: 0.00002 },
-  { type: 'purple_berry', density: 0.00003, darkForestOnly: true },
+  { type: 'berry', density: 0.000018 },
+  { type: 'mushroom', density: 0.00001 },
+  { type: 'purple_berry', density: 0.000018, darkForestOnly: true },
 ];
 
 // Trees, rocks, and wheat spawn as clusters on the fine GRID_CELL grid, but
