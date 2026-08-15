@@ -8,6 +8,7 @@ import {
   CraftRequest,
   PlaceRequest,
   CastRequest,
+  EatRequest,
   TICK_RATE,
   VIEW_DISTANCE,
   DAY_DURATION,
@@ -16,6 +17,10 @@ import {
   HARVEST_ANGLE,
   HARVEST_DAMAGE,
   PLAYER_RADIUS,
+  MAX_HUNGER,
+  FOOD_ITEMS,
+  FOOD_HUNGER_RESTORE,
+  RAW_MEAT_ID,
   RESOURCE_RADIUS,
   SOLID_COLLISION_RADIUS,
   MAX_SOLID_COLLISION_RADIUS,
@@ -167,10 +172,6 @@ const INTERACT_RADIUS: Record<ResourceType, number> = {
   gold: GOLD_SPAN / 2,
 };
 const MAX_INTERACT_RADIUS = Math.max(...Object.values(INTERACT_RADIUS));
-
-// ── Food items that restore hunger when picked up ─────────────────────────────
-const FOOD_ITEMS = new Set(['food', 'berry']);
-const FOOD_HUNGER_RESTORE = 25;
 
 // ── Bot decision tables ───────────────────────────────────────────────────────
 
@@ -329,6 +330,10 @@ export class Game {
       this.sendInventory(player, 'Need a crafting bench');
       return;
     }
+    if (recipe.requiresCampfire && !this.isNearFire(player)) {
+      this.sendInventory(player, 'Need a campfire');
+      return;
+    }
     if (!canAfford(recipe, Object.fromEntries(inv))) return;
 
     for (const [item, need] of Object.entries(recipe.cost)) {
@@ -389,6 +394,28 @@ export class Game {
     // Reuses the harvest-swing cooldown/animation for the cast fling itself
     // — same forward-lunge motion already driven by harvestCooldown client-side.
     player.startHarvestCooldown();
+  }
+
+  /**
+   * Eats a food item straight from the hotbar. Unlike place/cast, this isn't
+   * gated on player.input.held — food is never held at all (see HUD's
+   * selectSlot client-side), so the item comes from the request instead.
+   * The inventory is still the authority on whether the player actually
+   * owns it, same as everywhere else — the request is just a claim.
+   */
+  handleEat(id: string, { itemId }: EatRequest): void {
+    const player = this.players.get(id);
+    const inv = this.inventories.get(id);
+    if (!player || !inv) return;
+    if (!FOOD_ITEMS.has(itemId) || (inv.get(itemId) ?? 0) < 1) return;
+
+    const left = (inv.get(itemId) ?? 0) - 1;
+    if (left > 0) inv.set(itemId, left);
+    else inv.delete(itemId);
+
+    const restore = FOOD_HUNGER_RESTORE[itemId];
+    player.hunger = Math.min(MAX_HUNGER, player.hunger + restore);
+    this.sendInventory(player, `+${restore} hunger`);
   }
 
   /**
@@ -692,11 +719,11 @@ export class Game {
       fox.hp = Math.max(0, fox.hp - combatDamage);
       if (fox.hp === 0) {
         this.foxes.delete(fox.id);
-        // 'food' is auto-consumed on pickup (see FOOD_ITEMS below), so a kill
-        // feeds the player rather than filling a slot — it never reaches the
-        // inventory map.
-        player.hunger = Math.min(100, player.hunger + FOOD_HUNGER_RESTORE * FOX_FOOD_DROP);
-        allDrops.push({ type: 'food', count: FOX_FOOD_DROP });
+        // Raw, same as any other harvest drop — has to be cooked at a
+        // campfire (see the cooked_meat recipe, requiresCampfire, and
+        // handleCraft) before FOOD_ITEMS/handleEat will let it be eaten.
+        inv.set(RAW_MEAT_ID, (inv.get(RAW_MEAT_ID) ?? 0) + FOX_FOOD_DROP);
+        allDrops.push({ type: RAW_MEAT_ID, count: FOX_FOOD_DROP });
       }
     }
 
@@ -713,12 +740,9 @@ export class Game {
             ? Math.round(drop.count * toolBonus.multiplier)
             : drop.count;
 
-        // Auto-consume food items immediately
-        if (FOOD_ITEMS.has(drop.type)) {
-          player.hunger = Math.min(100, player.hunger + FOOD_HUNGER_RESTORE * count);
-        } else {
-          inv.set(drop.type, (inv.get(drop.type) ?? 0) + count);
-        }
+        // Food items go to the inventory like anything else now — eating is
+        // a deliberate action (see handleEat), not automatic on pickup.
+        inv.set(drop.type, (inv.get(drop.type) ?? 0) + count);
         // A fresh object — `drops` hands back entries from the shared
         // RESOURCE_DROPS table, which must not be mutated or aliased.
         allDrops.push({ type: drop.type, count });
@@ -1233,6 +1257,14 @@ export class Game {
 
     this.botAct(bot, input, dt);
     p.input = input;
+
+    // Eat on the go if hungry and already carrying food — unlike a player,
+    // a bot doesn't need to hold it first (see handleEat), so this doesn't
+    // interrupt whatever movement/goal the tick above already decided on.
+    if (p.hunger < BOT_HUNGER_SEEK_FOOD) {
+      const food = this.botFoodItem(bot);
+      if (food) this.handleEat(bot.id, { itemId: food });
+    }
   }
 
   /**
@@ -1733,6 +1765,16 @@ export class Game {
 
   private botHasItem(bot: ServerBot, itemId: string): boolean {
     return (this.inventories.get(bot.id)?.get(itemId) ?? 0) >= 1;
+  }
+
+  /** A food item the bot currently owns, if any — for eating when hungry. */
+  private botFoodItem(bot: ServerBot): string | null {
+    const inv = this.inventories.get(bot.id);
+    if (!inv) return null;
+    for (const type of FOOD_ITEMS) {
+      if ((inv.get(type) ?? 0) >= 1) return type;
+    }
+    return null;
   }
 
   /** Highest tier in `tiers` the bot actually owns. */

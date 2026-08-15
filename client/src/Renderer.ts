@@ -26,6 +26,15 @@ function loadImage(url: string): HTMLImageElement {
   return img;
 }
 
+// Loaded once at module scope (there's only ever one Renderer instance, but
+// this also lets the hotbar icon functions below share the exact same
+// decoded images rather than each needing their own Renderer reference).
+const RESOURCE_IMAGES: Record<ImageResourceType, HTMLImageElement> = {
+  berry: loadImage(SPRITES.berry.url),
+  mushroom: loadImage(SPRITES.mushroom.url),
+  purple_berry: loadImage(SPRITES.purple_berry.url),
+};
+
 // ── Palette ───────────────────────────────────────────────────────────────────
 const P = {
   // Ground
@@ -154,6 +163,16 @@ const P = {
   bobberWhite: '#f4f0e6',
   stringColor: '#d9c9a3',
   stringDark: '#b8a67e',
+
+  // Meat — raw (fox kills) vs. cooked at a campfire. Distinct hue families
+  // (pink-red raw, seared brown cooked) so the two read as different items
+  // at a glance, not just a lighter/darker version of the same chunk.
+  meatLight: '#e8897e',
+  meat: '#c85f52',
+  meatDark: '#8f3d35',
+  meatCookedLight: '#b97a4a',
+  meatCooked: '#8a5636',
+  meatCookedDark: '#4a2e1c',
 
   // Fireflies (dark forest ambiance)
   fireflyGlow: '#e8ff7a',
@@ -1497,6 +1516,56 @@ export function drawStringIcon(ctx: CanvasRenderingContext2D, block: number = BL
 }
 export const STRING_ICON_HALF_BLOCKS = 2.9;
 
+// A lumpy cut of meat — a wide chunk rather than a perfect circle (real meat
+// isn't round), with a couple of extra dark cells for a marbled look, the
+// same "circle plus a couple of accent cells" trick STRING_ICON_CELLS uses.
+// Cooked reuses the exact same shape with a seared palette instead of a raw
+// one — same trick drawGoldIcon uses, reusing STONE_ICON_CELLS with
+// GOLD_PALETTE — so "cooked" reads as "that same cut, browned" rather than
+// an unrelated shape.
+const MEAT_ICON_CELLS: Cell[] = [
+  ...blockCircle(1.7, 1.25),
+  { gx: -1.4, gy: 0.6, shade: 'dark' },
+  { gx: 0.8, gy: 1.1, shade: 'dark' },
+];
+const MEAT_PALETTE: Palette3 = { light: P.meatLight, base: P.meat, dark: P.meatDark };
+const MEAT_COOKED_PALETTE: Palette3 = { light: P.meatCookedLight, base: P.meatCooked, dark: P.meatCookedDark };
+
+export function drawMeatIcon(ctx: CanvasRenderingContext2D, block: number = BLOCK): void {
+  drawBlockShape(ctx, MEAT_ICON_CELLS, MEAT_PALETTE, block);
+}
+export function drawCookedMeatIcon(ctx: CanvasRenderingContext2D, block: number = BLOCK): void {
+  drawBlockShape(ctx, MEAT_ICON_CELLS, MEAT_COOKED_PALETTE, block);
+}
+export const MEAT_ICON_HALF_BLOCKS = 3.1;
+
+// ── Berry / mushroom / purple-berry hotbar icons ────────────────────────────
+// Unlike every icon above, these don't come from cell data — they reuse the
+// actual pixel-art sprites these resources are drawn with out in the world
+// (see RESOURCE_IMAGES above), scaled up to icon size and pixel-snapped, so
+// the hotbar shows literally the same art rather than a redrawn approximation
+// of it. Takes a raw pixel size rather than a cell `block`, so unlike the
+// icons above these aren't driven through drawItemIcon's drawSprite wrapper.
+function drawResourceSpriteIcon(ctx: CanvasRenderingContext2D, type: ImageResourceType, size: number): void {
+  const img = RESOURCE_IMAGES[type];
+  if (!img.complete) return; // not decoded yet — same guard drawImageResource uses
+  const def = SPRITES[type];
+  const scale = Math.max(1, Math.round(size / Math.max(def.w, def.h)));
+  const w = def.w * scale;
+  const h = def.h * scale;
+  ctx.drawImage(img, -Math.round(w / 2), -Math.round(h / 2), w, h);
+}
+
+export function drawBerryIcon(ctx: CanvasRenderingContext2D, size: number): void {
+  drawResourceSpriteIcon(ctx, 'berry', size);
+}
+export function drawMushroomIcon(ctx: CanvasRenderingContext2D, size: number): void {
+  drawResourceSpriteIcon(ctx, 'mushroom', size);
+}
+export function drawPurpleBerryIcon(ctx: CanvasRenderingContext2D, size: number): void {
+  drawResourceSpriteIcon(ctx, 'purple_berry', size);
+}
+
 // ── Spider ──────────────────────────────────────────────────────────────────
 // Two body segments (small cephalothorax in front, fat abdomen behind) plus
 // four pairs of legs that scuttle as it moves. Like the player's head and
@@ -1843,7 +1912,6 @@ export class Renderer {
   private grassShadeLattice: number[][] = [];
   private readonly grassLatticeSize = 4;
   private readonly groundTileBlocks = 240; // 1200 world units — biome-scale repeat period
-  private readonly resourceImages: Record<ImageResourceType, HTMLImageElement>;
 
   // Sun state for the current frame — set once per render() call from
   // state.dayTime, then read by every drawShadow() call this frame.
@@ -1912,11 +1980,6 @@ export class Renderer {
     private readonly canvas: HTMLCanvasElement,
     private readonly camera: Camera,
   ) {
-    this.resourceImages = {
-      berry: loadImage(SPRITES.berry.url),
-      mushroom: loadImage(SPRITES.mushroom.url),
-      purple_berry: loadImage(SPRITES.purple_berry.url),
-    };
     this.ctx = canvas.getContext('2d')!;
     this.ctx.imageSmoothingEnabled = false;
     this.buildGroundPattern();
@@ -2838,7 +2901,7 @@ export class Renderer {
     const { sx, sy } = camera.toScreen(r.x, r.y);
     const hp = r.hp / r.maxHp;
 
-    const img = this.resourceImages[type];
+    const img = RESOURCE_IMAGES[type];
     if (!img.complete) return; // not decoded yet (loads near-instantly for local assets)
 
     const def = SPRITES[type];

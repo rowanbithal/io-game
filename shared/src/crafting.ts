@@ -4,8 +4,11 @@ import { StructureType } from './types';
  * A craftable item. `cost` is keyed by the inventory item types the player
  * gathers (wood/stone/wheat) — or, for stone tools, the wooden tool they're
  * upgraded from. `placeAs` marks the result as a structure that gets placed
- * into the world rather than kept as a plain inventory item, and
- * `requiresBench` gates the recipe behind standing near a crafting bench.
+ * into the world rather than kept as a plain inventory item, `requiresBench`
+ * gates the recipe behind standing near a crafting bench, and
+ * `requiresCampfire` gates it behind standing near a campfire instead (see
+ * Game.isNearFire) — used for cooking, not construction, so it's a separate
+ * flag rather than reusing requiresBench.
  */
 export interface Recipe {
   id: string; // Also the inventory item type the craft yields
@@ -15,6 +18,7 @@ export interface Recipe {
   craftTime: number; // Seconds to craft
   placeAs?: StructureType;
   requiresBench?: boolean;
+  requiresCampfire?: boolean;
 }
 
 export const CRAFTING_BENCH_ID = 'crafting_bench';
@@ -36,6 +40,12 @@ export const GOLD_PICKAXE_ID = 'gold_pickaxe';
 export const GOLD_SWORD_ID = 'gold_sword';
 
 export const FISHING_ROD_ID = 'fishing_rod';
+
+// Raw meat (a fox kill drop, see Game.processHarvest) has to be cooked at a
+// campfire before it's edible — see the cooked_meat recipe below and
+// shared/constants.ts's FOOD_ITEMS (raw meat is deliberately absent from it).
+export const RAW_MEAT_ID = 'meat';
+export const COOKED_MEAT_ID = 'cooked_meat';
 
 /** Wood yield multiplier while an axe is the held item. */
 export const AXE_WOOD_MULTIPLIER = 1.5;
@@ -156,6 +166,14 @@ export const RECIPES: Recipe[] = [
     icon: '🎣',
     cost: { wood: 15, string: 2 },
     craftTime: 5,
+  },
+  {
+    id: COOKED_MEAT_ID,
+    name: 'Cooked Meat',
+    icon: '🍖',
+    cost: { [RAW_MEAT_ID]: 1 },
+    craftTime: 4,
+    requiresCampfire: true,
   },
 ];
 

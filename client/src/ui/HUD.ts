@@ -2,10 +2,12 @@ import {
   PlayerState,
   GameState,
   MAP_SIZE,
+  MAX_HUNGER,
   RECIPES,
   canAfford,
   CRAFTING_BENCH_ID,
   BENCH_USE_RADIUS,
+  CAMPFIRE_WARMTH_RADIUS,
   WOODEN_AXE_ID,
   WOODEN_PICKAXE_ID,
   WOODEN_SWORD_ID,
@@ -17,6 +19,9 @@ import {
   GOLD_SWORD_ID,
   FISHING_ROD_ID,
   FISH_SPECIES_BY_ID,
+  FOOD_ITEMS,
+  RAW_MEAT_ID,
+  COOKED_MEAT_ID,
 } from '@io-game/shared';
 import {
   drawCampfireSprite,
@@ -35,8 +40,14 @@ import {
   WHEAT_ICON_HALF_BLOCKS,
   drawStringIcon,
   STRING_ICON_HALF_BLOCKS,
+  drawMeatIcon,
+  drawCookedMeatIcon,
+  MEAT_ICON_HALF_BLOCKS,
   drawFishIcon,
   FISH_ICON_HALF_BLOCKS,
+  drawBerryIcon,
+  drawMushroomIcon,
+  drawPurpleBerryIcon,
 } from '../Renderer';
 
 interface Notification {
@@ -68,6 +79,9 @@ export class HUD {
   // bench-gated recipes. Mirrors the server's own check — the server still
   // re-validates, this only drives what the panel offers.
   private nearBench = false;
+  // Same idea for campfire-gated recipes (currently just cooked_meat) —
+  // mirrors Game.isNearFire.
+  private nearFire = false;
 
   constructor() {
     this.canvas = document.createElement('canvas');
@@ -75,11 +89,17 @@ export class HUD {
       'position:fixed;top:0;left:0;pointer-events:none;z-index:20;';
     document.body.appendChild(this.canvas);
     this.ctx = this.canvas.getContext('2d')!;
+    // Off by default; the berry/mushroom/purple-berry icons draw a real
+    // sprite image (see drawItemIcon) that needs this to stay crisp at
+    // hotbar-icon scale instead of blurring like a photo thumbnail.
+    this.ctx.imageSmoothingEnabled = false;
   }
 
   resize(): void {
     this.canvas.width = window.innerWidth;
     this.canvas.height = window.innerHeight;
+    // Resizing a canvas resets its 2D context state, smoothing included.
+    this.ctx.imageSmoothingEnabled = false;
   }
 
   updateInventory(inv: Record<string, number>): void {
@@ -97,23 +117,49 @@ export class HUD {
     this.selectedIndex = stillThere >= 0 ? stillThere : Math.min(this.selectedIndex, Math.max(0, this.hotbarOrder.length - 1));
   }
 
-  /** Selects a hotbar slot by index (0-based). No-op if that slot doesn't exist yet. */
-  selectSlot(index: number): void {
-    if (index >= 0 && index < this.hotbarOrder.length) this.selectedIndex = index;
+  /**
+   * Selects a hotbar slot by index (0-based) — unless it holds food, which
+   * can't be held/equipped at all: it's eaten immediately instead, and the
+   * current selection is left untouched. Returns the item id to eat, or
+   * null if this was a normal selection (or the slot doesn't exist yet).
+   */
+  selectSlot(index: number): string | null {
+    if (index < 0 || index >= this.hotbarOrder.length) return null;
+    const item = this.hotbarOrder[index];
+    if (FOOD_ITEMS.has(item)) return item;
+    this.selectedIndex = index;
+    return null;
   }
 
-  /** Cycles the selected slot by +1/-1, wrapping around. */
+  /** Cycles the selected slot by +1/-1, wrapping around — skips food slots, which can't be held (see selectSlot). */
   scrollSlot(direction: number): void {
     const n = this.hotbarOrder.length;
     if (n === 0) return;
-    this.selectedIndex = ((this.selectedIndex + Math.sign(direction)) % n + n) % n;
+    const step = Math.sign(direction);
+    let next = this.selectedIndex;
+    for (let i = 0; i < n; i++) {
+      next = ((next + step) % n + n) % n;
+      if (!FOOD_ITEMS.has(this.hotbarOrder[next])) {
+        this.selectedIndex = next;
+        return;
+      }
+    }
+    // Every slot is food — nothing else to cycle to.
   }
 
-  /** Starts dragging a hotbar slot to reorder it — also selects it. */
-  beginHotbarDrag(index: number): void {
-    if (index < 0 || index >= this.hotbarOrder.length) return;
+  /**
+   * Starts dragging a hotbar slot to reorder it (also selects it) — unless
+   * it holds food, same exception as selectSlot: eaten immediately instead,
+   * no drag started, current selection untouched. Returns the item id to
+   * eat, or null otherwise.
+   */
+  beginHotbarDrag(index: number): string | null {
+    if (index < 0 || index >= this.hotbarOrder.length) return null;
+    const item = this.hotbarOrder[index];
+    if (FOOD_ITEMS.has(item)) return item;
     this.draggingIndex = index;
     this.selectedIndex = index;
+    return null;
   }
 
   /**
@@ -144,9 +190,16 @@ export class HUD {
     this.draggingIndex = null;
   }
 
-  /** The item type currently held, or null if nothing has been collected yet. */
+  /**
+   * The item type currently held, or null if nothing has been collected yet
+   * — or if selectedIndex happens to be sitting on food, which is never
+   * actually "held" (see selectSlot). That's a defensive filter here rather
+   * than something selectSlot/scrollSlot/etc. all have to guarantee never
+   * happens on their own.
+   */
   getSelectedItem(): string | null {
-    return this.hotbarOrder[this.selectedIndex] ?? null;
+    const item = this.hotbarOrder[this.selectedIndex] ?? null;
+    return item && FOOD_ITEMS.has(item) ? null : item;
   }
 
   getItemCount(item: string): number {
@@ -176,6 +229,13 @@ export class HUD {
           s.type === CRAFTING_BENCH_ID &&
           Math.hypot(me.x - s.x, me.y - s.y) <= BENCH_USE_RADIUS,
       );
+    this.nearFire =
+      !!me &&
+      state.structures.some(
+        (s) =>
+          s.type === 'campfire' &&
+          Math.hypot(me.x - s.x, me.y - s.y) <= CAMPFIRE_WARMTH_RADIUS,
+      );
 
     this.drawStatBars(me, W, H);
     this.drawHotbar();
@@ -197,9 +257,9 @@ export class HUD {
   private drawStatBars(me: PlayerState | undefined, W: number, H: number): void {
     if (!me) return;
     const bars = [
-      { label: '♥ HP', value: me.health, fill: '#2ecc71', low: '#e74c3c', threshold: 30 },
-      { label: '🍖 Food', value: me.hunger, fill: '#f39c12', low: '#e74c3c', threshold: 20 },
-      { label: '❄ Temp', value: me.temperature, fill: '#56c9ff', low: '#8e44ad', threshold: 25 },
+      { label: '♥ HP', value: me.health, max: 100, fill: '#2ecc71', low: '#e74c3c', threshold: 30 },
+      { label: '🍖 Food', value: me.hunger, max: MAX_HUNGER, fill: '#f39c12', low: '#e74c3c', threshold: 30 },
+      { label: '❄ Temp', value: me.temperature, max: 100, fill: '#56c9ff', low: '#8e44ad', threshold: 25 },
     ];
 
     const bW = 150;
@@ -210,7 +270,7 @@ export class HUD {
     const y = H - 52;
 
     for (const bar of bars) {
-      const pct = Math.max(0, Math.min(1, bar.value / 100));
+      const pct = Math.max(0, Math.min(1, bar.value / bar.max));
       const color = bar.value < bar.threshold ? bar.low : bar.fill;
 
       // Shadow panel
@@ -270,7 +330,10 @@ export class HUD {
 
     slots.forEach((item, i) => {
       const { x, y, w: slotSize } = rects[i];
-      const isSelected = i === this.selectedIndex;
+      // Food is never "held" (see selectSlot) — even if selectedIndex
+      // transiently points at one (e.g. the first item ever collected
+      // happened to be a berry), it shouldn't render as selected.
+      const isSelected = i === this.selectedIndex && !FOOD_ITEMS.has(item);
       const isDragging = i === this.draggingIndex;
       const count = this.inventory[item] ?? 0;
 
@@ -343,8 +406,8 @@ export class HUD {
     ctx.fillText('⚒ CRAFTING', header.x, header.y - 6);
 
     for (const { recipe, x, y, w, h } of rows) {
-      const benchLocked = !!recipe.requiresBench && !this.nearBench;
-      const affordable = canAfford(recipe, this.inventory) && !benchLocked;
+      const locationLocked = (!!recipe.requiresBench && !this.nearBench) || (!!recipe.requiresCampfire && !this.nearFire);
+      const affordable = canAfford(recipe, this.inventory) && !locationLocked;
       const isCrafting = this.craftingId === recipe.id;
       const busy = this.craftingId !== null;
 
@@ -402,9 +465,10 @@ export class HUD {
         y + h / 2,
       );
 
-      // Padlock on bench recipes you're not standing near a bench for, so
-      // it's clear they're gated by location rather than by materials.
-      if (benchLocked) {
+      // Padlock on bench/campfire recipes you're not standing near the
+      // right structure for, so it's clear they're gated by location rather
+      // than by materials.
+      if (locationLocked) {
         ctx.font = '11px "Courier New"';
         ctx.fillStyle = 'rgba(255,255,255,0.65)';
         ctx.fillText('🔒', x + w - 8, y + h / 2 - 11);
@@ -426,6 +490,7 @@ export class HUD {
       const inside = x >= row.x && x <= row.x + row.w && y >= row.y && y <= row.y + row.h;
       if (!inside) continue;
       if (row.recipe.requiresBench && !this.nearBench) return null;
+      if (row.recipe.requiresCampfire && !this.nearFire) return null;
       return canAfford(row.recipe, this.inventory) ? row.recipe.id : null;
     }
     return null;
@@ -590,7 +655,7 @@ export class HUD {
     ctx.textBaseline = 'bottom';
     ctx.fillStyle = 'rgba(255,255,255,0.25)';
     ctx.fillText(
-      'WASD: Move  |  E / Click: Harvest  |  1-9 / Scroll / Click / Drag: Hotbar  |  Right-click / F: Place / Cast  |  Survive the night!',
+      'WASD: Move  |  E / Click: Harvest  |  1-9 / Click Food: Eat  |  Scroll / Drag: Hotbar  |  Right-click / F: Place / Cast  |  Survive the night!',
       W / 2,
       H - 8,
     );
@@ -655,6 +720,16 @@ export class HUD {
       return;
     }
 
+    if (item === RAW_MEAT_ID) {
+      drawSprite(MEAT_ICON_HALF_BLOCKS, (block) => drawMeatIcon(ctx, block));
+      return;
+    }
+
+    if (item === COOKED_MEAT_ID) {
+      drawSprite(MEAT_ICON_HALF_BLOCKS, (block) => drawCookedMeatIcon(ctx, block));
+      return;
+    }
+
     if (TOOL_ITEM_IDS.has(item)) {
       drawSprite(toolIconHalfBlocks(item), (block) => drawToolIcon(ctx, item, block));
       return;
@@ -666,11 +741,23 @@ export class HUD {
       return;
     }
 
+    // Sprite-based rather than cell-based (see drawBerryIcon/etc. in
+    // Renderer.ts) — takes a raw pixel size, so it doesn't go through the
+    // drawSprite(halfBlocks, ...) wrapper above like the cell-drawn icons do.
+    const resourceIcon = RESOURCE_SPRITE_ICONS[item];
+    if (resourceIcon) {
+      ctx.save();
+      ctx.translate(Math.round(cx), Math.round(cy));
+      resourceIcon(ctx, size);
+      ctx.restore();
+      return;
+    }
+
     ctx.font = `${Math.round(size * 0.9)}px "Courier New"`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillStyle = '#fff';
-    ctx.fillText(ITEM_ICONS[item] ?? fallback ?? '▪', cx, cy);
+    ctx.fillText(fallback ?? '▪', cx, cy);
   }
 
   private pill(x: number, y: number, w: number, h: number, r: number): void {
@@ -689,15 +776,13 @@ export class HUD {
   }
 }
 
-// Emoji fallbacks only — wood/stone/wheat/string, all seven tools (incl. the
-// fishing rod), campfire, and the crafting bench all have real pixel-art
-// icons (see drawItemIcon) and never reach this table. It only still
-// matters for food/berry, which currently never appear in inventory
-// (auto-consumed for hunger on pickup) but are kept here in case that ever
-// changes.
-const ITEM_ICONS: Record<string, string> = {
-  food: '🍖',
-  berry: '🫐',
+// The three food types' hotbar icons, each reusing the real in-world sprite
+// (see drawItemIcon above and Renderer.ts's drawBerryIcon/etc.) rather than
+// a unified "food" icon or an emoji placeholder.
+const RESOURCE_SPRITE_ICONS: Record<string, (ctx: CanvasRenderingContext2D, size: number) => void> = {
+  berry: drawBerryIcon,
+  mushroom: drawMushroomIcon,
+  purple_berry: drawPurpleBerryIcon,
 };
 
 const TOOL_ITEM_IDS = new Set([

@@ -134,6 +134,16 @@ export interface CastRequest {
   y: number;
 }
 
+/**
+ * Sent client → server to eat a food item straight from the hotbar. Unlike
+ * PlaceRequest/CastRequest, this isn't derived from PlayerInput.held — food
+ * is never held at all (eating it doesn't equip it), so the item has to be
+ * named explicitly. The server re-verifies ownership regardless.
+ */
+export interface EatRequest {
+  itemId: string;
+}
+
 /** Authoritative snapshot sent server → client every tick */
 export interface GameState {
   tick: number;

@@ -97,11 +97,18 @@ class ClientGame {
     });
   }
 
-  /** Hotbar slot selection: number keys pick a slot directly, the wheel cycles it. */
+  /**
+   * Hotbar slot selection: number keys pick a slot directly, the wheel
+   * cycles it. Food is a special case — it can't be selected/held at all
+   * (see HUD.selectSlot), so picking its slot either way eats it on the
+   * spot instead, leaving whatever's currently held untouched.
+   */
   private setupHotbar(): void {
     window.addEventListener('keydown', (e) => {
       const match = e.code.match(/^Digit([1-9])$/);
-      if (match) this.hud.selectSlot(Number(match[1]) - 1);
+      if (!match) return;
+      const eaten = this.hud.selectSlot(Number(match[1]) - 1);
+      if (eaten) this.network.eat(eaten);
     });
 
     this.canvas.addEventListener('wheel', (e) => {
@@ -115,8 +122,9 @@ class ClientGame {
     this.input.setClickInterceptor((x, y) => {
       const slot = this.hud.hitTestHotbar(x, y);
       if (slot !== null) {
-        this.hud.beginHotbarDrag(slot);
-        this.hotbarDragActive = true;
+        const eaten = this.hud.beginHotbarDrag(slot);
+        if (eaten) this.network.eat(eaten);
+        else this.hotbarDragActive = true;
         return true;
       }
 
@@ -185,6 +193,8 @@ class ClientGame {
       // resolved after the camera has been moved for this frame. Right-
       // click / F means "place" or "cast" depending on what's held — never
       // both, since nothing is simultaneously placeable and a fishing rod.
+      // Eating isn't part of this: food is never held at all (see HUD's
+      // selectSlot), it's eaten straight from the hotbar — see setupHotbar.
       const target = this.placementTarget();
       const fishTarget = this.castTarget();
       const altAction = this.input.consumeAltAction();

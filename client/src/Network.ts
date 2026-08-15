@@ -72,6 +72,10 @@ export class Network {
     this.socket.emit('cast', { x, y });
   }
 
+  eat(itemId: string): void {
+    this.socket.emit('eat', { itemId });
+  }
+
   // ── Listeners ──────────────────────────────────────────────────────────────
 
   onJoined(cb: Listener<JoinedPayload>): void { this.onJoinedCb = cb; }

@@ -28,10 +28,10 @@ export const RESOURCE_DROPS: Record<ResourceType, { type: string; count: number 
     { type: 'berry', count: 1 },
   ],
   rock: [{ type: 'stone', count: 3 }],
-  berry: [{ type: 'food', count: 2 }],
-  mushroom: [{ type: 'food', count: 1 }],
+  berry: [{ type: 'berry', count: 2 }],
+  mushroom: [{ type: 'mushroom', count: 1 }],
   wheat: [{ type: 'wheat', count: 2 }],
-  purple_berry: [{ type: 'food', count: 3 }], // A dark-forest delicacy — richer than a plains berry bush
+  purple_berry: [{ type: 'purple_berry', count: 3 }], // A dark-forest delicacy — richer than a plains berry bush
   gold: [{ type: 'gold', count: 2 }],
 };
 

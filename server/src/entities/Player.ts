@@ -3,6 +3,7 @@ import {
   PlayerInput,
   PLAYER_SPEED,
   PLAYER_RADIUS,
+  MAX_HUNGER,
   HUNGER_DECAY_RATE,
   TEMP_DECAY_RATE,
   TEMP_REGEN_RATE,
@@ -25,7 +26,7 @@ export class ServerPlayer {
   y: number;
   angle = 0;
   health = 100;
-  hunger = 100;
+  hunger = MAX_HUNGER;
   temperature = 100;
   score = 0;
 
@@ -68,7 +69,7 @@ export class ServerPlayer {
 
   respawn(): void {
     this.health = 100;
-    this.hunger = 100;
+    this.hunger = MAX_HUNGER;
     this.temperature = 100;
     this.score = 0;
     this.crafting = null;
@@ -116,7 +117,7 @@ export class ServerPlayer {
     // frame), so without this guard a player brought to exactly 0 would tick
     // straight back up to a fraction of a hit point here on the next frame and
     // never be seen as dead at all.
-    if (this.health > 0 && this.hunger > 30 && this.temperature > 20) {
+    if (this.health > 0 && this.hunger > 45 && this.temperature > 20) {
       const rate = nearFire ? CAMPFIRE_HEALTH_REGEN_RATE : HEALTH_REGEN_RATE;
       this.health = Math.min(100, this.health + rate * dt);
     }
