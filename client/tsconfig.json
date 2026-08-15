@@ -1,0 +1,25 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "ESNext",
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "moduleResolution": "bundler",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    // The build script runs `tsc && vite build` — tsc here is purely a
+    // type-check gate before Vite's own esbuild-based bundling; Vite never
+    // reads tsc's emitted output. Without noEmit, tsc has no outDir to fall
+    // back on and writes .js files in place next to every .ts file it
+    // touches, including (via the @io-game/shared path alias below) into
+    // shared/src.
+    "noEmit": true,
+    "baseUrl": ".",
+    "paths": {
+      "@io-game/shared": ["../shared/src/index.ts"],
+      "@io-game/shared/*": ["../shared/src/*"]
+    }
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist"]
+}

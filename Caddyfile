@@ -1,0 +1,3 @@
+play.bithal.net {
+	reverse_proxy localhost:3000
+}

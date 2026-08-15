@@ -1,0 +1,18 @@
+{
+  // Production build config. tsconfig.json's "paths" alias @io-game/shared
+  // straight to shared/src so tsx watch (dev) picks up shared edits live
+  // with no separate build step in the loop — but pulling raw shared/src
+  // into an actual `tsc` compile makes the two packages' files share one
+  // computed rootDir, so `outDir` ends up nesting everything under
+  // dist/server/src/... instead of the dist/index.js the "start" script
+  // expects. This config drops that alias for the real build: "@io-game/shared"
+  // resolves through plain Node package resolution instead, to shared's own
+  // compiled dist/index.js (see shared/package.json's main/types) — which
+  // must be built first, same as the root build script already does.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "paths": {}
+  },
+  "include": ["src/**/*"]
+}

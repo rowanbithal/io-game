@@ -1,0 +1,18 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    // CommonJS, matching the server's module system: the server's compiled
+    // output resolves "@io-game/shared" as a plain Node require() at
+    // runtime (see shared/package.json's main/types), not through a
+    // bundler, so this has to emit something plain Node can load.
+    "module": "CommonJS",
+    "lib": ["ES2020"],
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "declaration": true,
+    "outDir": "dist",
+    "rootDir": "src"
+  },
+  "include": ["src/**/*"]
+}

@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Survive.io</title>
+  <style>
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      background: #0d1b2a;
+      overflow: hidden;
+      font-family: 'Courier New', Courier, monospace;
+      color: #fff;
+    }
+
+    #game-canvas { display: block; }
+
+    /* ── Main Menu ─────────────────────────────────────────────────────── */
+    #menu {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: linear-gradient(160deg, #0d1b2a 0%, #1b2c3e 50%, #0d1b2a 100%);
+      z-index: 100;
+    }
+
+    .menu-title {
+      font-size: clamp(2.5rem, 8vw, 5rem);
+      font-weight: 900;
+      letter-spacing: 0.06em;
+      color: #e8f4f8;
+      text-shadow:
+        0 0 40px rgba(86, 201, 255, 0.6),
+        0 0 80px rgba(86, 201, 255, 0.25);
+      margin-bottom: 0.2em;
+    }
+
+    .menu-title span { color: #56c9ff; }
+
+    .menu-tagline {
+      font-size: 0.85rem;
+      color: rgba(255, 255, 255, 0.4);
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+      margin-bottom: 2.5em;
+    }
+
+    .menu-hints {
+      display: flex;
+      gap: 2em;
+      margin-bottom: 2.5em;
+      font-size: 0.75rem;
+      color: rgba(255, 255, 255, 0.3);
+    }
+
+    .menu-hint { display: flex; flex-direction: column; align-items: center; gap: 0.3em; }
+    .menu-hint .icon { font-size: 1.5em; }
+
+    #name-input {
+      padding: 13px 22px;
+      font-size: 1rem;
+      font-family: inherit;
+      background: rgba(255, 255, 255, 0.07);
+      border: 1.5px solid rgba(86, 201, 255, 0.3);
+      color: #fff;
+      border-radius: 8px;
+      width: 260px;
+      outline: none;
+      text-align: center;
+      letter-spacing: 0.05em;
+      transition: border-color 0.2s;
+      margin-bottom: 14px;
+    }
+
+    #name-input::placeholder { color: rgba(255, 255, 255, 0.2); }
+    #name-input:focus { border-color: #56c9ff; }
+
+    #play-btn {
+      padding: 14px 52px;
+      font-size: 1.05rem;
+      font-family: inherit;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      background: #56c9ff;
+      color: #0d1b2a;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: transform 0.12s, background 0.2s, box-shadow 0.2s;
+      box-shadow: 0 0 24px rgba(86, 201, 255, 0.4);
+    }
+
+    #play-btn:hover {
+      background: #85daff;
+      transform: translateY(-2px);
+      box-shadow: 0 0 36px rgba(86, 201, 255, 0.55);
+    }
+
+    #play-btn:active { transform: translateY(0); }
+
+    /* ── Death overlay ─────────────────────────────────────────────────── */
+    #death-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.75);
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      z-index: 90;
+    }
+
+    #death-overlay h2 {
+      font-size: 2.5rem;
+      color: #e74c3c;
+      text-shadow: 0 0 30px rgba(231, 76, 60, 0.7);
+      margin-bottom: 0.4em;
+    }
+
+    #death-overlay p { color: rgba(255,255,255,0.5); font-size: 0.9rem; }
+  </style>
+</head>
+<body>
+  <canvas id="game-canvas"></canvas>
+
+  <!-- Main Menu -->
+  <div id="menu">
+    <h1 class="menu-title">Sur<span>vive</span>.io</h1>
+    <p class="menu-tagline">Gather · Craft · Outlast</p>
+
+    <div class="menu-hints">
+      <div class="menu-hint"><span class="icon">🌲</span>Gather resources</div>
+      <div class="menu-hint"><span class="icon">🌙</span>Survive the night</div>
+      <div class="menu-hint"><span class="icon">🍖</span>Don't starve</div>
+    </div>
+
+    <input id="name-input" type="text" placeholder="Enter your name…" maxlength="16" autocomplete="off" />
+    <button id="play-btn">▶ Play</button>
+  </div>
+
+  <!-- Death Screen -->
+  <div id="death-overlay">
+    <h2>☠ You Died</h2>
+    <p>Respawning…</p>
+  </div>
+
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>
