@@ -55,6 +55,7 @@ import {
   GOLD_AXE_WOOD_MULTIPLIER,
   GOLD_PICKAXE_ID,
   GOLD_PICKAXE_STONE_MULTIPLIER,
+  GOLD_PICKAXE_GOLD_MULTIPLIER,
   GOLD_SWORD_ID,
   GOLD_SWORD_DAMAGE_MULTIPLIER,
   CRAFTING_BENCH_ID,
@@ -137,21 +138,34 @@ const SLOW_RADIUS = RESOURCE_RADIUS;
 const SLOW_MULTIPLIER = 0.5;
 const LAKE_SLOW_MULTIPLIER = 0.4; // Wading through lake water
 
-// Held tools that boost a specific drop type's yield while equipped.
-const TOOL_BONUS: Record<string, { dropType: string; multiplier: number }> = {
-  [WOODEN_AXE_ID]: { dropType: 'wood', multiplier: AXE_WOOD_MULTIPLIER },
-  [STONE_AXE_ID]: { dropType: 'wood', multiplier: STONE_AXE_WOOD_MULTIPLIER },
-  [GOLD_AXE_ID]: { dropType: 'wood', multiplier: GOLD_AXE_WOOD_MULTIPLIER },
-  [WOODEN_PICKAXE_ID]: { dropType: 'stone', multiplier: PICKAXE_STONE_MULTIPLIER },
-  [STONE_PICKAXE_ID]: { dropType: 'stone', multiplier: STONE_PICKAXE_STONE_MULTIPLIER },
-  [GOLD_PICKAXE_ID]: { dropType: 'stone', multiplier: GOLD_PICKAXE_STONE_MULTIPLIER },
+// Held tools that boost yield while equipped, as drop type → multiplier. A
+// tool can boost more than one type: the gold pickaxe is better at both the
+// stone a rock gives and the gold a deposit gives, and those are separate
+// drops that scale by different amounts. Anything absent from a tool's table
+// is left at 1x.
+const TOOL_BONUS: Record<string, Record<string, number>> = {
+  [WOODEN_AXE_ID]: { wood: AXE_WOOD_MULTIPLIER },
+  [STONE_AXE_ID]: { wood: STONE_AXE_WOOD_MULTIPLIER },
+  [GOLD_AXE_ID]: { wood: GOLD_AXE_WOOD_MULTIPLIER },
+  [WOODEN_PICKAXE_ID]: { stone: PICKAXE_STONE_MULTIPLIER },
+  [STONE_PICKAXE_ID]: { stone: STONE_PICKAXE_STONE_MULTIPLIER },
+  [GOLD_PICKAXE_ID]: {
+    stone: GOLD_PICKAXE_STONE_MULTIPLIER,
+    gold: GOLD_PICKAXE_GOLD_MULTIPLIER,
+  },
 };
 
 // Gold is the one resource with a hard tool requirement rather than the
 // axe/pickaxe's usual "bare hands still work, a tool just yields more" bonus
-// (see TOOL_BONUS above) — it can only be struck with a stone pickaxe, not a
-// wooden one and not bare hands. See canMineGold in processHarvest.
-const GOLD_REQUIRED_TOOL = STONE_PICKAXE_ID;
+// (see TOOL_BONUS above) — bare hands and a wooden pickaxe both bounce off
+// it. The bar is the stone pickaxe, and everything above that bar clears it
+// too: a set rather than one exact id, so upgrading to the gold pickaxe can
+// never lock a player out of a resource their strictly better tool obviously
+// ought to handle. See canMineGold in processHarvest.
+const GOLD_CAPABLE_TOOLS = new Set<string>([STONE_PICKAXE_ID, GOLD_PICKAXE_ID]);
+
+/** Gold-capable pickaxes, weakest first — the tier list bots pick their best from. */
+const BOT_GOLD_PICKAXE_TIERS = [STONE_PICKAXE_ID, GOLD_PICKAXE_ID];
 
 // Held weapons that multiply damage dealt to spiders and other players.
 const WEAPON_DAMAGE: Record<string, number> = {
@@ -645,14 +659,15 @@ export class Game {
   }
 
   /**
-   * The yield bonus in effect, if the player has a bonus-granting tool
-   * selected *and* actually owns one. `input.held` is just what the client
-   * says it has out, so the inventory is the authority on whether it applies.
+   * The yield bonuses in effect (drop type → multiplier), if the player has a
+   * bonus-granting tool selected *and* actually owns one. `input.held` is just
+   * what the client says it has out, so the inventory is the authority on
+   * whether it applies.
    */
   private activeToolBonus(
     player: ServerPlayer,
     inv: Map<string, number>,
-  ): { dropType: string; multiplier: number } | null {
+  ): Record<string, number> | null {
     const held = player.input.held;
     if (!held) return null;
     const bonus = TOOL_BONUS[held];
@@ -704,7 +719,8 @@ export class Game {
     const combatDamage = this.combatDamage(player, inv);
     // Same held-item authority rule as everywhere else: the inventory
     // decides, not just the client's claimed `held`.
-    const canMineGold = player.input.held === GOLD_REQUIRED_TOOL && (inv.get(GOLD_REQUIRED_TOOL) ?? 0) >= 1;
+    const held = player.input.held;
+    const canMineGold = held !== null && GOLD_CAPABLE_TOOLS.has(held) && (inv.get(held) ?? 0) >= 1;
 
     for (const spider of spiderTargets) {
       spider.hp = Math.max(0, spider.hp - combatDamage);
@@ -731,26 +747,26 @@ export class Game {
       victim.health = Math.max(0, victim.health - combatDamage);
     }
 
+    // The held tool's effect on yield, as ServerResource.damage wants it —
+    // it applies the multiplier itself, since a strike only earns a share of
+    // the resource's total and the two have to be scaled together.
+    const yieldMultiplier = (dropType: string): number => toolBonus?.[dropType] ?? 1;
+
     for (const resource of targets) {
       if (resource.type === 'gold' && !canMineGold) continue; // wrong (or no) tool — the swing lands but does nothing
-      const drops = resource.damage(HARVEST_DAMAGE);
+      const { drops, destroyed } = resource.damage(HARVEST_DAMAGE, yieldMultiplier);
       // Just died this swing — open up the ground it was occupying so fox
       // pathfinding (and bot player steering) can route through it instead
       // of detouring around a stump until it respawns (see
-      // setResourceNavBlocking).
-      if (drops.length > 0) this.world.setResourceNavBlocking(resource.id, false);
+      // setResourceNavBlocking). Keyed off `destroyed` rather than whether
+      // anything dropped: a strike can now pay out nothing (its share
+      // rounded down) and still be the one that felled the tree.
+      if (destroyed) this.world.setResourceNavBlocking(resource.id, false);
       for (const drop of drops) {
-        const count =
-          toolBonus && drop.type === toolBonus.dropType
-            ? Math.round(drop.count * toolBonus.multiplier)
-            : drop.count;
-
         // Food items go to the inventory like anything else now — eating is
         // a deliberate action (see handleEat), not automatic on pickup.
-        inv.set(drop.type, (inv.get(drop.type) ?? 0) + count);
-        // A fresh object — `drops` hands back entries from the shared
-        // RESOURCE_DROPS table, which must not be mutated or aliased.
-        allDrops.push({ type: drop.type, count });
+        inv.set(drop.type, (inv.get(drop.type) ?? 0) + drop.count);
+        allDrops.push(drop);
       }
     }
 
@@ -1663,7 +1679,7 @@ export class Game {
   private botPickResource(bot: ServerBot): ServerResource | null {
     const p = bot.player;
     const hungry = p.hunger < BOT_HUNGER_SEEK_FOOD;
-    const canMineGold = this.botHasItem(bot, GOLD_REQUIRED_TOOL);
+    const canMineGold = this.botBestTool(bot, BOT_GOLD_PICKAXE_TIERS) !== null;
 
     let best: ServerResource | null = null;
     let bestScore = -Infinity;
@@ -1795,8 +1811,10 @@ export class Game {
   private botToolFor(bot: ServerBot, type: ResourceType): string | null {
     if (type === 'tree') return this.botBestTool(bot, BOT_AXE_TIERS);
     if (type === 'rock') return this.botBestTool(bot, BOT_PICKAXE_TIERS);
-    // Gold answers to the stone pickaxe specifically — not the gold one.
-    if (type === 'gold') return GOLD_REQUIRED_TOOL;
+    // Gold needs a stone pickaxe at minimum, so pick the best one at or above
+    // that bar rather than the best pickaxe outright — a wooden one would
+    // just bounce off.
+    if (type === 'gold') return this.botBestTool(bot, BOT_GOLD_PICKAXE_TIERS);
     return null;
   }
 

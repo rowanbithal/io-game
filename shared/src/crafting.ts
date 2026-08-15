@@ -58,6 +58,16 @@ export const STONE_PICKAXE_STONE_MULTIPLIER = 2;
 export const GOLD_PICKAXE_STONE_MULTIPLIER = 2.5;
 
 /**
+ * Gold yield multiplier for the gold pickaxe. The stone pickaxe deliberately
+ * has no entry: it's the tool that *unlocks* gold (see GOLD_CAPABLE_TOOLS),
+ * and leaving it at a flat 1x is what gives the gold pickaxe something to be
+ * better at. Otherwise the two mine the deposit identically and the upgrade
+ * buys nothing at the only resource that requires a pickaxe in the first
+ * place.
+ */
+export const GOLD_PICKAXE_GOLD_MULTIPLIER = 2;
+
+/**
  * Combat damage multiplier vs spiders and other players while a sword is
  * held — swords do nothing for resources, that's what the axe/pickaxe are
  * for.
