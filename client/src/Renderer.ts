@@ -1,4 +1,4 @@
-import { GameState, PlayerState, ResourceState, StructureState, SpiderState, FoxState, LakeState, FishingState, PLAYER_RADIUS, FOX_RADIUS, GRID_CELL, TREE_SPAN, ROCK_SPAN, WHEAT_SPAN, GOLD_SPAN, HARVEST_RANGE, HARVEST_ANGLE, HARVEST_COOLDOWN, STRUCTURE_SPAN, PLACE_RANGE, CAMPFIRE_LIGHT_RADIUS, SPIDER_RADIUS, CAST_RANGE, RECIPES_BY_ID, WOODEN_AXE_ID, WOODEN_PICKAXE_ID, WOODEN_SWORD_ID, STONE_AXE_ID, STONE_PICKAXE_ID, STONE_SWORD_ID, GOLD_AXE_ID, GOLD_PICKAXE_ID, GOLD_SWORD_ID, CRAFTING_BENCH_ID, FISHING_ROD_ID, MAP_SIZE, DARK_FOREST_BAND, DARK_FOREST_TRANSITION, GOLD_TOP_BAND, FOREST_TREE_SCALE, FOREST_ROCK_SCALE, darkForestBandAt, DARK_FOREST_EDGE_AMPLITUDE, dayPhase } from '@io-game/shared';
+import { GameState, PlayerState, ResourceState, StructureState, SpiderState, FoxState, LakeState, FishingState, PLAYER_RADIUS, FOX_RADIUS, GRID_CELL, TREE_SPAN, ROCK_SPAN, WHEAT_SPAN, GOLD_SPAN, HARVEST_RANGE, HARVEST_ANGLE, HARVEST_COOLDOWN, STRUCTURE_SPAN, PLACE_RANGE, CAMPFIRE_LIGHT_RADIUS, SPIDER_RADIUS, CAST_RANGE, RECIPES_BY_ID, WOODEN_AXE_ID, WOODEN_PICKAXE_ID, WOODEN_SWORD_ID, STONE_AXE_ID, STONE_PICKAXE_ID, STONE_SWORD_ID, GOLD_AXE_ID, GOLD_PICKAXE_ID, GOLD_SWORD_ID, CRAFTING_BENCH_ID, FISHING_ROD_ID, MAP_SIZE, DARK_FOREST_BAND, DARK_FOREST_TRANSITION, GOLD_TOP_BAND, FOREST_TREE_SCALE, FOREST_ROCK_SCALE, darkForestBandAt, DARK_FOREST_EDGE_AMPLITUDE, dayPhase, hashCell, clamp01, smoothstep, forestFactor, isForestTree, isForestRock, resourceCell, RESOURCE_SEED_SALT } from '@io-game/shared';
 import { Camera } from './Camera';
 
 import berryUrl from './assets/sprites/berry.png';
@@ -377,15 +377,6 @@ function blockCircle(radiusBlocks: number, aspectX = 1): Cell[] {
   return cells;
 }
 
-// Deterministic per-cell hash → RNG seed, so a given grid cell always
-// generates the same jagged silhouette / shading (stable across frames,
-// no reliance on server-sent random data).
-function hashCell(gx: number, gy: number, salt: number): number {
-  let h = (gx * 374761393 + gy * 668265263 + salt * 2246822519) | 0;
-  h = Math.imul(h ^ (h >>> 13), 1274126177);
-  return (h ^ (h >>> 16)) >>> 0;
-}
-
 // ── Biome-scale ground blending ──────────────────────────────────────────────
 // A small lattice of random values, smoothly interpolated (classic 2D value
 // noise) rather than stamped as discrete blobs — that's what makes regions
@@ -664,45 +655,9 @@ function pickFogStep(density: number, gx: number, gy: number): number {
   return blockRandom(gx, gy, 151) < scaled - step ? next : step;
 }
 
-/**
- * How far the canopy itself has turned over to dark forest, 0..1. This gets
- * its own, much wider feather than the ground: the floor wants a tight seam,
- * but trees flipping over across that same narrow strip would read as a wall
- * of dark trees rather than a forest thickening as you walk into it.
- */
-const FOREST_CANOPY_FEATHER = 700;
-
-function forestFactor(worldX: number, worldY: number): number {
-  const band = darkForestBandAt(worldX);
-  return smoothstep(clamp01((band + FOREST_CANOPY_FEATHER - worldY) / FOREST_CANOPY_FEATHER));
-}
-
-/**
- * Whether one tree renders as a dark forest tree. Rather than flipping every
- * tree at once on a hard y line, each tree makes its own stable coin flip
- * weighted by `forestFactor` — so through the transition the two kinds mix,
- * dark ones thickening as you head north until every tree is one. `seed` is
- * the tree's existing per-cell hash, so a given tree never changes its mind.
- */
-function isForestTree(seed: number, worldX: number, worldY: number): boolean {
-  return hashCell(seed, 0, 61) / 4294967295 < forestFactor(worldX, worldY);
-}
-
-/**
- * Whether one rock renders as a dark forest rock — a hard cutoff at the
- * biome's actual border, unlike isForestTree's probabilistic blend.
- * Rocks are already spawned by two entirely separate, hard-confined passes
- * (World.ts's PLAINS_ROCK_CONFIG vs DARK_FOREST_ROCK_CONFIG, split right at
- * this same darkForestBandAt line) — reusing the tree's soft, ~700-unit-wide
- * feathering here would size some genuinely-plains rocks up as "forest"
- * ones for a while past the border, which read as oversized rocks bleeding
- * into the plains. `seed` is unused but kept so this matches
- * ForestVariant['isForest']'s signature.
- */
-function isForestRock(seed: number, worldX: number, worldY: number): boolean {
-  void seed;
-  return worldY < darkForestBandAt(worldX);
-}
+// forestFactor / isForestTree / isForestRock now live in shared/biome.ts —
+// the server needs the identical answer to pay out an oversized forest
+// tree's or boulder's larger yield (see resourceSizeScale).
 
 // ── Top-down tree / rock silhouettes ────────────────────────────────────────
 // Each tree is its own rounded crown (leaves a gap to the cell edge — see
@@ -1183,11 +1138,15 @@ interface GridResourceDef {
   getCells: (seed: number) => Cell[];
   palette: Palette3;
 }
+// Salts come from shared (RESOURCE_SEED_SALT) rather than being spelled out
+// here — resourceSizeScale has to rederive a tree's seed server-side to know
+// whether it's a forest one, and it can only do that if both sides salt the
+// hash identically.
 const GRID_RESOURCE_DEFS: Record<GridResourceType, GridResourceDef> = {
-  tree: { span: TREE_SPAN, block: BLOCK, seedSalt: 1, getCells: getTreeCrown, palette: TREE_PALETTE },
-  rock: { span: ROCK_SPAN, block: BLOCK, seedSalt: 2, getCells: getRockPatch, palette: ROCK_PALETTE },
-  wheat: { span: WHEAT_SPAN, block: WHEAT_BLOCK, seedSalt: 3, getCells: getWheatClump, palette: WHEAT_PALETTE },
-  gold: { span: GOLD_SPAN, block: BLOCK, seedSalt: 4, getCells: getGoldPatch, palette: GOLD_PALETTE },
+  tree: { span: TREE_SPAN, block: BLOCK, seedSalt: RESOURCE_SEED_SALT.tree, getCells: getTreeCrown, palette: TREE_PALETTE },
+  rock: { span: ROCK_SPAN, block: BLOCK, seedSalt: RESOURCE_SEED_SALT.rock, getCells: getRockPatch, palette: ROCK_PALETTE },
+  wheat: { span: WHEAT_SPAN, block: WHEAT_BLOCK, seedSalt: RESOURCE_SEED_SALT.wheat, getCells: getWheatClump, palette: WHEAT_PALETTE },
+  gold: { span: GOLD_SPAN, block: BLOCK, seedSalt: RESOURCE_SEED_SALT.gold, getCells: getGoldPatch, palette: GOLD_PALETTE },
 };
 
 /**
@@ -1206,6 +1165,36 @@ const FOREST_VARIANT: Partial<Record<GridResourceType, ForestVariant>> = {
   tree: { scale: FOREST_TREE_SCALE, isForest: isForestTree, palette: FOREST_TREE_PALETTE },
   rock: { scale: FOREST_ROCK_SCALE, isForest: isForestRock },
 };
+
+// ── Harvest recoil ───────────────────────────────────────────────────────────
+// A struck resource kicks back from whoever hit it and settles home again, so
+// a landed swing reads as landed without needing a hit sound or a flash.
+//
+// It's driven purely by watching each resource's hp drop between snapshots
+// rather than by any new server message, which gets two things for free:
+// other players' swings animate exactly like your own, and a swing that
+// legitimately does nothing animates nothing. That second one is what keeps a
+// wooden pickaxe swung at gold looking as useless as it is — the server
+// refuses the strike, the hp never moves, so the boulder never flinches.
+
+/** How far a struck resource kicks back, in world units — a nudge, not a leap. */
+const RESOURCE_RECOIL_DIST = 4.5;
+/** Seconds from the strike landing to fully settled. */
+const RESOURCE_RECOIL_DURATION = 0.26;
+/**
+ * Fraction of that spent travelling outward. Small on purpose: the knock away
+ * should be near-instant and the return the part you actually read, the same
+ * shape as something heavy being jolted and rocking back into place.
+ */
+const RESOURCE_RECOIL_ATTACK = 0.22;
+
+/** Live recoil state for one resource, keyed by id in `resourceRecoil`. */
+interface ResourceRecoil {
+  hp: number; // hp at the previous snapshot, to spot a strike landing
+  t: number; // seconds into the bounce; >= RESOURCE_RECOIL_DURATION means settled
+  dx: number; // unit vector pointing away from whoever struck it
+  dy: number;
+}
 
 // Low bushes/fungi that everything else (trees, rocks, wheat, gold) should
 // always draw over, regardless of which one happens to sit at a lower
@@ -1936,6 +1925,9 @@ export class Renderer {
   /** Per-fox trot state, pruned as foxes die or leave view. */
   private readonly foxAnim = new Map<string, GaitAnim>();
 
+  /** Per-resource harvest recoil, pruned as resources leave view. */
+  private readonly resourceRecoil = new Map<string, ResourceRecoil>();
+
   // Lakes are static for the whole session (set once via setLakes), so their
   // shoreline shapes are precomputed once rather than rebuilt every frame.
   private lakes: LakeState[] = [];
@@ -2375,6 +2367,7 @@ export class Renderer {
     this.updateFish(dt);
     this.updateFireflies(dt);
     this.updateFishSplashes(state.players, now);
+    this.updateResourceRecoil(state.resources, state.players, dt);
 
     ctx.clearRect(0, 0, W, H);
 
@@ -2711,29 +2704,26 @@ export class Renderer {
   // ── Resources ──────────────────────────────────────────────────────────────
 
   // hp scale range for image-sprite resources — shrinks slightly as damaged.
-  // Trees/rocks are grid-aligned and use a damage tint instead (scaling them
-  // would pull their edges out of alignment with connected neighbors).
+  // Trees/rocks don't shrink to match: they're grid-aligned, and scaling them
+  // would pull their edges out of alignment with connected neighbors. Damage
+  // on those reads from the harvest recoil instead (see recoilOffset).
   private static readonly HP_SCALE: Record<ImageResourceType, [number, number]> = {
     berry: [0.6, 0.4],
     mushroom: [0.5, 0.5],
     purple_berry: [0.6, 0.4],
   };
 
-  /** Which SPAN-sized cell (x, y) falls in, for a resource with the given footprint span. */
-  private static cellOf(x: number, y: number, span: number): { gx: number; gy: number } {
-    return { gx: Math.round(x / span), gy: Math.round(y / span) };
-  }
 
   /** Draws a woody bar between every pair of orthogonally-adjacent trees. */
   private drawTreeBranches(resources: ResourceState[]): void {
     const byCell = new Map<string, ResourceState>();
     for (const r of resources) {
       if (r.type !== 'tree') continue;
-      const { gx, gy } = Renderer.cellOf(r.x, r.y, TREE_SPAN);
+      const { gx, gy } = resourceCell(r.x, r.y, TREE_SPAN);
       byCell.set(`${gx},${gy}`, r);
     }
     for (const r of byCell.values()) {
-      const { gx, gy } = Renderer.cellOf(r.x, r.y, TREE_SPAN);
+      const { gx, gy } = resourceCell(r.x, r.y, TREE_SPAN);
       const east = byCell.get(`${gx + 1},${gy}`);
       if (east) this.drawBranch(r.x, r.y, east.x, east.y);
       const south = byCell.get(`${gx},${gy + 1}`);
@@ -2786,7 +2776,7 @@ export class Renderer {
     for (const r of resources) {
       if (r.type !== 'tree') continue;
 
-      const { gx, gy } = Renderer.cellOf(r.x, r.y, def.span);
+      const { gx, gy } = resourceCell(r.x, r.y, def.span);
       const seed = hashCell(gx, gy, def.seedSalt);
       const forest = variant.isForest(seed, r.x, r.y);
       const block = forest ? def.block * variant.scale : def.block;
@@ -2825,21 +2815,102 @@ export class Renderer {
     }
   }
 
-  private drawResource(r: ResourceState): void {
-    if (r.type === 'tree' || r.type === 'rock' || r.type === 'wheat' || r.type === 'gold') {
-      this.drawGridResource(r, r.type);
-      return;
+  // ── Harvest recoil ─────────────────────────────────────────────────────────
+
+  /**
+   * Starts a recoil on every resource whose hp fell since the last snapshot,
+   * and ages the ones already bouncing. See the RESOURCE_RECOIL_* block for
+   * why hp is the trigger rather than an explicit "you hit this" message.
+   */
+  private updateResourceRecoil(resources: ResourceState[], players: PlayerState[], dt: number): void {
+    const live = new Set<string>();
+
+    for (const r of resources) {
+      live.add(r.id);
+      const rec = this.resourceRecoil.get(r.id);
+
+      if (!rec) {
+        // First time we've seen it (or the first since it came back into
+        // view). Record the hp without bouncing — otherwise a tree someone
+        // chopped while it was off-screen would flinch the instant it
+        // reappeared, for a hit that happened somewhere the player never saw.
+        this.resourceRecoil.set(r.id, { hp: r.hp, t: RESOURCE_RECOIL_DURATION, dx: 0, dy: 0 });
+        continue;
+      }
+
+      if (r.hp < rec.hp) {
+        // Away from whoever landed it. The striker has to be inside harvest
+        // range, so the nearest player is the right guess even in a crowd —
+        // and picking the wrong one in a genuine tie still kicks the resource
+        // in a plausible direction.
+        const striker = Renderer.nearestPlayer(players, r.x, r.y);
+        if (striker) {
+          const dist = Math.hypot(r.x - striker.x, r.y - striker.y) || 1;
+          rec.dx = (r.x - striker.x) / dist;
+          rec.dy = (r.y - striker.y) / dist;
+          rec.t = 0;
+        }
+      }
+
+      rec.hp = r.hp;
+      rec.t = Math.min(rec.t + dt, RESOURCE_RECOIL_DURATION);
     }
-    this.drawImageResource(r, r.type);
+
+    for (const id of this.resourceRecoil.keys()) {
+      if (!live.has(id)) this.resourceRecoil.delete(id);
+    }
   }
 
-  /** Procedural top-down tree crown / rock patch / wheat clump, grid-aligned and pixel-crisp. */
-  private drawGridResource(r: ResourceState, type: GridResourceType): void {
+  private static nearestPlayer(players: PlayerState[], x: number, y: number): PlayerState | null {
+    let best: PlayerState | null = null;
+    let bestDist = Infinity;
+    for (const p of players) {
+      const dist = Math.hypot(p.x - x, p.y - y);
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = p;
+      }
+    }
+    return best;
+  }
+
+  /** Where a resource should draw relative to its world position, mid-bounce. */
+  private recoilOffset(id: string): { ox: number; oy: number } {
+    const rec = this.resourceRecoil.get(id);
+    if (!rec || rec.t >= RESOURCE_RECOIL_DURATION) return { ox: 0, oy: 0 };
+
+    const u = rec.t / RESOURCE_RECOIL_DURATION;
+    // Straight out over the attack, then eased back in over the remainder —
+    // the ease is what stops the return from reading as a second, opposite
+    // jolt of its own.
+    const k =
+      u < RESOURCE_RECOIL_ATTACK
+        ? u / RESOURCE_RECOIL_ATTACK
+        : 1 - smoothstep((u - RESOURCE_RECOIL_ATTACK) / (1 - RESOURCE_RECOIL_ATTACK));
+
+    return { ox: rec.dx * k * RESOURCE_RECOIL_DIST, oy: rec.dy * k * RESOURCE_RECOIL_DIST };
+  }
+
+  private drawResource(r: ResourceState): void {
+    const { ox, oy } = this.recoilOffset(r.id);
+    if (r.type === 'tree' || r.type === 'rock' || r.type === 'wheat' || r.type === 'gold') {
+      this.drawGridResource(r, r.type, ox, oy);
+      return;
+    }
+    this.drawImageResource(r, r.type, ox, oy);
+  }
+
+  /**
+   * Procedural top-down tree crown / rock patch / wheat clump, grid-aligned
+   * and pixel-crisp. (ox, oy) is the harvest recoil — applied to the body
+   * only, so the shadow and a rock's loose pebbles stay planted on the ground
+   * the object is bouncing above rather than sliding around with it.
+   */
+  private drawGridResource(r: ResourceState, type: GridResourceType, ox: number, oy: number): void {
     const { ctx, camera } = this;
     const { sx, sy } = camera.toScreen(r.x, r.y);
-    const hp = r.hp / r.maxHp;
     const def = GRID_RESOURCE_DEFS[type];
-    const { gx, gy } = Renderer.cellOf(r.x, r.y, def.span);
+    const { gx, gy } = resourceCell(r.x, r.y, def.span);
     const seed = hashCell(gx, gy, def.seedSalt);
     const cells = def.getCells(seed);
 
@@ -2884,19 +2955,15 @@ export class Renderer {
       ctx.fill(highlightPath);
     }
 
+    ctx.translate(ox, oy);
 
     drawBlockShape(ctx, cells, palette, block);
-
-    if (hp < 1) {
-      const dmg = 1 - hp;
-      ctx.fillStyle = `rgba(15,10,5,${(dmg * 0.55).toFixed(3)})`;
-      ctx.fillRect(-def.span / 2, -def.span / 2, def.span, def.span);
-    }
 
     ctx.restore();
   }
 
-  private drawImageResource(r: ResourceState, type: ImageResourceType): void {
+  /** (ox, oy) is the harvest recoil — see drawGridResource. */
+  private drawImageResource(r: ResourceState, type: ImageResourceType, ox: number, oy: number): void {
     const { ctx, camera } = this;
     const { sx, sy } = camera.toScreen(r.x, r.y);
     const hp = r.hp / r.maxHp;
@@ -2914,6 +2981,7 @@ export class Renderer {
     ctx.save();
     ctx.translate(sx, sy);
     this.drawShadow(ctx, shadow.width, shadow.length);
+    ctx.translate(ox, oy);
     ctx.scale(s, s);
     ctx.drawImage(img, -def.anchorX * BLOCK, -def.anchorY * BLOCK, w, h);
     ctx.restore();
@@ -3637,14 +3705,6 @@ export class Renderer {
     ctx.fillStyle = `rgba(10,18,12,${((0.22 + lenFactor * 0.1) * strength).toFixed(3)})`;
     ctx.fill(path);
   }
-}
-
-function clamp01(v: number): number {
-  return Math.max(0, Math.min(1, v));
-}
-
-function smoothstep(t: number): number {
-  return t * t * (3 - 2 * t);
 }
 
 // ── Seeded RNG (Mulberry32) ───────────────────────────────────────────────────
