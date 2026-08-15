@@ -7,8 +7,8 @@ export const MAP_SIZE = 4000; // World is MAP_SIZE x MAP_SIZE units
 // ── Player stats ─────────────────────────────────────────────────────────────
 export const PLAYER_SPEED = 150; // Units per second
 export const PLAYER_RADIUS = 16;
-export const MAX_HUNGER = 200;
-export const HUNGER_DECAY_RATE = 1; // Per second
+export const MAX_HUNGER = 150;
+export const HUNGER_DECAY_RATE = 0.7; // Per second
 export const TEMP_DECAY_RATE = 1; // Per second at night
 export const TEMP_REGEN_RATE = 0.25; // Per second during day
 export const HEALTH_REGEN_RATE = 0.5; // Per second when hunger > 45
