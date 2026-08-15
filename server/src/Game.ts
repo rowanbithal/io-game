@@ -734,6 +734,11 @@ export class Game {
     for (const resource of targets) {
       if (resource.type === 'gold' && !canMineGold) continue; // wrong (or no) tool — the swing lands but does nothing
       const drops = resource.damage(HARVEST_DAMAGE);
+      // Just died this swing — open up the ground it was occupying so fox
+      // pathfinding (and bot player steering) can route through it instead
+      // of detouring around a stump until it respawns (see
+      // setResourceNavBlocking).
+      if (drops.length > 0) this.world.setResourceNavBlocking(resource.id, false);
       for (const drop of drops) {
         const count =
           toolBonus && drop.type === toolBonus.dropType
@@ -1800,6 +1805,19 @@ export class Game {
     const p = bot.player;
     const inv = this.inventories.get(bot.id)!;
 
+    // Checked directly here rather than via `bot.goal === 'flee' / 'hunt'`
+    // — goal is only refreshed on its own BOT_DECISION_INTERVAL timer, which
+    // runs independently of this method's BOT_CRAFT_INTERVAL one and can land
+    // up to 1.5s apart. Relying on the (possibly stale) goal let a bot start
+    // an unrelated craft — a sword, a bench, whatever was next in
+    // BOT_CRAFT_ORDER — in the window right after it took a hit but before
+    // its goal caught up to 'flee'/'hunt'. Once started, a craft freezes the
+    // bot's input for its full craft time (see updateBot's mid-craft check),
+    // which looked like the bot simply seizing up mid-fight. Mirrors
+    // botChooseGoal's own ordering: never stop to craft into a fight you'd
+    // otherwise be fleeing.
+    const threatNearby = this.botNearestThreat(bot, BOT_ENGAGE_RANGE);
+
     // A carried bench is useless — stone and gold tiers need one standing
     // nearby, and a bot has no other way to find itself next to one.
     if ((inv.get(CRAFTING_BENCH_ID) ?? 0) >= 1 && !this.isNearBench(p) && this.botPlaceNearby(bot, CRAFTING_BENCH_ID)) {
@@ -1825,24 +1843,20 @@ export class Game {
     // usual priority order below, which would otherwise happily spend the
     // same wood on a workbench or a sword (both come first in
     // BOT_CRAFT_ORDER) and leave nothing for the fire.
-    //
-    // Checked directly against health here rather than `bot.goal === 'heal'`
-    // — goal is only refreshed on its own BOT_DECISION_INTERVAL timer, which
-    // runs independently of this method's BOT_CRAFT_INTERVAL one. The two can
-    // land up to 1.5s apart, and this craft check firing on the stale goal
-    // from before the bot got hurt is exactly how a sword got built instead
-    // of a fire the first time this was tested. The threat check mirrors
-    // botChooseGoal's own ordering: never stop to craft into a fight you'd
-    // otherwise be fleeing.
     if (
       hurtWithNoFireInReach &&
-      !this.botNearestThreat(bot, BOT_ENGAGE_RANGE) &&
+      !threatNearby &&
       (inv.get(CAMPFIRE_ID) ?? 0) < 1 &&
       canAfford(RECIPES_BY_ID[CAMPFIRE_ID], Object.fromEntries(inv))
     ) {
       this.handleCraft(bot.id, { recipeId: CAMPFIRE_ID });
       return;
     }
+
+    // Same reasoning as the campfire branch above: don't commit to any craft
+    // — which locks the bot's input for the full craft time — while
+    // something is actually on top of it.
+    if (threatNearby) return;
 
     for (const recipeId of BOT_CRAFT_ORDER) {
       if ((inv.get(recipeId) ?? 0) >= 1) continue; // already carrying one

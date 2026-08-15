@@ -44,16 +44,19 @@ function cellKey(cx: number, cy: number): number {
 }
 
 // ── Navigation grid ───────────────────────────────────────────────────────────
-// A coarse walkability bitmap baked once after world generation, used by the
-// fox AI to route around solid resources instead of walking into them (see
-// findPath). Every solid resource stamps out a disc of cells inflated by
-// FOX_RADIUS, so a path traced through free cells always leaves a fox room to
-// squeeze past without clipping the obstacle.
+// A coarse walkability bitmap, used by the fox AI (and bot player steering) to
+// route around solid resources instead of walking into them (see findPath).
+// Every solid resource stamps out a disc of cells inflated by FOX_RADIUS, so a
+// path traced through free cells always leaves room to squeeze past without
+// clipping the obstacle.
 //
-// It's deliberately static: resources toggle isDead as they're harvested and
-// respawn, but rebaking on every change isn't worth it. The grid therefore
-// treats a freshly-chopped tree as still blocking, which at worst routes a fox
-// around a stump it could have walked over — never into something solid.
+// Each cell is reference-counted rather than a plain bit: a resource's
+// footprint is stamped in once at generation (see buildNavGrid) and then
+// toggled off/on as it dies/respawns (see setResourceNavBlocking), instead of
+// rebaking the whole grid. Counting rather than a flat bit matters because
+// footprints overlap in dense clusters — a cell can be inside two trees'
+// discs at once, and unblocking it the moment just one of them dies would let
+// a fox cut through ground the other tree still occupies.
 const NAV_CELL = 20;
 const NAV_COLS = Math.ceil(MAP_SIZE / NAV_CELL);
 const NAV_ROWS = NAV_COLS;
@@ -262,8 +265,12 @@ export class World {
   /** Branch corridors between orthogonally-adjacent trees (see CORRIDOR_HALF_WIDTH). */
   private readonly treeCorridors: Corridor[] = [];
 
-  /** Walkability bitmap for fox pathfinding — 1 = blocked. See NAV_CELL. */
-  private readonly navBlocked = new Uint8Array(NAV_COLS * NAV_ROWS);
+  /** Per-cell count of alive solid resources covering it — cell is blocked while > 0. See NAV_CELL. */
+  private readonly navBlockCount = new Uint16Array(NAV_COLS * NAV_ROWS);
+  /** Cells inside a tree-branch corridor — always walkable regardless of navBlockCount (see buildTreeCorridors). */
+  private readonly navCorridorOpen = new Uint8Array(NAV_COLS * NAV_ROWS);
+  /** Each solid resource's precomputed footprint cells, so death/respawn can toggle navBlockCount without rescanning. */
+  private readonly navFootprint = new Map<string, number[]>();
 
   // ── Generation ─────────────────────────────────────────────────────────────
 
@@ -371,7 +378,7 @@ export class World {
 
   // ── Fox navigation ─────────────────────────────────────────────────────────
 
-  /** Stamps every solid resource into navBlocked, inflated by FOX_RADIUS. */
+  /** Stamps every solid resource's footprint into navBlockCount, inflated by FOX_RADIUS. */
   private buildNavGrid(): void {
     for (const r of this.resources.values()) {
       const solid = SOLID_COLLISION_RADIUS[r.type];
@@ -383,23 +390,33 @@ export class World {
       const minCy = Math.max(0, Math.floor((r.y - clear) / NAV_CELL));
       const maxCy = Math.min(NAV_ROWS - 1, Math.floor((r.y + clear) / NAV_CELL));
 
+      const footprint: number[] = [];
       for (let cy = minCy; cy <= maxCy; cy++) {
         for (let cx = minCx; cx <= maxCx; cx++) {
           const centerX = (cx + 0.5) * NAV_CELL;
           const centerY = (cy + 0.5) * NAV_CELL;
           if (Math.hypot(centerX - r.x, centerY - r.y) > clear) continue;
-          this.navBlocked[cy * NAV_COLS + cx] = 1;
+          const cell = cy * NAV_COLS + cx;
+          footprint.push(cell);
+          this.navBlockCount[cell]++;
         }
       }
+      // Kept even for an empty footprint (shouldn't happen, but keeps the
+      // map's presence the single source of truth for "this id is solid" —
+      // see setResourceNavBlocking) so death/respawn can find it again
+      // without recomputing bounds from the resource's live x/y/type.
+      this.navFootprint.set(r.id, footprint);
     }
 
-    // Carve the tree corridors back open. Both trees either side of a branch
-    // block, but anything standing inside the branch capsule is exempt from
-    // being pushed out (see isInTreeCorridor), so these gaps are genuinely
-    // walkable. Leaving them stamped shut would make the grid disagree with
-    // the physics in the worst possible direction: an agent that squeezed
-    // through one would find every route back out apparently sealed, and sit
-    // there with no path anywhere.
+    // Carve the tree corridors permanently open. Both trees either side of a
+    // branch block, but anything standing inside the branch capsule is exempt
+    // from being pushed out (see isInTreeCorridor), so these gaps are
+    // genuinely walkable. Leaving them stamped shut would make the grid
+    // disagree with the physics in the worst possible direction: an agent
+    // that squeezed through one would find every route back out apparently
+    // sealed, and sit there with no path anywhere. Marked in a separate mask
+    // rather than decrementing navBlockCount so a dying/respawning corridor
+    // tree can freely toggle its own count without ever re-sealing the gap.
     for (const c of this.treeCorridors) {
       const steps = Math.max(1, Math.ceil(Math.hypot(c.bx - c.ax, c.by - c.ay) / (NAV_CELL / 2)));
       for (let i = 0; i <= steps; i++) {
@@ -407,9 +424,31 @@ export class World {
         const cx = Math.floor((c.ax + (c.bx - c.ax) * t) / NAV_CELL);
         const cy = Math.floor((c.ay + (c.by - c.ay) * t) / NAV_CELL);
         if (cx < 0 || cy < 0 || cx >= NAV_COLS || cy >= NAV_ROWS) continue;
-        this.navBlocked[cy * NAV_COLS + cx] = 0;
+        this.navCorridorOpen[cy * NAV_COLS + cx] = 1;
       }
     }
+  }
+
+  /**
+   * Adds or removes a solid resource's footprint from the nav grid — call
+   * when a tree/rock/gold deposit dies or respawns, so fox pathfinding (and
+   * bot player steering, which shares this grid) notices the ground opening
+   * up or sealing shut again instead of treating a harvested stump as still
+   * solid until it grows back. No-op for resource types that were never solid
+   * (see buildNavGrid/navFootprint).
+   */
+  setResourceNavBlocking(resourceId: string, blocked: boolean): void {
+    const footprint = this.navFootprint.get(resourceId);
+    if (!footprint) return;
+    const delta = blocked ? 1 : -1;
+    for (const cell of footprint) {
+      this.navBlockCount[cell] = Math.max(0, this.navBlockCount[cell] + delta);
+    }
+  }
+
+  /** True if the given flattened nav cell is solid — corridor cells are always exempt. */
+  private cellBlocked(cell: number): boolean {
+    return this.navCorridorOpen[cell] === 0 && this.navBlockCount[cell] > 0;
   }
 
   /** True if (x, y) sits in a blocked nav cell, or off the map entirely. */
@@ -417,7 +456,7 @@ export class World {
     const cx = Math.floor(x / NAV_CELL);
     const cy = Math.floor(y / NAV_CELL);
     if (cx < 0 || cy < 0 || cx >= NAV_COLS || cy >= NAV_ROWS) return true;
-    return this.navBlocked[cy * NAV_COLS + cx] === 1;
+    return this.cellBlocked(cy * NAV_COLS + cx);
   }
 
   /**
@@ -446,7 +485,7 @@ export class World {
     const cx = Math.floor(x / NAV_CELL);
     const cy = Math.floor(y / NAV_CELL);
     if (cx < 0 || cy < 0 || cx >= NAV_COLS || cy >= NAV_ROWS) return null;
-    if (this.navBlocked[cy * NAV_COLS + cx] === 0) return { x, y };
+    if (!this.cellBlocked(cy * NAV_COLS + cx)) return { x, y };
 
     const free = this.nearestFreeCell(cx, cy);
     return free ? { x: (free.cx + 0.5) * NAV_CELL, y: (free.cy + 0.5) * NAV_CELL } : null;
@@ -461,7 +500,7 @@ export class World {
           const nx = cx + dx;
           const ny = cy + dy;
           if (nx < 0 || ny < 0 || nx >= NAV_COLS || ny >= NAV_ROWS) continue;
-          if (this.navBlocked[ny * NAV_COLS + nx] === 0) return { cx: nx, cy: ny };
+          if (!this.cellBlocked(ny * NAV_COLS + nx)) return { cx: nx, cy: ny };
         }
       }
     }
@@ -490,7 +529,7 @@ export class World {
     if (goalCx < 0 || goalCy < 0 || goalCx >= NAV_COLS || goalCy >= NAV_ROWS) return null;
 
     let goalRelocated = false;
-    if (this.navBlocked[goalCy * NAV_COLS + goalCx] === 1) {
+    if (this.cellBlocked(goalCy * NAV_COLS + goalCx)) {
       const free = this.nearestFreeCell(goalCx, goalCy);
       if (!free) return null;
       goalCx = free.cx;
@@ -539,13 +578,13 @@ export class World {
           if (nx < 0 || ny < 0 || nx >= NAV_COLS || ny >= NAV_ROWS) continue;
 
           const neighbor = ny * NAV_COLS + nx;
-          if (this.navBlocked[neighbor] === 1) continue;
+          if (this.cellBlocked(neighbor)) continue;
 
           // Don't cut a diagonal past the corner of an obstacle — that would
           // thread a fox through a gap it can't physically fit through.
           if (dx !== 0 && dy !== 0) {
-            if (this.navBlocked[cy * NAV_COLS + nx] === 1) continue;
-            if (this.navBlocked[ny * NAV_COLS + cx] === 1) continue;
+            if (this.cellBlocked(cy * NAV_COLS + nx)) continue;
+            if (this.cellBlocked(ny * NAV_COLS + cx)) continue;
           }
 
           const tentative = baseG + (dx !== 0 && dy !== 0 ? SQRT2 : 1);
@@ -815,7 +854,7 @@ export class World {
 
   update(dt: number): void {
     for (const r of this.resources.values()) {
-      r.update(dt);
+      if (r.update(dt)) this.setResourceNavBlocking(r.id, true); // respawned this frame — solid again
     }
   }
 }
