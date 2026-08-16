@@ -126,6 +126,13 @@ export const STRUCTURE_COLLISION_RADIUS = 14;
 export const PLACE_RANGE = 110; // How far from the player a structure can be placed
 export const CAMPFIRE_WARMTH_RADIUS = 190; // Distance the fire keeps you warm within
 export const CAMPFIRE_WARMTH_RATE = 6; // Temperature regained per second beside a fire
+// How long a campfire burns before going out, and how long it spends visibly
+// guttering on the way there. Staying warm is an ongoing cost rather than
+// something you solve once, and the fade is the warning: a fire about to die
+// has to look like one, or players only find out when the light is already
+// gone and the cold has started. See Renderer.burnFade.
+export const CAMPFIRE_LIFETIME = 60;
+export const CAMPFIRE_BURNOUT_FADE = 10;
 // Visual glow reach (client-side only) — noticeably tighter than the warmth
 // radius, so the fire reads as a small pool of light you huddle around.
 export const CAMPFIRE_LIGHT_RADIUS = 155;

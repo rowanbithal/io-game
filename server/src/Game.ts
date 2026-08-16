@@ -319,6 +319,12 @@ export class Game {
     const player = this.players.get(id);
     this.players.delete(id);
     this.inventories.delete(id);
+    // Leaving clears what they built, same as dying. Nothing survives a
+    // disconnect to be reclaimed — ids are per-socket, so a returning player
+    // is a new player and could never own these again. Without this a
+    // crafting bench (which has no lifetime of its own) would sit on the map
+    // for the rest of the server's uptime, one more every time anyone quits.
+    this.removeStructuresOwnedBy(id);
     if (player) console.log(`[Game] - ${player.name} (${id})`);
   }
 
@@ -385,6 +391,26 @@ export class Game {
 
     this.structures.push(new ServerStructure(recipe.placeAs, x, y, id));
     this.sendInventory(player, `${recipe.name} placed`);
+  }
+
+  /**
+   * Ages every structure, dropping the ones that burn out this tick (see
+   * ServerStructure.update). Structures need no teardown beyond leaving the
+   * array — unlike resources they're never stamped into the fox nav grid, and
+   * everything else that cares about them (warmth, collision, bench range)
+   * reads the live array each tick rather than caching membership.
+   */
+  private updateStructures(dt: number): void {
+    for (let i = this.structures.length - 1; i >= 0; i--) {
+      if (this.structures[i].update(dt)) this.structures.splice(i, 1);
+    }
+  }
+
+  /** Removes everything a given player built — see checkDeath. */
+  private removeStructuresOwnedBy(ownerId: string): void {
+    for (let i = this.structures.length - 1; i >= 0; i--) {
+      if (this.structures[i].ownerId === ownerId) this.structures.splice(i, 1);
+    }
   }
 
   /** Casts a fishing line at a world position — must be lake water, in range, rod in hand. */
@@ -479,6 +505,7 @@ export class Game {
 
     // Update world (resource respawning)
     this.world.update(dt);
+    this.updateStructures(dt);
 
     // Bots decide first, writing the same PlayerInput a client would have
     // sent this tick — then fall through the ordinary player loop below.
@@ -896,6 +923,11 @@ export class Game {
 
     player.respawn();
     this.inventories.set(player.id, new Map());
+    // Dying costs you what you built, not just what you carried — otherwise a
+    // player could seed the map with fires and benches and keep the benefit
+    // of every one of them across any number of deaths. Applies to bots too,
+    // which is why it sits above the bot branch below.
+    this.removeStructuresOwnedBy(player.id);
 
     const bot = this.bots.find((b) => b.id === player.id);
     if (bot) {

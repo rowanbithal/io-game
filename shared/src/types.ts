@@ -39,6 +39,13 @@ export interface StructureState {
   type: StructureType;
   x: number;
   y: number;
+  /**
+   * Seconds until this burns out, or null if it never does. Sent so the
+   * client can gutter a campfire's light as its last seconds run down (see
+   * CAMPFIRE_BURNOUT_FADE) — the countdown itself stays server-authoritative,
+   * the client only decides how to draw it.
+   */
+  life: number | null;
 }
 
 // ── Spiders ───────────────────────────────────────────────────────────────────

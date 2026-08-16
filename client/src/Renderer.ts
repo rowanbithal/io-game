@@ -1,4 +1,4 @@
-import { GameState, PlayerState, ResourceState, StructureState, SpiderState, FoxState, LakeState, FishingState, PLAYER_RADIUS, FOX_RADIUS, GRID_CELL, TREE_SPAN, ROCK_SPAN, WHEAT_SPAN, GOLD_SPAN, HARVEST_RANGE, HARVEST_ANGLE, HARVEST_COOLDOWN, STRUCTURE_SPAN, PLACE_RANGE, CAMPFIRE_LIGHT_RADIUS, SPIDER_RADIUS, CAST_RANGE, RECIPES_BY_ID, WOODEN_AXE_ID, WOODEN_PICKAXE_ID, WOODEN_SWORD_ID, STONE_AXE_ID, STONE_PICKAXE_ID, STONE_SWORD_ID, GOLD_AXE_ID, GOLD_PICKAXE_ID, GOLD_SWORD_ID, CRAFTING_BENCH_ID, FISHING_ROD_ID, MAP_SIZE, DARK_FOREST_BAND, DARK_FOREST_TRANSITION, GOLD_TOP_BAND, FOREST_TREE_SCALE, FOREST_ROCK_SCALE, darkForestBandAt, DARK_FOREST_EDGE_AMPLITUDE, dayPhase, hashCell, clamp01, smoothstep, forestFactor, isForestTree, isForestRock, resourceCell, RESOURCE_SEED_SALT } from '@io-game/shared';
+import { GameState, PlayerState, ResourceState, StructureState, SpiderState, FoxState, LakeState, FishingState, PLAYER_RADIUS, FOX_RADIUS, GRID_CELL, TREE_SPAN, ROCK_SPAN, WHEAT_SPAN, GOLD_SPAN, HARVEST_RANGE, HARVEST_ANGLE, HARVEST_COOLDOWN, STRUCTURE_SPAN, PLACE_RANGE, CAMPFIRE_LIGHT_RADIUS, CAMPFIRE_BURNOUT_FADE, SPIDER_RADIUS, CAST_RANGE, RECIPES_BY_ID, WOODEN_AXE_ID, WOODEN_PICKAXE_ID, WOODEN_SWORD_ID, STONE_AXE_ID, STONE_PICKAXE_ID, STONE_SWORD_ID, GOLD_AXE_ID, GOLD_PICKAXE_ID, GOLD_SWORD_ID, CRAFTING_BENCH_ID, FISHING_ROD_ID, MAP_SIZE, DARK_FOREST_BAND, DARK_FOREST_TRANSITION, GOLD_TOP_BAND, FOREST_TREE_SCALE, FOREST_ROCK_SCALE, darkForestBandAt, DARK_FOREST_EDGE_AMPLITUDE, dayPhase, hashCell, clamp01, smoothstep, forestFactor, isForestTree, isForestRock, resourceCell, RESOURCE_SEED_SALT } from '@io-game/shared';
 import { Camera } from './Camera';
 
 import berryUrl from './assets/sprites/berry.png';
@@ -3058,6 +3058,21 @@ export class Renderer {
   }
 
   /**
+   * How strongly a fire is still burning, 1 normally and easing to 0 through
+   * its final CAMPFIRE_BURNOUT_FADE seconds, so a fire about to go out visibly
+   * gutters first instead of vanishing between one frame and the next.
+   *
+   * Scales *both* firelight passes — the overlay gain and the hole punched in
+   * the night tint. Fading only the warm light would leave a fire's clearing
+   * fully lit at night with no apparent source, which reads as a bug rather
+   * than a fire dying.
+   */
+  private static burnFade(s: StructureState): number {
+    if (s.life === null) return 1;
+    return smoothstep(clamp01(s.life / CAMPFIRE_BURNOUT_FADE));
+  }
+
+  /**
    * The firelight itself. This *brightens* what's already on screen rather
    * than painting orange over it: 'overlay' acts as a gain, scaling the
    * existing pixels up while leaving darks dark, so the ground keeps its
@@ -3070,7 +3085,7 @@ export class Renderer {
    */
   private drawCampfireLight(s: StructureState, now: number): void {
     const { ctx } = this;
-    const flicker = Renderer.flicker(now);
+    const flicker = Renderer.flicker(now) * Renderer.burnFade(s);
     const bands = this.campfireGlowBands(s);
 
     ctx.save();
@@ -3624,10 +3639,12 @@ export class Renderer {
     lctx.globalCompositeOperation = 'destination-out';
     for (const s of fires) {
       const bands = this.campfireGlowBands(s);
+      const burn = flicker * Renderer.burnFade(s);
       for (let band = 0; band < GLOW_BANDS; band++) {
         // Clears the night tint in proportion to how lit that band is —
-        // fully at the fire, tapering to untouched at the edge of the light.
-        const alpha = clamp01(Renderer.bandIntensity(band) * flicker);
+        // fully at the fire, tapering to untouched at the edge of the light,
+        // and tapering again as the fire itself burns out.
+        const alpha = clamp01(Renderer.bandIntensity(band) * burn);
         if (alpha <= 0.004) continue;
         lctx.fillStyle = `rgba(0,0,0,${alpha.toFixed(3)})`;
         lctx.fill(bands[band]);
