@@ -7,8 +7,8 @@ export const MAP_SIZE = 4000; // World is MAP_SIZE x MAP_SIZE units
 // ── Player stats ─────────────────────────────────────────────────────────────
 export const PLAYER_SPEED = 150; // Units per second
 export const PLAYER_RADIUS = 16;
-export const MAX_HUNGER = 150;
-export const HUNGER_DECAY_RATE = 0.85; // Per second
+export const MAX_HUNGER = 100;
+export const HUNGER_DECAY_RATE = 0.65; // Per second
 export const TEMP_DECAY_RATE = 1.5; // Per second at night
 export const TEMP_REGEN_RATE = 0.25; // Per second during day
 export const HEALTH_REGEN_RATE = 0.5; // Per second when hunger > 45
@@ -35,7 +35,7 @@ export const FOOD_HUNGER_RESTORE: Record<string, number> = {
   berry: 1,
   mushroom: 1,
   purple_berry: 1,
-  cooked_meat: 25,
+  cooked_meat: 15,
 };
 
 // ── World ─────────────────────────────────────────────────────────────────────
