@@ -4,6 +4,7 @@ import {
   MAP_SIZE,
   MAX_HUNGER,
   RECIPES,
+  Recipe,
   canAfford,
   CRAFTING_BENCH_ID,
   BENCH_USE_RADIUS,
@@ -49,12 +50,57 @@ import {
   drawMushroomIcon,
   drawPurpleBerryIcon,
 } from '../Renderer';
+import { WOOD, woodPanel, woodDivider, woodSlot, woodTile, drawCarvedBook } from './wood';
 
 interface Notification {
   text: string;
   color: string;
   born: number;
   ttl: number; // ms
+}
+
+interface Rect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+// Corner crafting panel, bottom-left. CRAFT_PANEL_BOTTOM clears the controls
+// hint line along the bottom of the screen.
+const CRAFT_PANEL_X = 12;
+const CRAFT_PANEL_W = 172;
+const CRAFT_PANEL_BOTTOM = 72;
+// Highest the stack of rows is allowed to reach — leaves room for the header
+// sign and clears the minimap in the top-left corner.
+const CRAFT_PANEL_TOP = 148;
+const CRAFT_ROW_H = 38;
+const CRAFT_ROW_GAP = 4;
+
+// Item art is built from whole blocks (see Renderer's block engine), so an
+// icon drawn much under the hotbar's size collapses its blocks to 2px and
+// stops looking like the same object. Every icon the crafting UI shows is
+// sized off these, not off whatever space happened to be left over.
+const ICON_RESULT = 38; // matches the hotbar slot icon
+const ICON_INGREDIENT = 26; // book ingredient lists
+const ICON_STATION = 22; // the bench/campfire requirement mark
+
+// The carved book tile, top-right of the screen. LEADERBOARD_W mirrors
+// drawLeaderboard's own panel width — the tile sits just left of it.
+const LEADERBOARD_W = 180;
+const BOOK_TILE = 42;
+
+// Recipe book panel.
+const BOOK_PAD = 18;
+const BOOK_GAP = 10;
+const BOOK_TITLE_H = 40;
+
+function rectHas(r: Rect, x: number, y: number): boolean {
+  return x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h;
+}
+
+function clamp01(v: number): number {
+  return Math.max(0, Math.min(1, v));
 }
 
 export class HUD {
@@ -82,6 +128,14 @@ export class HUD {
   // Same idea for campfire-gated recipes (currently just cooked_meat) —
   // mirrors Game.isNearFire.
   private nearFire = false;
+
+  // Whether the full recipe catalogue is open over the game.
+  private bookOpen = false;
+  // Last known cursor position, fed in each frame by the game loop — the HUD
+  // draws hover states for its wooden buttons, which a click-only interface
+  // can't tell it about.
+  private pointerX = -1;
+  private pointerY = -1;
 
   constructor() {
     this.canvas = document.createElement('canvas');
@@ -206,6 +260,16 @@ export class HUD {
     return this.inventory[item] ?? 0;
   }
 
+  /** Cursor position in canvas pixels, for hover states on the wooden buttons. */
+  setPointer(x: number, y: number): void {
+    this.pointerX = x;
+    this.pointerY = y;
+  }
+
+  private pointerInside(x: number, y: number, w: number, h: number): boolean {
+    return rectHas({ x, y, w, h }, this.pointerX, this.pointerY);
+  }
+
   notify(text: string, color = '#f1c40f', ttl = 3000): void {
     this.notifications.push({ text, color, born: Date.now(), ttl });
     if (this.notifications.length > 5) this.notifications.shift();
@@ -240,12 +304,15 @@ export class HUD {
     this.drawStatBars(me, W, H);
     this.drawHotbar();
     this.drawCrafting(H);
+    this.drawBookTile(W);
     this.drawLeaderboard(state, me, W);
     this.drawDayNight(state, W);
     this.drawClock(state, W, H);
     this.drawMinimap(state, me, W, H);
     this.drawNotifications(me, W, H);
     this.drawControls(W, H);
+    // Last, so its dimmed backdrop sits over the rest of the HUD.
+    this.drawRecipeBook(W, H);
 
     // Prune expired notifications
     const now = Date.now();
@@ -376,37 +443,88 @@ export class HUD {
   // ── Crafting ───────────────────────────────────────────────────────────────
 
   /**
-   * Screen rect of each recipe row, bottom-left of the screen. Shared by the
-   * renderer and the click hit-test so they can never drift apart.
+   * What the corner panel lists: only recipes the player can pay for right
+   * now, so the panel is a short "you could make this" shelf rather than a
+   * wall of mostly-unaffordable rows. The full catalogue, with everything
+   * each recipe needs, lives in the recipe book (see drawRecipeBook).
+   *
+   * Station gating (bench/campfire) deliberately doesn't hide a row: the
+   * ingredients are the thing you have to go and gather, and a recipe
+   * blinking in and out as you walk past your own bench reads as a bug. Those
+   * rows stay listed with a padlock instead.
+   *
+   * An in-progress craft is always listed too — the server deducts its
+   * ingredients the moment it starts (Game.handleCraft), so otherwise the row
+   * would vanish exactly when its progress bar became interesting.
    */
-  private craftRows(H: number): { recipe: (typeof RECIPES)[number]; x: number; y: number; w: number; h: number }[] {
-    const rowH = 38;
-    const rowW = 172;
-    const x = 12;
-    const bottom = H - 72;
-    return RECIPES.map((recipe, i) => ({
+  private visibleRecipes(): Recipe[] {
+    return RECIPES.filter((r) => r.id === this.craftingId || canAfford(r, this.inventory));
+  }
+
+  /**
+   * Screen rect of the carved book tile — top-right, tucked just left of the
+   * leaderboard panel (see drawLeaderboard for the matching numbers).
+   */
+  private bookButtonRect(W: number): Rect {
+    return {
+      x: W - LEADERBOARD_W - 12 - 8 - BOOK_TILE,
+      y: 12,
+      w: BOOK_TILE,
+      h: BOOK_TILE,
+    };
+  }
+
+  /**
+   * Screen rect of each craftable row, stacked upward from the bottom-left
+   * corner. Shared by the renderer and the click hit-test so they can never
+   * drift apart.
+   */
+  private craftRows(H: number): (Rect & { recipe: Recipe })[] {
+    const bottom = H - CRAFT_PANEL_BOTTOM;
+
+    // Only as many rows as fit above the header sign — on a short window the
+    // rest stay in the book rather than running off the top of the screen.
+    // An in-progress craft always keeps its slot, whatever gets cut.
+    const all = this.visibleRecipes();
+    const max = Math.max(1, Math.floor((bottom - CRAFT_PANEL_TOP) / (CRAFT_ROW_H + CRAFT_ROW_GAP)));
+    let recipes = all.slice(0, max);
+    const active = all.find((r) => r.id === this.craftingId);
+    if (active && !recipes.includes(active)) recipes = [...recipes.slice(0, max - 1), active];
+
+    return recipes.map((recipe, i) => ({
       recipe,
-      x,
-      y: bottom - (RECIPES.length - i) * (rowH + 4),
-      w: rowW,
-      h: rowH,
+      x: CRAFT_PANEL_X,
+      y: bottom - (recipes.length - i) * (CRAFT_ROW_H + CRAFT_ROW_GAP),
+      w: CRAFT_PANEL_W,
+      h: CRAFT_ROW_H,
     }));
   }
 
   private drawCrafting(H: number): void {
     const { ctx } = this;
     const rows = this.craftRows(H);
-    if (rows.length === 0) return;
 
-    const header = rows[0];
+    // Header above the stack — or where the bottom row would have been, when
+    // nothing is affordable and there's no stack to sit on.
+    const headerY = (rows.length > 0 ? rows[0].y : H - CRAFT_PANEL_BOTTOM) - 6;
     ctx.font = 'bold 10px "Courier New"';
     ctx.textAlign = 'left';
     ctx.textBaseline = 'bottom';
     ctx.fillStyle = 'rgba(255,255,255,0.45)';
-    ctx.fillText('⚒ CRAFTING', header.x, header.y - 6);
+    ctx.fillText('⚒ CRAFTING', CRAFT_PANEL_X, headerY);
+
+    // The panel only lists what you can pay for (see visibleRecipes), so on a
+    // short window there can be more craftable than fits on screen.
+    const hidden = this.visibleRecipes().length - rows.length;
+    if (hidden > 0) {
+      ctx.textAlign = 'right';
+      ctx.font = '9px "Courier New"';
+      ctx.fillStyle = 'rgba(255,255,255,0.3)';
+      ctx.fillText(`+${hidden} more`, CRAFT_PANEL_X + CRAFT_PANEL_W, headerY);
+    }
 
     for (const { recipe, x, y, w, h } of rows) {
-      const locationLocked = (!!recipe.requiresBench && !this.nearBench) || (!!recipe.requiresCampfire && !this.nearFire);
+      const locationLocked = this.isLocationLocked(recipe);
       const affordable = canAfford(recipe, this.inventory) && !locationLocked;
       const isCrafting = this.craftingId === recipe.id;
       const busy = this.craftingId !== null;
@@ -421,7 +539,7 @@ export class HUD {
         this.pill(x, y, w, h, 6);
         ctx.clip();
         ctx.fillStyle = 'rgba(241,196,15,0.35)';
-        ctx.fillRect(x, y, w * Math.max(0, Math.min(1, this.craftingProgress)), h);
+        ctx.fillRect(x, y, w * clamp01(this.craftingProgress), h);
         ctx.restore();
       }
 
@@ -479,27 +597,274 @@ export class HUD {
   }
 
   /**
+   * The book tile in the top-right corner: a rounded block of timber with the
+   * book cut into its face, and the shortcut key stamped in the bottom corner.
+   */
+  private drawBookTile(W: number): void {
+    const { ctx } = this;
+    const t = this.bookButtonRect(W);
+    const hovered = this.pointerInside(t.x, t.y, t.w, t.h);
+
+    woodTile(ctx, t.x, t.y, t.w, t.h, { radius: 6, seed: 23, hover: hovered, active: this.bookOpen });
+    drawCarvedBook(ctx, t.x + t.w / 2, t.y + t.h / 2 - 2, t.w - 12);
+
+    ctx.font = 'bold 8px "Courier New"';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = hovered || this.bookOpen ? WOOD.ink : WOOD.inkDim;
+    ctx.fillText('R', t.x + t.w / 2, t.y + t.h - 7);
+  }
+
+  /** True when a recipe needs a bench/campfire the player isn't standing by. */
+  private isLocationLocked(recipe: Recipe): boolean {
+    return (!!recipe.requiresBench && !this.nearBench) || (!!recipe.requiresCampfire && !this.nearFire);
+  }
+
+  /**
+   * Draws a recipe's ingredients across the book entry as item icons with
+   * `have/need` counts, coloured by whether the player is short. `y` is the
+   * vertical centre of the strip. Icons are drawn at ICON_INGREDIENT rather
+   * than squeezed to fit: item art is built from whole blocks, and much
+   * smaller than this they stop resembling the same objects.
+   */
+  private drawCostStrip(recipe: Recipe, x: number, y: number): void {
+    const { ctx } = this;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.font = 'bold 11px "Courier New"';
+
+    let cx = x;
+    for (const [item, need] of Object.entries(recipe.cost)) {
+      const have = this.inventory[item] ?? 0;
+      this.drawItemIcon(item, cx + ICON_INGREDIENT / 2, y, ICON_INGREDIENT, '▪');
+      cx += ICON_INGREDIENT + 2;
+
+      const text = `${have}/${need}`;
+      ctx.fillStyle = have >= need ? WOOD.have : WOOD.short;
+      ctx.fillText(text, cx, y + 1);
+      cx += ctx.measureText(text).width + 8;
+    }
+  }
+
+  // ── Recipe book ────────────────────────────────────────────────────────────
+
+  /** Opens/closes the full recipe catalogue. */
+  toggleRecipeBook(): void {
+    this.bookOpen = !this.bookOpen;
+  }
+
+  closeRecipeBook(): void {
+    this.bookOpen = false;
+  }
+
+  isRecipeBookOpen(): boolean {
+    return this.bookOpen;
+  }
+
+  /**
+   * The book's outer panel plus the derived grid metrics, all in one place so
+   * the renderer and the hit-tests agree. Two columns normally, three on a
+   * wide window; entry height shrinks to fit a short one.
+   */
+  private bookLayout(W: number, H: number): {
+    panel: Rect;
+    close: Rect;
+    entries: (Rect & { recipe: Recipe })[];
+  } {
+    const cols = W >= 1180 ? 3 : 2;
+    const entryW = Math.min(320, Math.floor((W - BOOK_PAD * 2 - 40 - (cols - 1) * BOOK_GAP) / cols));
+    const gridRows = Math.ceil(RECIPES.length / cols);
+    const panelW = BOOK_PAD * 2 + cols * entryW + (cols - 1) * BOOK_GAP;
+
+    const maxGridH = H - 40 - BOOK_TITLE_H - BOOK_PAD * 2;
+    const entryH = Math.max(
+      52,
+      Math.min(68, Math.floor((maxGridH - (gridRows - 1) * BOOK_GAP) / gridRows)),
+    );
+    const panelH = BOOK_TITLE_H + BOOK_PAD * 2 + gridRows * entryH + (gridRows - 1) * BOOK_GAP;
+
+    const px = Math.round((W - panelW) / 2);
+    const py = Math.round((H - panelH) / 2);
+
+    const gridX = px + BOOK_PAD;
+    const gridY = py + BOOK_TITLE_H + BOOK_PAD;
+
+    return {
+      panel: { x: px, y: py, w: panelW, h: panelH },
+      close: { x: px + panelW - BOOK_PAD - 22, y: py + Math.round((BOOK_TITLE_H - 22) / 2), w: 22, h: 22 },
+      entries: RECIPES.map((recipe, i) => ({
+        recipe,
+        x: gridX + (i % cols) * (entryW + BOOK_GAP),
+        y: gridY + Math.floor(i / cols) * (entryH + BOOK_GAP),
+        w: entryW,
+        h: entryH,
+      })),
+    };
+  }
+
+  private drawRecipeBook(W: number, H: number): void {
+    if (!this.bookOpen) return;
+    const { ctx } = this;
+    const { panel, close, entries } = this.bookLayout(W, H);
+
+    // Dim the world behind the book so the boards read as the front layer.
+    ctx.fillStyle = 'rgba(0,0,0,0.5)';
+    ctx.fillRect(0, 0, W, H);
+
+    woodPanel(ctx, panel.x, panel.y, panel.w, panel.h, { plankH: 16, border: 4, seed: 5, nails: true });
+
+    // Title on a dark recessed plaque — parchment lettering on bare boards is
+    // brown-on-brown and reads as barely there.
+    const plaqueH = BOOK_TITLE_H - 16;
+    const plaqueY = panel.y + 8;
+    woodSlot(ctx, panel.x + BOOK_PAD, plaqueY, panel.w - BOOK_PAD * 2 - 30, plaqueH);
+
+    const titleY = plaqueY + plaqueH / 2 + 1;
+    ctx.font = 'bold 14px "Courier New"';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = WOOD.ink;
+    ctx.fillText('RECIPE BOOK', panel.x + BOOK_PAD + 10, titleY);
+
+    woodDivider(ctx, panel.x + BOOK_PAD, panel.y + BOOK_TITLE_H - 4, panel.w - BOOK_PAD * 2);
+
+    const hoverClose = this.pointerInside(close.x, close.y, close.w, close.h);
+    woodTile(ctx, close.x, close.y, close.w, close.h, { radius: 4, plankH: 8, seed: 31, hover: hoverClose });
+    ctx.font = 'bold 11px "Courier New"';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = hoverClose ? WOOD.ember : WOOD.ink;
+    ctx.fillText('✕', close.x + close.w / 2, close.y + close.h / 2 + 1);
+
+    for (const { recipe, x, y, w, h } of entries) {
+      const affordable = canAfford(recipe, this.inventory);
+      const locked = this.isLocationLocked(recipe);
+      const craftable = affordable && !locked && this.craftingId === null;
+      const hovered = this.pointerInside(x, y, w, h);
+
+      // Each entry is a dark recess cut into the boards. Item sprites are
+      // browns and greys, so on bare timber they all but disappear — against
+      // near-black they read cleanly, and so does the lettering.
+      woodSlot(ctx, x, y, w, h);
+
+      // Craftable entries get a warm face and an ember edge, so the book
+      // shows at a glance which of these you could start right now.
+      if (craftable) {
+        ctx.globalAlpha = hovered ? 0.2 : 0.1;
+        ctx.fillStyle = WOOD.ember;
+        ctx.fillRect(x + 1, y + 1, w - 2, h - 2);
+        ctx.globalAlpha = hovered ? 0.9 : 0.5;
+        ctx.fillStyle = WOOD.ember;
+        ctx.fillRect(x + 1, y + 1, w - 2, 1);
+        ctx.fillRect(x + 1, y + h - 2, w - 2, 1);
+        ctx.fillRect(x + 1, y + 1, 1, h - 2);
+        ctx.fillRect(x + w - 2, y + 1, 1, h - 2);
+        ctx.globalAlpha = 1;
+      }
+
+      // Result icon at exactly the hotbar's size, so an item looks the same
+      // here as it does in the slot you'll find it in afterwards.
+      this.drawItemIcon(recipe.id, x + 10 + ICON_RESULT / 2, y + h / 2, ICON_RESULT, recipe.icon);
+
+      const textX = x + ICON_RESULT + 22;
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.font = 'bold 12px "Courier New"';
+      ctx.fillStyle = affordable ? WOOD.ink : WOOD.inkDim;
+      ctx.fillText(recipe.name, textX, y + 17);
+
+      // Craft time trails the name, leaving the whole bottom line for the
+      // ingredient icons.
+      const nameW = ctx.measureText(recipe.name).width;
+      ctx.font = '10px "Courier New"';
+      ctx.fillStyle = WOOD.inkDim;
+      ctx.fillText(`${recipe.craftTime}s`, textX + nameW + 8, y + 18);
+
+      this.drawCostStrip(recipe, textX, y + h - 20);
+
+      // Station requirement: the actual bench/campfire sprite plus a label,
+      // rather than an emoji that renders in whatever the OS feels like.
+      const station = recipe.requiresBench
+        ? { item: CRAFTING_BENCH_ID, label: 'BENCH' }
+        : recipe.requiresCampfire
+          ? { item: 'campfire', label: 'FIRE' }
+          : null;
+      if (station) {
+        ctx.textAlign = 'right';
+        ctx.font = 'bold 12px "Courier New"';
+        ctx.fillStyle = locked ? WOOD.short : WOOD.have;
+        ctx.fillText(station.label, x + w - 10, y + 17);
+        const labelW = ctx.measureText(station.label).width;
+        this.drawItemIcon(
+          station.item,
+          x + w - 10 - labelW - 6 - ICON_STATION / 2,
+          y + 17,
+          ICON_STATION,
+        );
+      }
+    }
+
+    ctx.font = '9px "Courier New"';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = WOOD.inkDim;
+    ctx.fillText(
+      'click a lit recipe to craft it  ·  R or Esc to close',
+      panel.x + panel.w / 2,
+      panel.y + panel.h - BOOK_PAD / 2 - 2,
+    );
+  }
+
+  /**
+   * Click handling for the book chrome: the corner button toggles it, the ✕
+   * and any click off the panel close it. Returns true when the click was
+   * spent on chrome; clicks *inside* the open book return false so they can
+   * still be tested against recipe entries (see hitTestCraft).
+   */
+  handleRecipeBookClick(x: number, y: number): boolean {
+    const button = this.bookButtonRect(this.canvas.width);
+    if (rectHas(button, x, y)) {
+      this.bookOpen = !this.bookOpen;
+      return true;
+    }
+    if (!this.bookOpen) return false;
+
+    const { panel, close } = this.bookLayout(this.canvas.width, this.canvas.height);
+    if (rectHas(close, x, y) || !rectHas(panel, x, y)) {
+      this.bookOpen = false;
+      return true;
+    }
+    return false;
+  }
+
+  /**
    * Called with a canvas click. Returns the recipe id to craft if the click
-   * landed on an available recipe row, or null to let the click fall through
-   * to the game (harvesting).
+   * landed on a startable recipe — either a corner row or an entry in the
+   * open book — or null to let the click fall through to the game.
    */
   hitTestCraft(x: number, y: number): string | null {
     if (this.craftingId !== null) return null; // One craft at a time
 
-    for (const row of this.craftRows(this.canvas.height)) {
-      const inside = x >= row.x && x <= row.x + row.w && y >= row.y && y <= row.y + row.h;
-      if (!inside) continue;
-      if (row.recipe.requiresBench && !this.nearBench) return null;
-      if (row.recipe.requiresCampfire && !this.nearFire) return null;
-      return canAfford(row.recipe, this.inventory) ? row.recipe.id : null;
+    const targets: (Rect & { recipe: Recipe })[] = this.bookOpen
+      ? this.bookLayout(this.canvas.width, this.canvas.height).entries
+      : this.craftRows(this.canvas.height);
+
+    for (const target of targets) {
+      if (!rectHas(target, x, y)) continue;
+      if (this.isLocationLocked(target.recipe)) return null;
+      return canAfford(target.recipe, this.inventory) ? target.recipe.id : null;
     }
     return null;
   }
 
-  /** True if the click landed anywhere on the crafting panel (used to swallow it). */
+  /**
+   * True if the click landed on crafting UI (used to swallow it so it doesn't
+   * also swing at whatever is behind the panel). While the book is open that
+   * includes its dimmed backdrop — the whole screen belongs to the book.
+   */
   isOverCrafting(x: number, y: number): boolean {
-    return this.craftRows(this.canvas.height).some(
-      (r) => x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h,
+    if (this.bookOpen) return true;
+    return (
+      rectHas(this.bookButtonRect(this.canvas.width), x, y) ||
+      this.craftRows(this.canvas.height).some((r) => rectHas(r, x, y))
     );
   }
 
@@ -655,7 +1020,7 @@ export class HUD {
     ctx.textBaseline = 'bottom';
     ctx.fillStyle = 'rgba(255,255,255,0.25)';
     ctx.fillText(
-      'WASD: Move  |  E / Click: Harvest  |  1-9 / Click Food: Eat  |  Scroll / Drag: Hotbar  |  Right-click / F: Place / Cast  |  Survive the night!',
+      'WASD: Move  |  E / Click: Harvest  |  1-9 / Click Food: Eat  |  Scroll / Drag: Hotbar  |  Right-click / F: Place / Cast  |  R: Recipes  |  Survive the night!',
       W / 2,
       H - 8,
     );

@@ -105,6 +105,19 @@ class ClientGame {
    */
   private setupHotbar(): void {
     window.addEventListener('keydown', (e) => {
+      // Typing a name in the menu isn't hotbar/UI input.
+      if (e.target instanceof HTMLInputElement) return;
+
+      // R toggles the recipe book, Esc closes it.
+      if (e.code === 'KeyR') {
+        this.hud.toggleRecipeBook();
+        return;
+      }
+      if (e.code === 'Escape') {
+        this.hud.closeRecipeBook();
+        return;
+      }
+
       const match = e.code.match(/^Digit([1-9])$/);
       if (!match) return;
       const eaten = this.hud.selectSlot(Number(match[1]) - 1);
@@ -127,6 +140,10 @@ class ClientGame {
         else this.hotbarDragActive = true;
         return true;
       }
+
+      // Opening/closing the recipe book. Clicks inside an open book fall
+      // through to the craft test below, so its entries stay clickable.
+      if (this.hud.handleRecipeBookClick(x, y)) return true;
 
       const recipeId = this.hud.hitTestCraft(x, y);
       if (recipeId) this.network.craft(recipeId);
@@ -208,6 +225,7 @@ class ClientGame {
       this.renderer.setPlacementTarget(target);
       this.renderer.setCastTarget(fishTarget);
       this.renderer.render(snapshot, this.mapSize);
+      this.hud.setPointer(this.input.mouseX, this.input.mouseY);
       this.hud.render(snapshot);
     }
 
