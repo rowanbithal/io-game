@@ -1,6 +1,6 @@
 # Survive.io — Multiplayer Browser Survival Game
 
-A from-scratch multiplayer .io survival game scaffolded in the style of **starve.io** and **devast.io** by LapaMauve.
+A from-scratch multiplayer .io survival game.
 
 ---
 
