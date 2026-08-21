@@ -5,7 +5,16 @@ import { ServerResource } from './entities/Resource';
 // Placed before any resource so trees/rocks/berries/mushrooms can be kept
 // off the water and its shore.
 
-const LAKE_COUNT = 5;
+// Lakes are placed one per cell of a LAKE_GRID_COLS x LAKE_GRID_ROWS grid over
+// the whole map (see generateLakes) rather than by dropping LAKE_COUNT points
+// at uniformly random positions — pure random placement clumps often enough,
+// at this count, to leave entire quadrants dry while another is crowded. A
+// grid cell per lake guarantees one is always somewhere in every region of
+// the map; each still gets a random size and jitters to a random spot inside
+// its cell, so the result reads as scattered rather than a rigid checkerboard.
+const LAKE_GRID_COLS = 4;
+const LAKE_GRID_ROWS = 3;
+const LAKE_COUNT = LAKE_GRID_COLS * LAKE_GRID_ROWS;
 const LAKE_MIN_RADIUS = 90;
 const LAKE_MAX_RADIUS = 180;
 const LAKE_MIN_SHORE = 30;
@@ -38,6 +47,10 @@ interface Corridor {
 const CELL = 120; // Cell size in world units
 const COLS = Math.ceil(MAP_SIZE / CELL);
 const ROWS = Math.ceil(MAP_SIZE / CELL);
+
+function clampNum(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
 
 function cellKey(cx: number, cy: number): number {
   return cy * COLS + cx;
@@ -308,32 +321,58 @@ export class World {
     console.log(`[World] Generated ${this.resources.size} resources, ${this.lakes.length} lakes`);
   }
 
-  /** Places non-overlapping lakes, each with a water body and a surrounding sand/pebble shore. */
+  /**
+   * Places one lake per cell of the LAKE_GRID_COLS x LAKE_GRID_ROWS grid (see
+   * the constants above), each with a water body and a surrounding
+   * sand/pebble shore. A lake gets a random size and a random jitter to
+   * somewhere inside its own cell — never dead-centre, or every lake would
+   * line up into an obvious checkerboard — but the grid cell is what
+   * actually guarantees the spread: no matter how the random draws land,
+   * every region of the map gets its own lake instead of leaving it to
+   * chance the way independent random placement would.
+   */
   private generateLakes(margin: number): void {
-    let attempts = 0;
+    const cellW = MAP_SIZE / LAKE_GRID_COLS;
+    const cellH = MAP_SIZE / LAKE_GRID_ROWS;
 
-    while (this.lakes.length < LAKE_COUNT && attempts < LAKE_COUNT * 40) {
-      attempts++;
-      const radius = LAKE_MIN_RADIUS + Math.random() * (LAKE_MAX_RADIUS - LAKE_MIN_RADIUS);
-      const shoreWidth = LAKE_MIN_SHORE + Math.random() * (LAKE_MAX_SHORE - LAKE_MIN_SHORE);
-      const clear = margin + radius + shoreWidth;
-      const x = clear + Math.random() * (MAP_SIZE - clear * 2);
-      const y = clear + Math.random() * (MAP_SIZE - clear * 2);
+    for (let row = 0; row < LAKE_GRID_ROWS; row++) {
+      for (let col = 0; col < LAKE_GRID_COLS; col++) {
+        const cellCx = col * cellW + cellW / 2;
+        const cellCy = row * cellH + cellH / 2;
 
-      const tooClose = this.lakes.some((lake) => {
-        const minDist = radius + shoreWidth + lake.radius + lake.shoreWidth + LAKE_SPACING;
-        return Math.hypot(x - lake.x, y - lake.y) < minDist;
-      });
-      if (tooClose) continue;
+        // A few retries with a fresh size/jitter if this particular draw
+        // happens to land too close to a neighbouring cell's lake — cells
+        // are generous enough relative to LAKE_SPACING that this essentially
+        // always succeeds on the first attempt.
+        for (let attempt = 0; attempt < 20; attempt++) {
+          const radius = LAKE_MIN_RADIUS + Math.random() * (LAKE_MAX_RADIUS - LAKE_MIN_RADIUS);
+          const shoreWidth = LAKE_MIN_SHORE + Math.random() * (LAKE_MAX_SHORE - LAKE_MIN_SHORE);
+          const footprint = margin + radius + shoreWidth;
 
-      this.lakes.push({
-        id: `lake${this.lakes.length}`,
-        x,
-        y,
-        radius,
-        shoreWidth,
-        seed: Math.floor(Math.random() * 0xffffffff),
-      });
+          // Jitter within the cell, clamped so the full footprint never
+          // crosses into a neighbouring cell or off the map edge.
+          const jitterX = Math.max(0, cellW / 2 - footprint);
+          const jitterY = Math.max(0, cellH / 2 - footprint);
+          const x = clampNum(cellCx + (Math.random() * 2 - 1) * jitterX, footprint, MAP_SIZE - footprint);
+          const y = clampNum(cellCy + (Math.random() * 2 - 1) * jitterY, footprint, MAP_SIZE - footprint);
+
+          const tooClose = this.lakes.some((lake) => {
+            const minDist = radius + shoreWidth + lake.radius + lake.shoreWidth + LAKE_SPACING;
+            return Math.hypot(x - lake.x, y - lake.y) < minDist;
+          });
+          if (tooClose) continue;
+
+          this.lakes.push({
+            id: `lake${this.lakes.length}`,
+            x,
+            y,
+            radius,
+            shoreWidth,
+            seed: Math.floor(Math.random() * 0xffffffff),
+          });
+          break;
+        }
+      }
     }
   }
 
