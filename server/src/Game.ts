@@ -9,6 +9,11 @@ import {
   PlaceRequest,
   CastRequest,
   EatRequest,
+  ChatRequest,
+  ChatMessage,
+  CHAT_MAX_LENGTH,
+  CHAT_BUBBLE_SECONDS,
+  CHAT_COOLDOWN,
   TICK_RATE,
   VIEW_DISTANCE,
   DAY_DURATION,
@@ -68,6 +73,7 @@ import {
   SPIDER_AGGRO_RANGE,
   SPIDER_MAX_COUNT,
   SPIDER_SPAWN_INTERVAL,
+  SPIDER_SPAWN_INTERVAL_DARK_FOREST,
   SPIDER_MIN_PLAYER_SPAWN_DIST,
   SPIDER_STRING_DROP,
   FOX_RADIUS,
@@ -79,6 +85,7 @@ import {
   FOX_LOSE_INTEREST_RANGE,
   FOX_MAX_COUNT,
   FOX_SPAWN_INTERVAL,
+  FOX_SPAWN_INTERVAL_NIGHT,
   FOX_MIN_PLAYER_SPAWN_DIST,
   FOX_FOOD_DROP,
   FOX_FOREST_LEEWAY,
@@ -280,6 +287,11 @@ export class Game {
   // catch the night→day edge, not track the cycle in any richer way.
   private wasDay = true; // dayTime starts at 0 (noon), so this matches
   private spiderSpawnTimer = 0;
+  // Second, faster timer that only rolls for a spot inside the dark forest
+  // (see trySpawnSpiderInForest) — runs alongside spiderSpawnTimer, not
+  // instead of it, so the forest gets denser at night on top of the usual
+  // map-wide spawning rather than stealing from it.
+  private spiderForestSpawnTimer = 0;
 
   // Foxes, unlike spiders, are tied to the dark forest rather than to the
   // clock — they spawn and hunt through both day and night, so there's no
@@ -459,6 +471,31 @@ export class Game {
   }
 
   /**
+   * Broadcasts a chat message and puts it above the sender's head. The text is
+   * re-sanitised here rather than trusted from the client: control characters
+   * (newlines included, which would break the log's line layout) are stripped
+   * and the length is capped, since nothing stops a modified client from
+   * ignoring its own input's maxlength.
+   */
+  handleChat(id: string, { text }: ChatRequest): void {
+    const player = this.players.get(id);
+    if (!player || player.chatCooldown > 0) return;
+
+    const clean = String(text ?? '')
+      .replace(/[\u0000-\u001f\u007f]/g, ' ')
+      .trim()
+      .slice(0, CHAT_MAX_LENGTH);
+    if (!clean) return;
+
+    player.chat = clean;
+    player.chatRemaining = CHAT_BUBBLE_SECONDS;
+    player.chatCooldown = CHAT_COOLDOWN;
+
+    const message: ChatMessage = { id: player.id, name: player.name, text: clean };
+    this.io.emit('chat', message);
+  }
+
+  /**
    * Rejects spots that overlap a solid resource, water, or another structure.
    *
    * Clearances are measured against what's *drawn* (PLACEMENT_CLEARANCE and
@@ -527,7 +564,7 @@ export class Game {
     this.resolvePlayerCollisions();
 
     this.updateSpiders(dt, isDay);
-    this.updateFoxes(dt);
+    this.updateFoxes(dt, isDay);
 
     // Broadcast state to each player
     this.broadcast(isDay);
@@ -952,12 +989,21 @@ export class Game {
     this.wasDay = isDay;
 
     if (isDay) {
-      this.spiderSpawnTimer = 0; // so the first spawn after dusk isn't delayed
+      // So the first spawn after dusk isn't delayed by whatever was left
+      // over from the night before.
+      this.spiderSpawnTimer = 0;
+      this.spiderForestSpawnTimer = 0;
     } else {
       this.spiderSpawnTimer -= dt;
       if (this.spiderSpawnTimer <= 0) {
         this.spiderSpawnTimer = SPIDER_SPAWN_INTERVAL;
         this.trySpawnSpider();
+      }
+
+      this.spiderForestSpawnTimer -= dt;
+      if (this.spiderForestSpawnTimer <= 0) {
+        this.spiderForestSpawnTimer = SPIDER_SPAWN_INTERVAL_DARK_FOREST;
+        this.trySpawnSpiderInForest();
       }
     }
 
@@ -976,6 +1022,33 @@ export class Game {
     for (let attempt = 0; attempt < 20; attempt++) {
       const x = margin + Math.random() * (MAP_SIZE - margin * 2);
       const y = margin + Math.random() * (MAP_SIZE - margin * 2);
+      if (this.world.isBlockedByLake(x, y)) continue;
+      if (players.some((p) => Math.hypot(p.x - x, p.y - y) < SPIDER_MIN_PLAYER_SPAWN_DIST)) continue;
+
+      const spider = new ServerSpider(x, y);
+      this.spiders.set(spider.id, spider);
+      return;
+    }
+  }
+
+  /**
+   * Same idea as trySpawnSpider, but the candidate y is confined to inside
+   * the dark forest band (reusing trySpawnFox's approach to the same band)
+   * instead of anywhere on the map. Feeds the same this.spiders collection
+   * and the same SPIDER_MAX_COUNT cap — this only biases *where* an extra
+   * spider lands, not a separate population.
+   */
+  private trySpawnSpiderInForest(): void {
+    if (this.spiders.size >= SPIDER_MAX_COUNT) return;
+
+    const margin = TREE_SPAN;
+    const players = Array.from(this.players.values());
+
+    for (let attempt = 0; attempt < 20; attempt++) {
+      const x = margin + Math.random() * (MAP_SIZE - margin * 2);
+      const bandY = darkForestBandAt(x);
+      if (bandY <= margin) continue; // no forest to speak of at this x
+      const y = margin + Math.random() * (bandY - margin);
       if (this.world.isBlockedByLake(x, y)) continue;
       if (players.some((p) => Math.hypot(p.x - x, p.y - y) < SPIDER_MIN_PLAYER_SPAWN_DIST)) continue;
 
@@ -1041,10 +1114,12 @@ export class Game {
    * keys off the day/night cycle — they spawn and hunt around the clock, and
    * are never cleared out en masse.
    */
-  private updateFoxes(dt: number): void {
+  private updateFoxes(dt: number, isDay: boolean): void {
     this.foxSpawnTimer -= dt;
     if (this.foxSpawnTimer <= 0) {
-      this.foxSpawnTimer = FOX_SPAWN_INTERVAL;
+      // Same forest, same odds per attempt — the only thing night changes is
+      // how often the timer fires (see FOX_SPAWN_INTERVAL_NIGHT).
+      this.foxSpawnTimer = isDay ? FOX_SPAWN_INTERVAL : FOX_SPAWN_INTERVAL_NIGHT;
       this.trySpawnFox();
     }
 

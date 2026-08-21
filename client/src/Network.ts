@@ -5,6 +5,7 @@ import {
   JoinedPayload,
   HarvestPayload,
   InventoryPayload,
+  ChatMessage,
 } from '@io-game/shared';
 
 type Listener<T> = (data: T) => void;
@@ -18,6 +19,7 @@ export class Network {
   private onHarvestCb: Listener<HarvestPayload> | null = null;
   private onInventoryCb: Listener<InventoryPayload> | null = null;
   private onDiedCb: Listener<void> | null = null;
+  private onChatCb: Listener<ChatMessage> | null = null;
 
   constructor() {
     this.socket = io({
@@ -39,6 +41,10 @@ export class Network {
 
     this.socket.on('inventory', (data: InventoryPayload) => {
       this.onInventoryCb?.(data);
+    });
+
+    this.socket.on('chat', (msg: ChatMessage) => {
+      this.onChatCb?.(msg);
     });
 
     this.socket.on('died', () => {
@@ -76,6 +82,10 @@ export class Network {
     this.socket.emit('eat', { itemId });
   }
 
+  chat(text: string): void {
+    this.socket.emit('chat', { text });
+  }
+
   // ── Listeners ──────────────────────────────────────────────────────────────
 
   onJoined(cb: Listener<JoinedPayload>): void { this.onJoinedCb = cb; }
@@ -83,4 +93,5 @@ export class Network {
   onHarvest(cb: Listener<HarvestPayload>): void { this.onHarvestCb = cb; }
   onInventory(cb: Listener<InventoryPayload>): void { this.onInventoryCb = cb; }
   onDied(cb: Listener<void>): void { this.onDiedCb = cb; }
+  onChat(cb: Listener<ChatMessage>): void { this.onChatCb = cb; }
 }

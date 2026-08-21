@@ -3,6 +3,11 @@ import { PlayerInput } from '@io-game/shared';
 /** Returns true if the UI consumed the click, so it shouldn't also swing. */
 type ClickInterceptor = (screenX: number, screenY: number) => boolean;
 
+/** True for the game's own text fields — the chat composer and the name box. */
+function isTextField(target: EventTarget | null): boolean {
+  return target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement;
+}
+
 export class Input {
   private keys = new Set<string>();
   private mouseAngle = 0;
@@ -12,6 +17,8 @@ export class Input {
   // based on what's currently held.
   private altActionPulse = false;
   private clickInterceptor: ClickInterceptor | null = null;
+  // True while the chat composer is open (see setTyping).
+  private typing = false;
 
   /** Mouse position in canvas pixels — used to aim structure placement. */
   mouseX = 0;
@@ -19,6 +26,10 @@ export class Input {
 
   constructor(canvas: HTMLCanvasElement) {
     window.addEventListener('keydown', (e) => {
+      // Typing into a text field (chat, the name box on the menu) is never
+      // game input — otherwise saying "wade" would walk you into a lake.
+      if (this.typing || isTextField(e.target)) return;
+
       this.keys.add(e.code);
       if (e.code === 'KeyF') {
         this.altActionPulse = true;
@@ -29,6 +40,8 @@ export class Input {
       }
     });
 
+    // Not gated on `typing`: a key pressed before the chat box opened still
+    // has to be released, or it stays down forever.
     window.addEventListener('keyup', (e) => {
       this.keys.delete(e.code);
     });
@@ -44,6 +57,7 @@ export class Input {
 
     canvas.addEventListener('mousedown', (e) => {
       if (e.button !== 0) return; // left button only — right-click is placement
+      if (this.typing) return; // clicking the world while chatting only dismisses the box
       const rect = canvas.getBoundingClientRect();
       const x = e.clientX - rect.left;
       const y = e.clientY - rect.top;
@@ -62,13 +76,27 @@ export class Input {
     // (left-click is already harvest).
     canvas.addEventListener('contextmenu', (e) => {
       e.preventDefault();
-      this.altActionPulse = true;
+      if (!this.typing) this.altActionPulse = true;
     });
   }
 
   /** Lets the HUD claim clicks that land on its interactive panels. */
   setClickInterceptor(fn: ClickInterceptor): void {
     this.clickInterceptor = fn;
+  }
+
+  /**
+   * Puts input on hold while the player is typing a chat message. Keys held
+   * when it goes on are released rather than left stuck down — walking into
+   * the chat box shouldn't leave you walking for as long as you type.
+   */
+  setTyping(typing: boolean): void {
+    this.typing = typing;
+    if (typing) {
+      this.keys.clear();
+      this.mouseDown = false;
+      this.altActionPulse = false;
+    }
   }
 
   /** True once per right-click / F press, then resets. */

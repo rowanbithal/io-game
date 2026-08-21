@@ -145,22 +145,30 @@ export const SPIDER_DAMAGE = 14; // HP dealt to a player per bite
 export const SPIDER_ATTACK_RANGE = 40; // Must be this close to bite
 export const SPIDER_ATTACK_COOLDOWN = 1; // Seconds between bites
 export const SPIDER_AGGRO_RANGE = 420; // Distance within which a spider notices and chases a player
-export const SPIDER_MAX_COUNT = 14; // Cap on spiders alive at once
-export const SPIDER_SPAWN_INTERVAL = 3; // Seconds between spawn attempts while it's night
+// Raised alongside SPIDER_SPAWN_INTERVAL_DARK_FOREST below — the extra
+// forest-biased spawns need somewhere to go, or they'd just reshuffle where
+// the same old cap of spiders lands instead of adding any.
+export const SPIDER_MAX_COUNT = 18; // Cap on spiders alive at once
+export const SPIDER_SPAWN_INTERVAL = 3; // Seconds between map-wide spawn attempts while it's night
+// A second, faster timer that only tries to land inside the dark forest (see
+// Game.ts's updateSpiders) — on top of the map-wide roll above, not instead
+// of it, so the forest gets denser at night without thinning out the plains.
+export const SPIDER_SPAWN_INTERVAL_DARK_FOREST = 1.5;
 export const SPIDER_MIN_PLAYER_SPAWN_DIST = 350; // Don't spawn right on top of someone
 export const SPIDER_STRING_DROP = 2; // String dropped when a spider is killed
 
 // ── Foxes (dark forest predator) ────────────────────────────────────────────
 // Tuned as the spider's opposite number: where a spider is a slow, tanky
-// night-wide threat, a fox is fast, fragile, and tied to the dark forest but
-// active around the clock. Its real edge is that it ignores solid resources
-// entirely (see Game.ts's updateFox) — inside the dense forest it closes on a
-// player who has to run around every trunk, while out on the open plains a
-// player is genuinely faster and can break away.
+// night-wide threat, a fox is faster, hits harder, and outlasts a spider in
+// a straight fight, tied to the dark forest but active around the clock. Its
+// real edge is that it ignores solid resources entirely (see Game.ts's
+// updateFox) — inside the dense forest it closes on a player who has to run
+// around every trunk, while out on the open plains a player is genuinely
+// faster and can break away.
 export const FOX_RADIUS = 20; // Between a player (16) and a spider (26)
 export const FOX_SPEED = 115; // Slower than the player (150), so it's outrunnable in the open
-export const FOX_MAX_HP = 120; // 4 unarmed swings (HARVEST_DAMAGE each) — far squishier than a spider's 12
-export const FOX_DAMAGE = 9; // Less per bite than a spider (14), but it bites more often
+export const FOX_MAX_HP = 420; // 14 unarmed swings (HARVEST_DAMAGE each) — tougher than a spider's 12
+export const FOX_DAMAGE = 11; // Still less per bite than a spider (14), but it bites more often
 export const FOX_ATTACK_RANGE = 34;
 export const FOX_ATTACK_COOLDOWN = 0.8; // Seconds between bites
 export const FOX_AGGRO_RANGE = 480; // How close a player must get before a fox notices them
@@ -170,8 +178,16 @@ export const FOX_AGGRO_RANGE = 480; // How close a player must get before a fox 
 // a fox's senses would make it flicker between chasing and idling every few
 // ticks. The gap between the two is the hysteresis that stops that.
 export const FOX_LOSE_INTEREST_RANGE = 780;
-export const FOX_MAX_COUNT = 8; // Cap on foxes alive at once
-export const FOX_SPAWN_INTERVAL = 6; // Seconds between spawn attempts
+// Raised alongside FOX_SPAWN_INTERVAL_NIGHT below, for the same reason as
+// SPIDER_MAX_COUNT — a faster night timer only shows up as more foxes if
+// there's cap room left for them to fill.
+export const FOX_MAX_COUNT = 12; // Cap on foxes alive at once
+export const FOX_SPAWN_INTERVAL = 6; // Seconds between spawn attempts by day
+// Foxes are already confined to the dark forest at every hour (see
+// trySpawnFox) — night doesn't change *where* they can spawn, only densifies
+// it, so this is the fox side of "more threats in the forest after dark"
+// rather than a second spawner like the spider's.
+export const FOX_SPAWN_INTERVAL_NIGHT = 3;
 export const FOX_MIN_PLAYER_SPAWN_DIST = 300; // Don't spawn right on top of someone
 export const FOX_FOOD_DROP = 2; // Food yielded when a fox is killed
 // How far past the forest's edge a fox will linger once it has lost its
@@ -280,3 +296,12 @@ export const DARK_FOREST_TRANSITION = 130;
 // to see up here" and "this is where the gold lives" stay the same depth as
 // each other even if this number moves.
 export const GOLD_TOP_BAND = 420;
+
+// ── Chat ─────────────────────────────────────────────────────────────────────
+/** Longest message accepted. Enforced server-side too — the client's input
+ * maxlength is a courtesy, not a guarantee. */
+export const CHAT_MAX_LENGTH = 80;
+/** Seconds a message floats above its sender's head before the server clears it. */
+export const CHAT_BUBBLE_SECONDS = 6;
+/** Minimum seconds between one player's messages, so chat can't be flooded. */
+export const CHAT_COOLDOWN = 0.6;

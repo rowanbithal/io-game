@@ -5,6 +5,7 @@ import { Camera } from './Camera';
 import { Renderer } from './Renderer';
 import { StateManager } from './StateManager';
 import { HUD } from './ui/HUD';
+import { ChatBox } from './ui/ChatBox';
 
 const INPUT_INTERVAL_MS = 1000 / TICK_RATE;
 
@@ -16,6 +17,7 @@ class ClientGame {
   private readonly renderer: Renderer;
   private readonly state: StateManager;
   private readonly hud: HUD;
+  private readonly chat: ChatBox;
 
   private mapSize = 4000;
   private lastInputSend = 0;
@@ -30,11 +32,13 @@ class ClientGame {
     this.renderer = new Renderer(this.canvas, this.camera);
     this.state = new StateManager();
     this.hud = new HUD();
+    this.chat = new ChatBox();
 
     this.setupResize();
     this.setupNetwork();
     this.setupMenu();
     this.setupHotbar();
+    this.setupChat();
   }
 
   // ── Init ───────────────────────────────────────────────────────────────────
@@ -52,6 +56,7 @@ class ClientGame {
     this.network.onJoined(({ mapSize, lakes }) => {
       this.mapSize = mapSize;
       this.renderer.setLakes(lakes);
+      this.hud.setLakes(lakes);
       this.hideMenu();
       this.running = true;
       requestAnimationFrame((t) => this.loop(t));
@@ -72,6 +77,10 @@ class ClientGame {
     this.network.onInventory(({ inventory, message }) => {
       this.hud.updateInventory(inventory);
       if (message) this.hud.notify(message, '#f1c40f');
+    });
+
+    this.network.onChat(({ id, name, text }) => {
+      this.hud.pushChat(name, text, id === this.network.myId);
     });
 
     this.network.onDied(() => {
@@ -103,10 +112,32 @@ class ClientGame {
    * (see HUD.selectSlot), so picking its slot either way eats it on the
    * spot instead, leaving whatever's currently held untouched.
    */
+  /**
+   * Chat: Enter or T opens the composer, which takes over the keyboard until
+   * it closes (see Input.setTyping). Sending is the composer's own business —
+   * this only relays what comes back out of it.
+   */
+  private setupChat(): void {
+    this.chat.onSubmit((text) => this.network.chat(text));
+    this.chat.onClose(() => this.input.setTyping(false));
+
+    window.addEventListener('keydown', (e) => {
+      if (!this.running || this.chat.isOpen()) return;
+      if (e.target instanceof HTMLInputElement) return;
+      if (e.code !== 'Enter' && e.code !== 'KeyT') return;
+
+      // Otherwise the keypress that opened the box lands inside it as text.
+      e.preventDefault();
+      this.input.setTyping(true);
+      this.chat.show();
+    });
+  }
+
   private setupHotbar(): void {
     window.addEventListener('keydown', (e) => {
       // Typing a name in the menu isn't hotbar/UI input.
       if (e.target instanceof HTMLInputElement) return;
+      if (this.chat.isOpen()) return;
 
       // R toggles the recipe book, Esc closes it.
       if (e.code === 'KeyR') {

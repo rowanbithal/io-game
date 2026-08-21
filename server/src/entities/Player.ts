@@ -51,6 +51,15 @@ export class ServerPlayer {
   // the last FISH_BITE_WINDOW seconds as a purely visual flourish.
   fishing: (FishingState & { remaining: number }) | null = null;
 
+  // Message currently floating above this player's head, and the seconds left
+  // before it clears. The chat log on each client is fed by the separate
+  // 'chat' broadcast — this is only the bubble.
+  chat: string | null = null;
+  chatRemaining = 0;
+  // Counts down to zero, blocking further messages until it does (see
+  // CHAT_COOLDOWN) — one player can't flood everyone else's log.
+  chatCooldown = 0;
+
   constructor(id: string, name: string) {
     this.id = id;
     this.name = name;
@@ -74,6 +83,7 @@ export class ServerPlayer {
     this.score = 0;
     this.crafting = null;
     this.fishing = null;
+    this.chat = null;
     this.x = MAP_SIZE * (0.3 + Math.random() * 0.4);
     this.y = MAP_SIZE * (0.3 + Math.random() * 0.4);
   }
@@ -131,6 +141,13 @@ export class ServerPlayer {
       this.harvestCooldown = Math.max(0, this.harvestCooldown - dt);
     }
 
+    if (this.chatCooldown > 0) this.chatCooldown = Math.max(0, this.chatCooldown - dt);
+
+    if (this.chat !== null) {
+      this.chatRemaining -= dt;
+      if (this.chatRemaining <= 0) this.chat = null;
+    }
+
     // Score for surviving
     this.score += dt * 10;
   }
@@ -158,6 +175,7 @@ export class ServerPlayer {
         : 0,
       fishing: this.fishing ? { x: this.fishing.x, y: this.fishing.y, bite: this.fishing.bite } : null,
       held,
+      chat: this.chat,
       isMe,
     };
   }

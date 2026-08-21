@@ -23,6 +23,10 @@ import {
   FOOD_ITEMS,
   RAW_MEAT_ID,
   COOKED_MEAT_ID,
+  LakeState,
+  DARK_FOREST_TRANSITION,
+  darkForestBandAt,
+  hashCell,
 } from '@io-game/shared';
 import {
   drawCampfireSprite,
@@ -49,6 +53,10 @@ import {
   drawBerryIcon,
   drawMushroomIcon,
   drawPurpleBerryIcon,
+  MAP_COLORS,
+  lakeHarmonics,
+  lobeRadius,
+  LakeHarmonic,
 } from '../Renderer';
 import { WOOD, woodPanel, woodDivider, woodSlot, woodTile, drawCarvedBook } from './wood';
 
@@ -66,14 +74,133 @@ interface Rect {
   h: number;
 }
 
+interface ChatEntry {
+  name: string;
+  text: string;
+  isMe: boolean;
+  born: number;
+}
+
+// Global chat log, down the right-hand side under the leaderboard. Messages
+// stay listed for CHAT_ENTRY_TTL and then fade out, so the log clears itself
+// during a quiet stretch instead of sitting there permanently.
+const CHAT_LOG_W = 260;
+const CHAT_LOG_MAX = 8;
+const CHAT_ENTRY_TTL = 25000; // ms
+const CHAT_FADE = 2500; // ms of fade at the end of the TTL
+const CHAT_LINE_H = 14;
+// Clears the leaderboard panel above it (12 top margin + 30 header + 5 rows).
+const CHAT_LOG_TOP = 164;
+
+// Minimap. One terrain cell per MINIMAP_CELL screen pixels — chunky on
+// purpose, so the map reads as pixel art like the world it depicts.
+const MINIMAP_SIZE = 144;
+const MINIMAP_CELL = 2;
+// How far below the tree line the grass is still visibly in the forest's
+// shadow, matching the renderer's own long approach ramp (FOREST_GRASS_REACH).
+const FOREST_SHADE_REACH = 340;
+
+/**
+ * Ground colour at a world position, for one minimap cell. Mirrors how the
+ * world itself is laid out (see the renderer's forest floor and lake shores):
+ * lakes sit on top of everything, the dark forest's dirt floor takes over
+ * above its wandering border, the grass darkens on the approach to it, and
+ * plains grass varies between a few tones. `noise` is the cell's stable 0..1
+ * hash — it picks the tone and dithers every boundary, which is what keeps
+ * the seams speckled instead of drawn with a ruler.
+ */
+function terrainColor(
+  wx: number,
+  wy: number,
+  noise: number,
+  lakes: { lake: LakeState; harmonics: LakeHarmonic[] }[],
+): string {
+  for (const { lake, harmonics } of lakes) {
+    const dx = wx - lake.x;
+    const dy = wy - lake.y;
+    const d = Math.hypot(dx, dy);
+    // Cheap reject before the trig: nothing this far out can be lake.
+    if (d > lake.radius * 1.6 + lake.shoreWidth * 1.5) continue;
+
+    const coast = lobeRadius(Math.atan2(dy, dx), lake.radius, harmonics);
+    if (d <= coast) {
+      // Deep water in the middle, shallows at the coastline.
+      const depth = d / coast;
+      return pick(MAP_COLORS.water, depth < 0.5 ? 0 : depth < 0.85 ? 1 : 2);
+    }
+    // Sand ring, dithering out into the grass over its last stretch.
+    const fromWater = d - coast;
+    if (fromWater <= lake.shoreWidth) return pick(MAP_COLORS.sand, noise < 0.5 ? 1 : 2);
+    if (fromWater <= lake.shoreWidth * 1.5 && noise < 0.45) return pick(MAP_COLORS.sand, 0);
+  }
+
+  const band = darkForestBandAt(wx);
+  if (wy < band) return pick(MAP_COLORS.forest, noise < 0.4 ? 0 : noise < 0.8 ? 1 : 2);
+
+  // The seam: dirt speckled into grass just below the border, thinning out
+  // with distance from it.
+  const belowBand = wy - band;
+  if (belowBand < DARK_FOREST_TRANSITION && noise > belowBand / DARK_FOREST_TRANSITION) {
+    return pick(MAP_COLORS.forest, 1);
+  }
+  // Grass in the forest's shadow, thinning out over a much longer approach.
+  if (belowBand < FOREST_SHADE_REACH && noise > belowBand / FOREST_SHADE_REACH) {
+    return pick(MAP_COLORS.grassShade, noise < 0.6 ? 0 : 1);
+  }
+
+  return pick(MAP_COLORS.grass, noise < 0.45 ? 0 : noise < 0.85 ? 1 : 2);
+}
+
+function pick(tones: readonly string[], index: number): string {
+  return tones[Math.min(index, tones.length - 1)];
+}
+
+/**
+ * Greedy word wrap to `maxW`, measured in the context's current font. A word
+ * too long to fit on a line of its own is broken mid-word rather than left to
+ * run off the panel — nothing stops someone typing 80 characters without a
+ * space in them.
+ */
+function wrapText(ctx: CanvasRenderingContext2D, text: string, maxW: number): string[] {
+  const lines: string[] = [];
+  let line = '';
+
+  const pushBroken = (word: string): void => {
+    let chunk = '';
+    for (const ch of word) {
+      if (chunk && ctx.measureText(chunk + ch).width > maxW) {
+        lines.push(chunk);
+        chunk = ch;
+      } else {
+        chunk += ch;
+      }
+    }
+    line = chunk;
+  };
+
+  for (const word of text.split(' ')) {
+    const candidate = line ? `${line} ${word}` : word;
+    if (ctx.measureText(candidate).width <= maxW) {
+      line = candidate;
+      continue;
+    }
+    if (line) lines.push(line);
+    if (ctx.measureText(word).width > maxW) pushBroken(word);
+    else line = word;
+  }
+
+  if (line) lines.push(line);
+  return lines;
+}
+
 // Corner crafting panel, bottom-left. CRAFT_PANEL_BOTTOM clears the controls
 // hint line along the bottom of the screen.
 const CRAFT_PANEL_X = 12;
 const CRAFT_PANEL_W = 172;
 const CRAFT_PANEL_BOTTOM = 72;
 // Highest the stack of rows is allowed to reach — leaves room for the header
-// sign and clears the minimap in the top-left corner.
-const CRAFT_PANEL_TOP = 148;
+// and clears the minimap in the top-left corner (12 margin + MINIMAP_SIZE).
+const CRAFT_PANEL_TOP = 176;
 const CRAFT_ROW_H = 38;
 const CRAFT_ROW_GAP = 4;
 
@@ -128,6 +255,15 @@ export class HUD {
   // Same idea for campfire-gated recipes (currently just cooked_meat) —
   // mirrors Game.isNearFire.
   private nearFire = false;
+
+  // Global chat log, newest last (see pushChat / drawChatLog).
+  private chatLog: ChatEntry[] = [];
+
+  // The world's lakes (sent once on join) and the terrain they're painted
+  // into — see setLakes / buildTerrain. Null until the first frame after the
+  // lakes land, then reused for the rest of the session.
+  private lakes: LakeState[] = [];
+  private terrain: HTMLCanvasElement | null = null;
 
   // Whether the full recipe catalogue is open over the game.
   private bookOpen = false;
@@ -306,6 +442,7 @@ export class HUD {
     this.drawCrafting(H);
     this.drawBookTile(W);
     this.drawLeaderboard(state, me, W);
+    this.drawChatLog(W);
     this.drawDayNight(state, W);
     this.drawClock(state, W, H);
     this.drawMinimap(state, me, W, H);
@@ -868,6 +1005,72 @@ export class HUD {
     );
   }
 
+  // ── Chat log ───────────────────────────────────────────────────────────────
+
+  /** Adds a message to the side log. `isMe` picks out your own lines. */
+  pushChat(name: string, text: string, isMe: boolean): void {
+    this.chatLog.push({ name, text, isMe, born: Date.now() });
+    if (this.chatLog.length > CHAT_LOG_MAX) this.chatLog.shift();
+  }
+
+  /**
+   * The global log, under the leaderboard on the right. Each message is
+   * wrapped to the panel width and drawn as `name: text`, oldest at the top,
+   * with the panel sized to whatever is currently showing — it takes up no
+   * room at all when nobody has said anything.
+   */
+  private drawChatLog(W: number): void {
+    const now = Date.now();
+    this.chatLog = this.chatLog.filter((m) => now - m.born < CHAT_ENTRY_TTL);
+    if (this.chatLog.length === 0) return;
+
+    const { ctx } = this;
+    const x = W - CHAT_LOG_W - 12;
+    const y = CHAT_LOG_TOP;
+    const pad = 8;
+
+    // Wrap first, so the panel can be sized to the wrapped height.
+    ctx.font = '11px "Courier New"';
+    const wrapped = this.chatLog.map((m) => ({
+      entry: m,
+      lines: wrapText(ctx, `${m.name}: ${m.text}`, CHAT_LOG_W - pad * 2),
+    }));
+    const totalLines = wrapped.reduce((n, w) => n + w.lines.length, 0);
+    const panelH = pad * 2 + totalLines * CHAT_LINE_H;
+
+    ctx.fillStyle = 'rgba(0,0,0,0.4)';
+    this.pill(x, y, CHAT_LOG_W, panelH, 6);
+    ctx.fill();
+
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+
+    let lineY = y + pad + CHAT_LINE_H / 2;
+    for (const { entry, lines } of wrapped) {
+      const age = now - entry.born;
+      ctx.globalAlpha =
+        age > CHAT_ENTRY_TTL - CHAT_FADE ? Math.max(0, (CHAT_ENTRY_TTL - age) / CHAT_FADE) : 1;
+
+      lines.forEach((line, i) => {
+        // The sender's name is coloured only on the first line, where it
+        // actually appears; continuation lines are all message text.
+        if (i === 0) {
+          const label = `${entry.name}:`;
+          ctx.fillStyle = entry.isMe ? '#56c9ff' : '#ffd479';
+          ctx.fillText(label, x + pad, lineY);
+          ctx.fillStyle = '#e8e8e8';
+          ctx.fillText(line.slice(label.length), x + pad + ctx.measureText(label).width, lineY);
+        } else {
+          ctx.fillStyle = '#e8e8e8';
+          ctx.fillText(line, x + pad, lineY);
+        }
+        lineY += CHAT_LINE_H;
+      });
+
+      ctx.globalAlpha = 1;
+    }
+  }
+
   // ── Leaderboard ────────────────────────────────────────────────────────────
 
   private drawLeaderboard(state: GameState, me: PlayerState | undefined, W: number): void {
@@ -938,53 +1141,118 @@ export class HUD {
 
   // ── Minimap ────────────────────────────────────────────────────────────────
 
+  /**
+   * Hands the minimap the lakes for this world (sent once on join). Everything
+   * else about the terrain — the dark forest's wandering border, where grass
+   * gives way to dirt — is a pure function of world coordinates, so this is
+   * the only piece the map can't work out for itself.
+   */
+  setLakes(lakes: LakeState[]): void {
+    this.lakes = lakes;
+    this.terrain = null; // rebuilt on the next frame at map resolution
+  }
+
+  /**
+   * Paints the whole world's terrain into an offscreen canvas once, at one
+   * cell per MINIMAP_CELL screen pixels: grass and its shaded approach to the
+   * tree line, the dark forest's dirt floor, and each lake's water and sand.
+   * Chunky cells rather than per-pixel, so the map reads as pixel art like
+   * everything else, and cached because none of it ever changes — only the
+   * dots drawn over it do.
+   */
+  private buildTerrain(size: number): HTMLCanvasElement {
+    const cells = Math.ceil(size / MINIMAP_CELL);
+    const canvas = document.createElement('canvas');
+    canvas.width = size;
+    canvas.height = size;
+    const g = canvas.getContext('2d')!;
+    g.imageSmoothingEnabled = false;
+
+    // Each lake's coastline harmonics, so the map's shoreline is the same
+    // irregular outline the world draws rather than a plain circle.
+    const lakes = this.lakes.map((lake) => ({ lake, harmonics: lakeHarmonics(lake.seed) }));
+
+    for (let cy = 0; cy < cells; cy++) {
+      for (let cx = 0; cx < cells; cx++) {
+        const wx = ((cx + 0.5) / cells) * MAP_SIZE;
+        const wy = ((cy + 0.5) / cells) * MAP_SIZE;
+        // 0..1 per cell, stable across rebuilds — picks tone variation.
+        const noise = hashCell(cx, cy, 7) / 4294967295;
+
+        g.fillStyle = terrainColor(wx, wy, noise, lakes);
+        g.fillRect(cx * MINIMAP_CELL, cy * MINIMAP_CELL, MINIMAP_CELL, MINIMAP_CELL);
+      }
+    }
+
+    return canvas;
+  }
+
   private drawMinimap(state: GameState, me: PlayerState | undefined, W: number, H: number): void {
-    const size = 120;
+    void W;
+    void H;
+    const size = MINIMAP_SIZE;
     const pad = 12;
     const mx = pad;
     const my = pad;
     const { ctx } = this;
 
-    // Background
-    ctx.fillStyle = 'rgba(0,0,0,0.5)';
+    if (!this.terrain) this.terrain = this.buildTerrain(size);
+
+    // Terrain, clipped to the panel's rounded corners.
+    ctx.save();
     this.pill(mx, my, size, size, 6);
-    ctx.fill();
+    ctx.clip();
+    ctx.drawImage(this.terrain, mx, my);
+    // Everything on the map is drawn in daylight tones; a wash over the whole
+    // thing at night keeps it from glowing next to the darkened world.
+    if (!state.isDay) {
+      ctx.fillStyle = 'rgba(10,14,40,0.42)';
+      ctx.fillRect(mx, my, size, size);
+    }
+    ctx.restore();
 
     // Map border
-    ctx.strokeStyle = 'rgba(255,255,255,0.2)';
+    ctx.strokeStyle = 'rgba(255,255,255,0.25)';
     ctx.lineWidth = 1;
     this.pill(mx, my, size, size, 6);
     ctx.stroke();
 
-    // Resources (green dots)
-    ctx.fillStyle = 'rgba(80,200,80,0.4)';
+    const toMapX = (wx: number): number => mx + (wx / MAP_SIZE) * size;
+    const toMapY = (wy: number): number => my + (wy / MAP_SIZE) * size;
+
+    // Resources (only the ones near you are sent, so this reads as "what's
+    // around me" layered over the world map rather than a full survey). Kept
+    // to single faint pixels — at map scale a whole forest's worth of dots
+    // otherwise merges into a smudge that reads as terrain.
+    ctx.fillStyle = 'rgba(16,40,16,0.45)';
     for (const r of state.resources) {
-      const rx = mx + (r.x / MAP_SIZE) * size;
-      const ry = my + (r.y / MAP_SIZE) * size;
-      ctx.beginPath();
-      ctx.arc(rx, ry, 1.2, 0, Math.PI * 2);
-      ctx.fill();
+      ctx.fillRect(Math.round(toMapX(r.x)), Math.round(toMapY(r.y)), 1, 1);
+    }
+
+    // Campfires and benches you can see, in ember orange.
+    ctx.fillStyle = '#ff9b2f';
+    for (const s of state.structures) {
+      ctx.fillRect(Math.round(toMapX(s.x)) - 1, Math.round(toMapY(s.y)) - 1, 3, 3);
     }
 
     // Other players
     for (const p of state.players) {
       if (p.isMe) continue;
-      const px2 = mx + (p.x / MAP_SIZE) * size;
-      const py2 = my + (p.y / MAP_SIZE) * size;
       ctx.fillStyle = '#ff6b6b';
       ctx.beginPath();
-      ctx.arc(px2, py2, 2.5, 0, Math.PI * 2);
+      ctx.arc(toMapX(p.x), toMapY(p.y), 2.5, 0, Math.PI * 2);
       ctx.fill();
     }
 
     // Self
     if (me) {
-      const px2 = mx + (me.x / MAP_SIZE) * size;
-      const py2 = my + (me.y / MAP_SIZE) * size;
       ctx.fillStyle = '#56c9ff';
       ctx.beginPath();
-      ctx.arc(px2, py2, 3.5, 0, Math.PI * 2);
+      ctx.arc(toMapX(me.x), toMapY(me.y), 3.5, 0, Math.PI * 2);
       ctx.fill();
+      ctx.strokeStyle = 'rgba(0,0,0,0.5)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
     }
   }
 
@@ -1020,7 +1288,7 @@ export class HUD {
     ctx.textBaseline = 'bottom';
     ctx.fillStyle = 'rgba(255,255,255,0.25)';
     ctx.fillText(
-      'WASD: Move  |  E / Click: Harvest  |  1-9 / Click Food: Eat  |  Scroll / Drag: Hotbar  |  Right-click / F: Place / Cast  |  R: Recipes  |  Survive the night!',
+      'WASD: Move  |  E / Click: Harvest  |  1-9 / Click Food: Eat  |  Scroll / Drag: Hotbar  |  Right-click / F: Place / Cast  |  R: Recipes  |  Enter / T: Chat',
       W / 2,
       H - 8,
     );

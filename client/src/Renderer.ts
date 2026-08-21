@@ -851,9 +851,9 @@ function wheatCells(seed: number): Cell[] {
 // actual irregular coastline at a roughly constant width, rather than being
 // its own independently-wobbly ring.
 
-interface LakeHarmonic { freq: number; amp: number; phase: number }
+export interface LakeHarmonic { freq: number; amp: number; phase: number }
 
-function lakeHarmonics(seed: number): LakeHarmonic[] {
+export function lakeHarmonics(seed: number): LakeHarmonic[] {
   const rng = mulberry32(seed);
   return [
     { freq: 2 + Math.floor(rng() * 2), amp: 0.12 + rng() * 0.1, phase: rng() * Math.PI * 2 },
@@ -863,7 +863,7 @@ function lakeHarmonics(seed: number): LakeHarmonic[] {
 }
 
 /** Water's own radius at a given angle — the coastline before any shore is added. */
-function lobeRadius(theta: number, baseRadius: number, harmonics: LakeHarmonic[]): number {
+export function lobeRadius(theta: number, baseRadius: number, harmonics: LakeHarmonic[]): number {
   let r = baseRadius;
   for (const h of harmonics) r += baseRadius * h.amp * Math.sin(h.freq * theta + h.phase);
   return r;
@@ -3575,6 +3575,12 @@ export class Renderer {
 
     ctx.fillStyle = '#2ecc71';
     ctx.fillRect(bx, by, barW * Math.max(0, p.health / 100), barH);
+
+    // ── Chat bubble ─────────────────────────────────────────────────────────
+    // Sits above the HP bar, so it never covers the name or the bar. The
+    // server owns how long it stays up (see CHAT_BUBBLE_SECONDS) — here it's
+    // simply drawn whenever the snapshot carries one.
+    if (p.chat) drawChatBubble(ctx, p.chat, sx, by - 10);
   }
 
   // ── Lighting ───────────────────────────────────────────────────────────────
@@ -3734,3 +3740,85 @@ function mulberry32(seed: number): () => number {
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
 }
+
+// ── Chat bubble ───────────────────────────────────────────────────────────────
+
+const BUBBLE_MAX_W = 190; // px of text before wrapping
+const BUBBLE_LINE_H = 14;
+const BUBBLE_PAD_X = 7;
+const BUBBLE_PAD_Y = 5;
+
+/**
+ * A player's last message, floating above them. Wrapped to BUBBLE_MAX_W and
+ * drawn upward from (cx, bottomY) so it grows away from the player instead of
+ * over them, with a small tail pointing back down at whoever said it.
+ *
+ * Flat fills and square corners, like the name tag it sits above — the world
+ * layer has no rounded chrome.
+ */
+function drawChatBubble(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  cx: number,
+  bottomY: number,
+): void {
+  ctx.save();
+  ctx.font = 'bold 11px "Courier New", monospace';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+
+  // Greedy wrap, breaking words that can't fit a line on their own.
+  const lines: string[] = [];
+  let line = '';
+  for (const word of text.split(' ')) {
+    const candidate = line ? `${line} ${word}` : word;
+    if (!line || ctx.measureText(candidate).width <= BUBBLE_MAX_W) {
+      line = candidate;
+      continue;
+    }
+    lines.push(line);
+    line = word;
+  }
+  if (line) lines.push(line);
+
+  const textW = Math.max(...lines.map((l) => ctx.measureText(l).width));
+  const w = Math.ceil(textW) + BUBBLE_PAD_X * 2;
+  const h = lines.length * BUBBLE_LINE_H + BUBBLE_PAD_Y * 2;
+  const x = Math.round(cx - w / 2);
+  const y = Math.round(bottomY - h);
+
+  ctx.fillStyle = 'rgba(0,0,0,0.7)';
+  ctx.fillRect(x, y, w, h);
+  ctx.fillStyle = 'rgba(255,255,255,0.22)';
+  ctx.fillRect(x, y, w, 1);
+  ctx.fillRect(x, y + h - 1, w, 1);
+  ctx.fillRect(x, y, 1, h);
+  ctx.fillRect(x + w - 1, y, 1, h);
+
+  // Tail: three stepped rows narrowing to a point at the player.
+  ctx.fillStyle = 'rgba(0,0,0,0.7)';
+  const tx = Math.round(cx);
+  ctx.fillRect(tx - 4, y + h, 8, 2);
+  ctx.fillRect(tx - 2, y + h + 2, 4, 2);
+  ctx.fillRect(tx - 1, y + h + 4, 2, 2);
+
+  ctx.fillStyle = '#ffffff';
+  lines.forEach((l, i) => {
+    ctx.fillText(l, cx, y + BUBBLE_PAD_Y + BUBBLE_LINE_H * i + BUBBLE_LINE_H / 2);
+  });
+
+  ctx.restore();
+}
+
+/**
+ * Terrain tones for the minimap, pulled from the same palette the world is
+ * drawn with (P above) so the map reads as a shrunken version of the ground
+ * you're standing on rather than an unrelated colour key.
+ */
+export const MAP_COLORS = {
+  grass: [P.grassB, P.grassA, P.grassLight],
+  grassShade: [P.grassShadowDark, P.grassShadow],
+  forest: [P.dirtDark, P.dirt, P.dirtLight],
+  water: [P.waterDark, P.water, P.waterLight],
+  sand: [P.sandDark, P.sand, P.sandLight],
+} as const;

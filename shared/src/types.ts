@@ -104,6 +104,11 @@ export interface PlayerState {
   // their inventory server-side, so it reflects something they genuinely own
   // rather than the raw claim from PlayerInput.
   held: string | null;
+  // What this player last said, or null. Lives on the snapshot rather than
+  // being tracked client-side off the chat event so that a player who walks
+  // into view mid-message still shows their bubble, and so the server owns
+  // when it expires (see CHAT_BUBBLE_SECONDS).
+  chat: string | null;
   isMe?: boolean; // Set client-side
 }
 
@@ -149,6 +154,22 @@ export interface CastRequest {
  */
 export interface EatRequest {
   itemId: string;
+}
+
+/** Sent client → server when a player sends a chat message */
+export interface ChatRequest {
+  text: string;
+}
+
+/**
+ * Sent server → every client when anyone chats — this is what fills the chat
+ * log on the side of the screen. The bubble over the sender's head comes from
+ * PlayerState.chat instead, since that has to expire on its own.
+ */
+export interface ChatMessage {
+  id: string; // Sender's player id, so a client can spot its own messages
+  name: string;
+  text: string;
 }
 
 /** Authoritative snapshot sent server → client every tick */
