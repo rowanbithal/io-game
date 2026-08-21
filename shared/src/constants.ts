@@ -177,7 +177,16 @@ export const FOX_AGGRO_RANGE = 480; // How close a player must get before a fox 
 // range above: with a single threshold a player sitting right at the edge of
 // a fox's senses would make it flicker between chasing and idling every few
 // ticks. The gap between the two is the hysteresis that stops that.
-export const FOX_LOSE_INTEREST_RANGE = 780;
+//
+// Also chosen to land close to the edge of what a player can actually still
+// see: the world is rendered at a fixed 1.6x zoom (see client Camera.ts), so
+// at a typical desktop window a player's view reaches roughly 450-700 units
+// out from center depending on direction and screen size. The server has no
+// way to know any given client's actual window size, so this is a deliberate
+// approximation biased toward the smaller end of that range — a fox
+// occasionally giving up a little before it's fully off a wide monitor reads
+// far better than one still visibly on-screen and still coming.
+export const FOX_LOSE_INTEREST_RANGE = 500;
 // Raised alongside FOX_SPAWN_INTERVAL_NIGHT below, for the same reason as
 // SPIDER_MAX_COUNT — a faster night timer only shows up as more foxes if
 // there's cap room left for them to fill.
