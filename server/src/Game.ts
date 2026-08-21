@@ -1,6 +1,7 @@
 import { Server, Socket } from 'socket.io';
 import {
   GameState,
+  PreviewState,
   PlayerInput,
   HarvestPayload,
   InventoryPayload,
@@ -261,7 +262,15 @@ interface BotThreat {
   x: number;
   y: number;
   radius: number;
+  kind: 'spider' | 'fox';
 }
+
+/**
+ * Socket.IO room every freshly-connected socket starts in and leaves the
+ * moment it joins a real game (see index.ts). Sockets still sitting in it
+ * are the menu-screen audience for broadcastPreview below.
+ */
+export const LOBBY_ROOM = 'lobby';
 
 export class Game {
   private readonly players = new Map<string, ServerPlayer>();
@@ -275,6 +284,11 @@ export class Game {
    * broadcast, the leaderboard — a bot simply is a player.
    */
   private readonly bots: ServerBot[] = [];
+  // The very first bot ever added — Tomas, per BOT_NAMES's fixed order (see
+  // addBots). Featured in the pre-join menu backdrop (see buildPreviewState)
+  // so a first-time visitor sees something alive happening before they've
+  // even entered a name. Null when the server is run with BOT_COUNT=0.
+  private previewBot: ServerBot | null = null;
   private readonly world: World;
 
   private tick = 0;
@@ -568,6 +582,7 @@ export class Game {
 
     // Broadcast state to each player
     this.broadcast(isDay);
+    this.broadcastPreview(isDay);
   }
 
   // ── Collision ──────────────────────────────────────────────────────────────
@@ -1307,6 +1322,7 @@ export class Game {
       // gathering — and a lone bot still fishes.
       const likesFishing = baseName === ALWAYS_ANGLER_NAME || n % 2 === 0;
       const bot = new ServerBot(baseName + suffix, likesFishing);
+      if (this.bots.length === 0) this.previewBot = bot; // the first bot ever, always Tomas
 
       this.bots.push(bot);
       this.players.set(bot.id, bot.player);
@@ -1405,7 +1421,15 @@ export class Game {
     // Threats first — nothing else matters with a spider on you.
     const threat = this.botNearestThreat(bot, BOT_ENGAGE_RANGE);
     if (threat) {
-      bot.goal = p.health <= BOT_FLEE_HEALTH ? 'flee' : 'hunt';
+      // A fox hits harder and actually pathfinds around obstacles to keep
+      // chasing (unlike a spider, which just steers straight and bounces
+      // off them) — trading hits bare-handed is a losing fight. A bot
+      // without even a wooden sword runs instead, same as it would at low
+      // health, rather than wading in unarmed. Spiders are left alone here:
+      // an angler already has reason to fight one unarmed for its string
+      // (see botWantsString below), and they're the easier fight regardless.
+      const outmatched = threat.kind === 'fox' && this.botBestTool(bot, BOT_SWORD_TIERS) === null;
+      bot.goal = p.health <= BOT_FLEE_HEALTH || outmatched ? 'flee' : 'hunt';
       bot.targetId = threat.id;
       bot.targetX = threat.x;
       bot.targetY = threat.y;
@@ -1787,12 +1811,21 @@ export class Game {
     const p = bot.player;
     const hungry = p.hunger < BOT_HUNGER_SEEK_FOOD;
     const canMineGold = this.botBestTool(bot, BOT_GOLD_PICKAXE_TIERS) !== null;
+    // Every wooden tool costs only wood (see BOT_CRAFT_ORDER) — a bot with no
+    // pickaxe yet hasn't reached that first tool set, so there's nothing to
+    // do with stone yet. Left alone, a distance tiebreak against a nearby
+    // tree could just as easily send it to mine bare-handed (no multiplier —
+    // see PICKAXE_STONE_MULTIPLIER) before it's gathered enough wood to arm
+    // itself at all. Skipped outright rather than merely deprioritised, the
+    // same as the gold gate right below.
+    const hasPickaxe = this.botBestTool(bot, BOT_PICKAXE_TIERS) !== null;
 
     let best: ServerResource | null = null;
     let bestScore = -Infinity;
 
     for (const r of this.world.getNearby(p.x, p.y, BOT_SEARCH_RADIUS)) {
       if (r.type === 'gold' && !canMineGold) continue; // swings would just bounce off
+      if (r.type === 'rock' && !hasPickaxe) continue; // wood first — see above
       if (bot.unreachable.has(r.id)) continue; // couldn't get to it recently
       const priority = hungry ? BOT_FOOD_PRIORITY[r.type] : BOT_MATERIAL_PRIORITY[r.type];
       if (priority <= 0) continue;
@@ -1817,14 +1850,14 @@ export class Game {
       const d = Math.hypot(s.x - p.x, s.y - p.y);
       if (d < bestDist) {
         bestDist = d;
-        best = { id: s.id, x: s.x, y: s.y, radius: SPIDER_RADIUS };
+        best = { id: s.id, x: s.x, y: s.y, radius: SPIDER_RADIUS, kind: 'spider' };
       }
     }
     for (const f of this.foxes.values()) {
       const d = Math.hypot(f.x - p.x, f.y - p.y);
       if (d < bestDist) {
         bestDist = d;
-        best = { id: f.id, x: f.x, y: f.y, radius: FOX_RADIUS };
+        best = { id: f.id, x: f.x, y: f.y, radius: FOX_RADIUS, kind: 'fox' };
       }
     }
 
@@ -1874,7 +1907,7 @@ export class Game {
       const score = dist + (s.hp / s.maxHp) * BOT_WOUNDED_PREY_BIAS;
       if (score < bestScore) {
         bestScore = score;
-        best = { id: s.id, x: s.x, y: s.y, radius: SPIDER_RADIUS };
+        best = { id: s.id, x: s.x, y: s.y, radius: SPIDER_RADIUS, kind: 'spider' };
       }
     }
 
@@ -1885,9 +1918,9 @@ export class Game {
   private botThreatById(id: string | null): BotThreat | null {
     if (!id) return null;
     const spider = this.spiders.get(id);
-    if (spider) return { id, x: spider.x, y: spider.y, radius: SPIDER_RADIUS };
+    if (spider) return { id, x: spider.x, y: spider.y, radius: SPIDER_RADIUS, kind: 'spider' };
     const fox = this.foxes.get(id);
-    if (fox) return { id, x: fox.x, y: fox.y, radius: FOX_RADIUS };
+    if (fox) return { id, x: fox.x, y: fox.y, radius: FOX_RADIUS, kind: 'fox' };
     return null;
   }
 
@@ -2153,6 +2186,55 @@ export class Game {
 
       socket.emit('state', state);
     }
+  }
+
+  /**
+   * The world behind the main menu — same shape as a real player's GameState
+   * (see broadcast above), just anchored on the featured bot's position
+   * instead of a specific socket's player, and with every player's isMe left
+   * false since nobody watching is actually "them" (see PreviewState's own
+   * doc comment for why that matters). Returns null once there's no preview
+   * bot to anchor on, which callers treat as "nothing to send" rather than
+   * falling back to some other anchor — a preview with no bot in it isn't
+   * the point of this at all.
+   */
+  private buildPreviewState(isDay: boolean): PreviewState | null {
+    if (!this.previewBot) return null;
+    const { x, y } = this.previewBot.player;
+
+    const allPlayers = Array.from(this.players.values());
+    const nearbyResources = this.world.getNearby(x, y, VIEW_DISTANCE);
+
+    return {
+      tick: this.tick,
+      dayTime: this.dayTime,
+      isDay,
+      players: allPlayers.map(p => p.toState(false, this.heldItemOf(p))),
+      resources: nearbyResources.map(r => r.toState()),
+      structures: this.structures
+        .filter(s => Math.hypot(s.x - x, s.y - y) <= VIEW_DISTANCE)
+        .map(s => s.toState()),
+      spiders: Array.from(this.spiders.values())
+        .filter(s => Math.hypot(s.x - x, s.y - y) <= VIEW_DISTANCE)
+        .map(s => s.toState()),
+      foxes: Array.from(this.foxes.values())
+        .filter(f => Math.hypot(f.x - x, f.y - y) <= VIEW_DISTANCE)
+        .map(f => f.toState()),
+      focus: this.previewBot.id,
+      lakes: this.world.lakes,
+    };
+  }
+
+  /**
+   * Sends the menu backdrop to every socket that hasn't joined yet (see
+   * index.ts's 'lobby' room). Skips the work entirely when the room is
+   * empty — nobody sitting on the menu screen is the common case once a
+   * server's been up a while, not the exception.
+   */
+  private broadcastPreview(isDay: boolean): void {
+    if ((this.io.sockets.adapter.rooms.get(LOBBY_ROOM)?.size ?? 0) === 0) return;
+    const preview = this.buildPreviewState(isDay);
+    if (preview) this.io.to(LOBBY_ROOM).emit('preview', preview);
   }
 }
 

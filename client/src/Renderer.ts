@@ -2343,7 +2343,15 @@ export class Renderer {
 
   // ── Main render ────────────────────────────────────────────────────────────
 
-  render(state: GameState, mapSize: number): void {
+  /**
+   * `hideChrome` drops the name tag, HP bar and chat bubble every player
+   * would otherwise get — used for the menu-screen backdrop (see main.ts),
+   * where the featured bot is decoration, not a character the viewer is
+   * meant to read player UI about. Everything else about the scene (the
+   * bot's body, animation, tools, the world around it) renders exactly as
+   * it would in a real game.
+   */
+  render(state: GameState, mapSize: number, hideChrome = false): void {
     const { ctx, canvas } = this;
     const W = canvas.width;
     const H = canvas.height;
@@ -2399,10 +2407,10 @@ export class Renderer {
 
     // Other players then self on top
     const me = state.players.find((p) => p.isMe);
-    for (const p of state.players) if (!p.isMe) this.drawPlayer(p);
+    for (const p of state.players) if (!p.isMe) this.drawPlayer(p, hideChrome);
     if (me) {
       this.drawReachGrid(me);
-      this.drawPlayer(me);
+      this.drawPlayer(me, hideChrome);
       this.drawPlacementGhost(me, now);
       this.drawCastPreview(me);
     }
@@ -3480,7 +3488,7 @@ export class Renderer {
     }
   }
 
-  private drawPlayer(p: PlayerState): void {
+  private drawPlayer(p: PlayerState, hideChrome = false): void {
     const { ctx, camera } = this;
     const { sx, sy } = camera.toScreen(p.x, p.y);
     const R = PLAYER_RADIUS * PLAYER_VISUAL_SCALE; // layout radius only — gameplay hitbox is untouched
@@ -3542,6 +3550,11 @@ export class Renderer {
     ctx.restore();
 
     ctx.restore();
+
+    // Name tag, HP bar and chat bubble are all "who is this and how are
+    // they doing" UI, meaningless for a decorative background character —
+    // see render()'s hideChrome.
+    if (hideChrome) return;
 
     // ── Name tag ────────────────────────────────────────────────────────────
     ctx.save();

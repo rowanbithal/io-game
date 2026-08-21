@@ -2,7 +2,7 @@ import express from 'express';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
 import path from 'path';
-import { Game } from './Game';
+import { Game, LOBBY_ROOM } from './Game';
 import { PlayerInput, CraftRequest, PlaceRequest, CastRequest, EatRequest, ChatRequest } from '@io-game/shared';
 
 const app = express();
@@ -35,8 +35,12 @@ if (Number.isFinite(BOT_COUNT) && BOT_COUNT > 0) game.addBots(BOT_COUNT);
 // ── Sockets ───────────────────────────────────────────────────────────────────
 io.on('connection', (socket) => {
   console.log(`[Socket] Connected: ${socket.id}`);
+  // Not a player yet — sits in the lobby room and gets the menu-screen
+  // preview broadcast (see Game.ts's broadcastPreview) until it joins.
+  socket.join(LOBBY_ROOM);
 
   socket.on('join', ({ name }: { name: string }) => {
+    socket.leave(LOBBY_ROOM);
     game.addPlayer(socket, name);
   });
 

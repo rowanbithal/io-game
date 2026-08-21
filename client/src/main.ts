@@ -1,4 +1,4 @@
-import { TICK_RATE, RECIPES_BY_ID, FISHING_ROD_ID } from '@io-game/shared';
+import { TICK_RATE, RECIPES_BY_ID, FISHING_ROD_ID, PreviewState } from '@io-game/shared';
 import { Network } from './Network';
 import { Input } from './Input';
 import { Camera } from './Camera';
@@ -16,6 +16,11 @@ class ClientGame {
   private readonly camera: Camera;
   private readonly renderer: Renderer;
   private readonly state: StateManager;
+  // The menu-screen backdrop's own snapshot stream — kept separate from
+  // `state` above rather than reusing it, since the two never overlap (see
+  // LOBBY_ROOM) but carry different shapes (PreviewState vs GameState).
+  private readonly previewState = new StateManager<PreviewState>();
+  private previewLakesSet = false;
   private readonly hud: HUD;
   private readonly chat: ChatBox;
 
@@ -39,6 +44,10 @@ class ClientGame {
     this.setupMenu();
     this.setupHotbar();
     this.setupChat();
+
+    // Starts immediately rather than waiting for 'joined' — loop() itself
+    // branches on `running` to draw the menu-screen backdrop until then.
+    requestAnimationFrame((t) => this.loop(t));
   }
 
   // ── Init ───────────────────────────────────────────────────────────────────
@@ -59,11 +68,25 @@ class ClientGame {
       this.hud.setLakes(lakes);
       this.hideMenu();
       this.running = true;
-      requestAnimationFrame((t) => this.loop(t));
+      // The loop's already running (see the constructor) — no need to kick
+      // off a second requestAnimationFrame chain, just switch what it draws.
     });
 
     this.network.onState((snapshot) => {
       this.state.push(snapshot);
+    });
+
+    // The menu-screen backdrop (see loop()'s !running branch). The server
+    // only ever sends this before this socket has joined (LOBBY_ROOM), so it
+    // naturally stops arriving the moment `running` flips true above.
+    this.network.onPreview((snapshot) => {
+      this.previewState.push(snapshot);
+      // Lakes are static for the session and expensive to rebuild (see
+      // Renderer.setLakes) — set once, from whichever arrives first.
+      if (!this.previewLakesSet) {
+        this.previewLakesSet = true;
+        this.renderer.setLakes(snapshot.lakes);
+      }
     });
 
     this.network.onHarvest(({ drops, inventory }) => {
@@ -135,6 +158,10 @@ class ClientGame {
 
   private setupHotbar(): void {
     window.addEventListener('keydown', (e) => {
+      // Before joining, this is the menu-screen backdrop (see
+      // loopMenuBackdrop) — there's no hotbar/recipe book on screen to
+      // toggle, and no inventory to eat from either.
+      if (!this.running) return;
       // Typing a name in the menu isn't hotbar/UI input.
       if (e.target instanceof HTMLInputElement) return;
       if (this.chat.isOpen()) return;
@@ -164,6 +191,10 @@ class ClientGame {
     // beginHotbarDrag), and clicks on the crafting panel start a craft;
     // neither should also swing the tool.
     this.input.setClickInterceptor((x, y) => {
+      // Before joining there's no HUD on screen at all (see
+      // loopMenuBackdrop) — nothing here to hit-test against.
+      if (!this.running) return false;
+
       const slot = this.hud.hitTestHotbar(x, y);
       if (slot !== null) {
         const eaten = this.hud.beginHotbarDrag(slot);
@@ -217,8 +248,16 @@ class ClientGame {
   // ── Game loop ──────────────────────────────────────────────────────────────
 
   private loop(timestamp: number): void {
-    if (!this.running) return;
+    if (this.running) {
+      this.loopGame(timestamp);
+    } else {
+      this.loopMenuBackdrop();
+    }
+    requestAnimationFrame((t) => this.loop(t));
+  }
 
+  /** The ordinary in-game frame: input, camera-follow, world + HUD render. */
+  private loopGame(timestamp: number): void {
     // Send input at server tick rate (not every frame)
     if (timestamp - this.lastInputSend >= INPUT_INTERVAL_MS) {
       this.network.sendInput(this.input.getInput(this.hud.getSelectedItem()));
@@ -230,37 +269,60 @@ class ClientGame {
     }
 
     const snapshot = this.state.interpolated();
+    if (!snapshot) return;
 
-    if (snapshot) {
-      const me = snapshot.players.find((p) => p.isMe);
-      if (me) {
-        this.camera.follow(me.x, me.y, this.canvas.width, this.canvas.height);
-      }
-
-      // Placement/casting are aimed with the mouse, so they have to be
-      // resolved after the camera has been moved for this frame. Right-
-      // click / F means "place" or "cast" depending on what's held — never
-      // both, since nothing is simultaneously placeable and a fishing rod.
-      // Eating isn't part of this: food is never held at all (see HUD's
-      // selectSlot), it's eaten straight from the hotbar — see setupHotbar.
-      const target = this.placementTarget();
-      const fishTarget = this.castTarget();
-      const altAction = this.input.consumeAltAction();
-      if (altAction && target) {
-        this.network.place(this.hud.getSelectedItem()!, target.x, target.y);
-      } else if (altAction && fishTarget) {
-        this.network.cast(fishTarget.x, fishTarget.y);
-      }
-
-      this.renderer.setHeldItem(this.hud.getSelectedItem());
-      this.renderer.setPlacementTarget(target);
-      this.renderer.setCastTarget(fishTarget);
-      this.renderer.render(snapshot, this.mapSize);
-      this.hud.setPointer(this.input.mouseX, this.input.mouseY);
-      this.hud.render(snapshot);
+    const me = snapshot.players.find((p) => p.isMe);
+    if (me) {
+      this.camera.follow(me.x, me.y, this.canvas.width, this.canvas.height);
     }
 
-    requestAnimationFrame((t) => this.loop(t));
+    // Placement/casting are aimed with the mouse, so they have to be
+    // resolved after the camera has been moved for this frame. Right-
+    // click / F means "place" or "cast" depending on what's held — never
+    // both, since nothing is simultaneously placeable and a fishing rod.
+    // Eating isn't part of this: food is never held at all (see HUD's
+    // selectSlot), it's eaten straight from the hotbar — see setupHotbar.
+    const target = this.placementTarget();
+    const fishTarget = this.castTarget();
+    const altAction = this.input.consumeAltAction();
+    if (altAction && target) {
+      this.network.place(this.hud.getSelectedItem()!, target.x, target.y);
+    } else if (altAction && fishTarget) {
+      this.network.cast(fishTarget.x, fishTarget.y);
+    }
+
+    this.renderer.setHeldItem(this.hud.getSelectedItem());
+    this.renderer.setPlacementTarget(target);
+    this.renderer.setCastTarget(fishTarget);
+    this.renderer.render(snapshot, this.mapSize);
+    this.hud.setPointer(this.input.mouseX, this.input.mouseY);
+    this.hud.render(snapshot);
+  }
+
+  /**
+   * Behind the main menu, before the player has joined: the world renders
+   * exactly as it would in a real game, camera locked onto the featured bot
+   * (see PreviewState.focus) — but no input is read, nothing is sent, and
+   * the HUD never renders at all, so none of its chrome (hotbar, minimap,
+   * recipe book, crafting panel, leaderboard, chat log) shows up over the
+   * login form. drawPlayer's hideChrome strips the per-player UI (name tag,
+   * HP bar, chat bubble) too, so it's just a character wandering the world.
+   */
+  private loopMenuBackdrop(): void {
+    const snapshot = this.previewState.interpolated();
+    if (!snapshot) return;
+
+    // `focus` is an id into `players`, not a raw coordinate — players are
+    // already smoothly interpolated between server ticks (see
+    // StateManager), and following the same interpolated position the bot
+    // is actually drawn at is what keeps the camera in lockstep with him
+    // instead of jumping to his raw once-per-tick position out ahead of
+    // where he's currently rendered.
+    const target = snapshot.players.find((p) => p.id === snapshot.focus);
+    if (target) {
+      this.camera.follow(target.x, target.y, this.canvas.width, this.canvas.height);
+    }
+    this.renderer.render(snapshot, this.mapSize, true);
   }
 
   // ── UI helpers ─────────────────────────────────────────────────────────────

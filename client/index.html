@@ -24,7 +24,11 @@
       flex-direction: column;
       align-items: center;
       justify-content: center;
-      background: linear-gradient(160deg, #0d1b2a 0%, #1b2c3e 50%, #0d1b2a 100%);
+      /* Translucent, not solid — the live world (see main.ts's loopMenuBackdrop)
+         shows through behind the login form instead of a flat gradient. Neutral
+         black/gray rather than tinted, so it reads as a dim scrim over the
+         world rather than recoloring it. */
+      background: linear-gradient(160deg, rgba(10, 10, 12, 0.7) 0%, rgba(30, 30, 33, 0.55) 50%, rgba(10, 10, 12, 0.7) 100%);
       z-index: 100;
     }
 

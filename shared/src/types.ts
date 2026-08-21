@@ -184,6 +184,28 @@ export interface GameState {
   foxes: FoxState[]; // Only nearby foxes are included
 }
 
+/**
+ * Sent server → client, on a loop, to any socket that hasn't joined yet —
+ * the live world behind the main menu, so a first-time visitor sees the game
+ * being played before they've entered a name. Everything is filtered the
+ * same way a real player's GameState is (see Game.ts's buildPreviewState),
+ * just anchored on a featured bot instead of a specific viewer. `focus` is
+ * that bot's id — a stand-in for the `isMe` flag a real GameState uses,
+ * since nothing here is genuinely "you" and marking one player isMe would
+ * also switch on player-only UI (the reach grid, placement ghosts) that a
+ * menu backdrop shouldn't show.
+ *
+ * Deliberately an id into `players` rather than a raw {x, y}: the client
+ * interpolates entries in `players` between ticks for smooth motion (see
+ * StateManager), but a bare coordinate pair sent alongside it would still
+ * jump once per tick — exactly the mismatch that made the camera look
+ * jittery relative to the smoothly-moving bot before this was an id.
+ */
+export interface PreviewState extends GameState {
+  focus: string;
+  lakes: LakeState[];
+}
+
 /** Sent once when client successfully joins */
 export interface JoinedPayload {
   id: string;

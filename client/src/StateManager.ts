@@ -14,12 +14,18 @@ function lerpAngle(a: number, b: number, t: number): number {
   return a + diff * t;
 }
 
-export class StateManager {
-  private prev: GameState | null = null;
-  private curr: GameState | null = null;
+/**
+ * Generic over T so the same interpolation logic serves both the real
+ * per-player GameState and the menu backdrop's PreviewState (which carries
+ * a couple of extra fields on top — see PreviewState's own doc comment).
+ * Defaults to plain GameState so every existing call site is unaffected.
+ */
+export class StateManager<T extends GameState = GameState> {
+  private prev: T | null = null;
+  private curr: T | null = null;
   private recvTime = 0; // When we received `curr`
 
-  push(state: GameState): void {
+  push(state: T): void {
     this.prev = this.curr;
     this.curr = state;
     this.recvTime = performance.now();
@@ -29,7 +35,7 @@ export class StateManager {
    * Returns an interpolated snapshot between prev and curr.
    * Alpha is how far we are between ticks (0 = at prev, 1 = at curr).
    */
-  interpolated(): GameState | null {
+  interpolated(): T | null {
     if (!this.curr) return null;
     if (!this.prev) return this.curr;
 
@@ -73,6 +79,10 @@ export class StateManager {
       };
     });
 
-    return { ...this.curr, players, spiders, foxes };
+    // T's extra fields (PreviewState's focus/lakes) pass straight through
+    // via the spread untouched — only the interpolated arrays are
+    // overridden — so this is safe despite the cast being unable to prove
+    // it structurally on its own.
+    return { ...this.curr, players, spiders, foxes } as T;
   }
 }
