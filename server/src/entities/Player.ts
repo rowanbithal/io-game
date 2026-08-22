@@ -8,6 +8,8 @@ import {
   TEMP_DECAY_RATE,
   TEMP_REGEN_RATE,
   HEALTH_REGEN_RATE,
+  HEALTH_REGEN_MIN_HUNGER,
+  HEALTH_REGEN_MIN_TEMPERATURE,
   CAMPFIRE_HEALTH_REGEN_RATE,
   STARVATION_DAMAGE,
   COLD_DAMAGE,
@@ -127,7 +129,7 @@ export class ServerPlayer {
     // frame), so without this guard a player brought to exactly 0 would tick
     // straight back up to a fraction of a hit point here on the next frame and
     // never be seen as dead at all.
-    if (this.health > 0 && this.hunger > 45 && this.temperature > 20) {
+    if (this.health > 0 && this.hunger > HEALTH_REGEN_MIN_HUNGER && this.temperature > HEALTH_REGEN_MIN_TEMPERATURE) {
       const rate = nearFire ? CAMPFIRE_HEALTH_REGEN_RATE : HEALTH_REGEN_RATE;
       this.health = Math.min(100, this.health + rate * dt);
     }

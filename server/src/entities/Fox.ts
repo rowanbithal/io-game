@@ -31,6 +31,13 @@ export class ServerFox {
    */
   targetId: string | null = null;
 
+  /**
+   * Seconds since this fox last had a target. Counts up while idle, reset to
+   * zero the instant it acquires one — see FOX_IDLE_DESPAWN_TIME and Game.ts's
+   * updateFox, which despawns the fox once this crosses that threshold.
+   */
+  idleTimer = 0;
+
   constructor(x: number, y: number) {
     this.id = `fx${nextId++}`;
     this.x = x;

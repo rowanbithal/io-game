@@ -144,8 +144,8 @@ interface SpawnConfig {
 }
 
 const SCATTER_CONFIG: SpawnConfig[] = [
-  { type: 'berry', density: 0.000018 },
-  { type: 'mushroom', density: 0.00001 },
+  { type: 'berry', density: 0.000014 },
+  { type: 'mushroom', density: 0.000008 },
   { type: 'purple_berry', density: 0.000018, darkForestOnly: true },
 ];
 

@@ -11,7 +11,15 @@ export const MAX_HUNGER = 100;
 export const HUNGER_DECAY_RATE = 0.65; // Per second
 export const TEMP_DECAY_RATE = 1.5; // Per second at night
 export const TEMP_REGEN_RATE = 0.25; // Per second during day
-export const HEALTH_REGEN_RATE = 0.5; // Per second when hunger > 45
+export const HEALTH_REGEN_RATE = 0.5; // Per second when hunger/temperature are above the thresholds below
+// Health regen (both the open-ground rate above and CAMPFIRE_HEALTH_REGEN_RATE
+// below) is gated behind these — a starving or freezing player doesn't heal at
+// all, campfire or not. Named rather than left as magic numbers in
+// ServerPlayer.update because the bot AI needs the same threshold: it's
+// pointless (see botChooseGoal's heal branch) to send a bot to sit by a fire
+// while it's hungry enough that the fire wouldn't actually heal it.
+export const HEALTH_REGEN_MIN_HUNGER = 45;
+export const HEALTH_REGEN_MIN_TEMPERATURE = 20;
 // Healing rate while sitting inside a campfire's warmth radius. Several times
 // the open-ground rate, so a fire is somewhere to actually recover after a
 // fight rather than only a way to stay warm.
@@ -32,8 +40,8 @@ export const FOOD_ITEMS = new Set(['berry', 'mushroom', 'purple_berry', 'cooked_
 // per item rather than a flat amount, so cooking meat is worth more than a
 // berry. Every key here should also be in FOOD_ITEMS, and vice versa.
 export const FOOD_HUNGER_RESTORE: Record<string, number> = {
-  berry: 1,
-  mushroom: 1,
+  berry: 2,
+  mushroom: 2,
   purple_berry: 1,
   cooked_meat: 15,
 };
@@ -166,7 +174,7 @@ export const SPIDER_STRING_DROP = 2; // String dropped when a spider is killed
 // around every trunk, while out on the open plains a player is genuinely
 // faster and can break away.
 export const FOX_RADIUS = 20; // Between a player (16) and a spider (26)
-export const FOX_SPEED = 115; // Slower than the player (150), so it's outrunnable in the open
+export const FOX_SPEED = 105; // Slower than the player (150), so it's outrunnable in the open
 export const FOX_MAX_HP = 420; // 14 unarmed swings (HARVEST_DAMAGE each) — tougher than a spider's 12
 export const FOX_DAMAGE = 11; // Still less per bite than a spider (14), but it bites more often
 export const FOX_ATTACK_RANGE = 34;
@@ -190,13 +198,13 @@ export const FOX_LOSE_INTEREST_RANGE = 500;
 // Raised alongside FOX_SPAWN_INTERVAL_NIGHT below, for the same reason as
 // SPIDER_MAX_COUNT — a faster night timer only shows up as more foxes if
 // there's cap room left for them to fill.
-export const FOX_MAX_COUNT = 12; // Cap on foxes alive at once
+export const FOX_MAX_COUNT = 15; // Cap on foxes alive at once
 export const FOX_SPAWN_INTERVAL = 6; // Seconds between spawn attempts by day
 // Foxes are already confined to the dark forest at every hour (see
 // trySpawnFox) — night doesn't change *where* they can spawn, only densifies
 // it, so this is the fox side of "more threats in the forest after dark"
 // rather than a second spawner like the spider's.
-export const FOX_SPAWN_INTERVAL_NIGHT = 3;
+export const FOX_SPAWN_INTERVAL_NIGHT = 2.5;
 export const FOX_MIN_PLAYER_SPAWN_DIST = 300; // Don't spawn right on top of someone
 export const FOX_FOOD_DROP = 2; // Food yielded when a fox is killed
 // How far past the forest's edge a fox will linger once it has lost its
@@ -204,6 +212,13 @@ export const FOX_FOOD_DROP = 2; // Food yielded when a fox is killed
 // this, foxes lured out onto the plains would sit there forever, permanently
 // occupying FOX_MAX_COUNT slots and starving the forest of new spawns.
 export const FOX_FOREST_LEEWAY = 300;
+// Seconds a fox can go with nobody to chase before it despawns outright —
+// covers the case FOX_FOREST_LEEWAY doesn't: one that never found anyone (or
+// lost them) without ever leaving the forest, which would otherwise just sit
+// there idle forever holding one of FOX_MAX_COUNT's slots. Resets to zero the
+// instant it (re)acquires a target (see Game.ts's updateFox / ServerFox's
+// idleTimer), so an actively-hunting fox is never at risk of this.
+export const FOX_IDLE_DESPAWN_TIME = 30;
 
 // Pathfinding (see World.ts's findPath and Game.ts's updateFox). A fox only
 // runs a search when something solid actually stands between it and its

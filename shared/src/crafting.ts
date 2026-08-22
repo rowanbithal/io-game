@@ -182,7 +182,7 @@ export const RECIPES: Recipe[] = [
     name: 'Cooked Meat',
     icon: '🍖',
     cost: { [RAW_MEAT_ID]: 1 },
-    craftTime: 4,
+    craftTime: 3,
     requiresCampfire: true,
   },
 ];

@@ -27,6 +27,7 @@ import {
   FOOD_ITEMS,
   FOOD_HUNGER_RESTORE,
   RAW_MEAT_ID,
+  COOKED_MEAT_ID,
   RESOURCE_RADIUS,
   SOLID_COLLISION_RADIUS,
   MAX_SOLID_COLLISION_RADIUS,
@@ -90,6 +91,7 @@ import {
   FOX_MIN_PLAYER_SPAWN_DIST,
   FOX_FOOD_DROP,
   FOX_FOREST_LEEWAY,
+  FOX_IDLE_DESPAWN_TIME,
   FOX_REPATH_INTERVAL,
   FOX_WAYPOINT_REACHED_DIST,
   BOT_SEARCH_RADIUS,
@@ -117,6 +119,8 @@ import {
   BOT_UNSTICK_MIN_DIST,
   BOT_FLEE_DIST,
   BOT_EDGE_MARGIN,
+  GOLD_TOP_BAND,
+  HEALTH_REGEN_MIN_HUNGER,
   darkForestBandAt,
   FISHING_ROD_ID,
   CAST_RANGE,
@@ -219,6 +223,14 @@ const BOT_TOOL_TIERS = [BOT_AXE_TIERS, BOT_PICKAXE_TIERS, BOT_SWORD_TIERS];
  * tier of upgrades.
  */
 const BOT_CRAFT_ORDER = [
+  // Ahead of everything else: raw meat (a fox kill drop) is dead weight
+  // until it's cooked — see FOOD_ITEMS, which deliberately excludes it — and
+  // letting it sit in inventory while the bot goes off and starts a wooden
+  // pickaxe instead just wastes a kill it already has in hand. Special-cased
+  // past the "already own one" skip below since it's a stackable consumable,
+  // not a tool slot: one cooked portion banked shouldn't stop it cooking the
+  // next raw kill.
+  COOKED_MEAT_ID,
   WOODEN_PICKAXE_ID,
   WOODEN_AXE_ID,
   WOODEN_SWORD_ID,
@@ -275,6 +287,11 @@ export const LOBBY_ROOM = 'lobby';
 export class Game {
   private readonly players = new Map<string, ServerPlayer>();
   private readonly inventories = new Map<string, Map<string, number>>();
+  // Spectator socket id -> the id of the player they're watching (see
+  // handleSlashCommand). A stale entry (target disconnected) is cleaned up
+  // lazily the next time broadcast() looks it up, so removePlayer only needs
+  // to clear the watcher's own side of this.
+  private readonly spectators = new Map<string, string>();
   private readonly structures: ServerStructure[] = [];
   private readonly spiders = new Map<string, ServerSpider>();
   private readonly foxes = new Map<string, ServerFox>();
@@ -345,6 +362,7 @@ export class Game {
     const player = this.players.get(id);
     this.players.delete(id);
     this.inventories.delete(id);
+    this.spectators.delete(id);
     // Leaving clears what they built, same as dying. Nothing survives a
     // disconnect to be reclaimed — ids are per-socket, so a returning player
     // is a new player and could never own these again. Without this a
@@ -355,6 +373,7 @@ export class Game {
   }
 
   handleInput(id: string, input: PlayerInput): void {
+    if (this.spectators.has(id)) return; // Spectating freezes your own body — see broadcast
     const player = this.players.get(id);
     if (player) player.input = input;
   }
@@ -365,6 +384,7 @@ export class Game {
    * the timer finishes (see tickCrafting).
    */
   handleCraft(id: string, { recipeId }: CraftRequest): void {
+    if (this.spectators.has(id)) return;
     const player = this.players.get(id);
     const inv = this.inventories.get(id);
     if (!player || !inv) return;
@@ -394,6 +414,7 @@ export class Game {
 
   /** Places a crafted structure from the inventory into the world. */
   handlePlace(id: string, { itemId, x, y }: PlaceRequest): void {
+    if (this.spectators.has(id)) return;
     const player = this.players.get(id);
     const inv = this.inventories.get(id);
     if (!player || !inv) return;
@@ -441,6 +462,7 @@ export class Game {
 
   /** Casts a fishing line at a world position — must be lake water, in range, rod in hand. */
   handleCast(id: string, { x, y }: CastRequest): void {
+    if (this.spectators.has(id)) return;
     const player = this.players.get(id);
     const inv = this.inventories.get(id);
     if (!player || !inv) return;
@@ -470,6 +492,7 @@ export class Game {
    * owns it, same as everywhere else — the request is just a claim.
    */
   handleEat(id: string, { itemId }: EatRequest): void {
+    if (this.spectators.has(id)) return;
     const player = this.players.get(id);
     const inv = this.inventories.get(id);
     if (!player || !inv) return;
@@ -501,12 +524,88 @@ export class Game {
       .slice(0, CHAT_MAX_LENGTH);
     if (!clean) return;
 
+    player.chatCooldown = CHAT_COOLDOWN;
+
+    // Slash commands are parsed here rather than broadcast — see
+    // handleSlashCommand. Currently just spectate.
+    if (clean.startsWith('/')) {
+      this.handleSlashCommand(player, clean.slice(1));
+      return;
+    }
+
     player.chat = clean;
     player.chatRemaining = CHAT_BUBBLE_SECONDS;
-    player.chatCooldown = CHAT_COOLDOWN;
 
     const message: ChatMessage = { id: player.id, name: player.name, text: clean };
     this.io.emit('chat', message);
+  }
+
+  /**
+   * "/spectate <name>" watches another player through their own camera, stat
+   * bars and hotbar instead of your own (see broadcast's anchor swap and
+   * sendInventory's relay) — your own body freezes in place meanwhile (see
+   * the spectator guards in handleInput/handleCraft/handlePlace/handleCast/
+   * handleEat). "/spectate" with no name, or "/unspectate", stops. Feedback
+   * goes back over 'system' to just this socket rather than the public chat
+   * log, since nobody else needs to see it.
+   */
+  private handleSlashCommand(player: ServerPlayer, command: string): void {
+    const [rawCmd, ...rest] = command.trim().split(/\s+/);
+    const cmd = (rawCmd ?? '').toLowerCase();
+    const arg = rest.join(' ').trim();
+
+    if (cmd === 'unspectate' || (cmd === 'spectate' && !arg)) {
+      const wasSpectating = this.stopSpectating(player);
+      this.sendSystem(player, wasSpectating ? 'Stopped spectating' : 'Not spectating anyone');
+      return;
+    }
+
+    if (cmd === 'spectate') {
+      const target = this.findPlayerByName(arg);
+      if (!target) {
+        this.sendSystem(player, `No player named "${arg}"`);
+        return;
+      }
+      if (target.id === player.id) {
+        this.sendSystem(player, "You can't spectate yourself");
+        return;
+      }
+      this.spectators.set(player.id, target.id);
+      this.sendSystem(player, `Now spectating ${target.name}`);
+      // Hands over their current hotbar right away rather than waiting for
+      // it to next change (see sendInventory's spectator relay).
+      this.sendInventory(target);
+      return;
+    }
+
+    this.sendSystem(player, `Unknown command: /${cmd}`);
+  }
+
+  /** Returns whether they actually were spectating, so callers can tailor the feedback. */
+  private stopSpectating(player: ServerPlayer): boolean {
+    if (!this.spectators.delete(player.id)) return false;
+    this.sendInventory(player); // restores their own hotbar over the target's
+    return true;
+  }
+
+  /**
+   * Case-insensitive exact match first, then prefix, so "/spectate tom" finds
+   * "Tomas" without typing the whole name. Names aren't unique (see
+   * addPlayer), so a collision just resolves to whichever matches first.
+   */
+  private findPlayerByName(name: string): ServerPlayer | null {
+    const needle = name.toLowerCase();
+    const all = Array.from(this.players.values());
+    return (
+      all.find(p => p.name.toLowerCase() === needle) ??
+      all.find(p => p.name.toLowerCase().startsWith(needle)) ??
+      null
+    );
+  }
+
+  /** A private toast for one socket — command feedback that shouldn't hit the public chat log. */
+  private sendSystem(player: ServerPlayer, text: string): void {
+    this.io.sockets.sockets.get(player.id)?.emit('system', text);
   }
 
   /**
@@ -897,6 +996,29 @@ export class Game {
     return best;
   }
 
+  /**
+   * Nearest live tree within BOT_SEARCH_RADIUS — specifically for a bot
+   * gathering wood to build itself a campfire (see botAct's 'heal' case),
+   * which cares about wood alone and not the usual food/material priority
+   * botPickResource weighs everything else by.
+   */
+  private botNearestTreeResource(bot: ServerBot): ServerResource | null {
+    const { x, y } = bot.player;
+    const avoidForest = this.botAvoidsForest(bot);
+    let best: ServerResource | null = null;
+    let bestDist = BOT_SEARCH_RADIUS;
+    for (const r of this.world.getNearby(x, y, BOT_SEARCH_RADIUS)) {
+      if (r.type !== 'tree') continue;
+      if (avoidForest && this.botInDarkForest(r.x, r.y)) continue; // unarmed — not worth the risk
+      const d = Math.hypot(r.x - x, r.y - y);
+      if (d < bestDist) {
+        bestDist = d;
+        best = r;
+      }
+    }
+    return best;
+  }
+
   /** True while the player is close enough to a crafting bench to use it. */
   private isNearBench(player: ServerPlayer): boolean {
     return this.structures.some(
@@ -948,12 +1070,18 @@ export class Game {
     this.sendInventory(player, `Caught a ${caught.name}${rarityTag}!`);
   }
 
+  /**
+   * Also relayed to anyone spectating this player (see handleSlashCommand),
+   * so a spectator's hotbar tracks the target's in real time instead of
+   * showing whatever their own inventory happened to hold.
+   */
   private sendInventory(player: ServerPlayer, message?: string): void {
-    const socket = this.io.sockets.sockets.get(player.id);
-    if (!socket) return;
     const inv = this.inventories.get(player.id)!;
     const payload: InventoryPayload = { inventory: Object.fromEntries(inv), message };
-    socket.emit('inventory', payload);
+    this.io.sockets.sockets.get(player.id)?.emit('inventory', payload);
+    for (const [spectatorId, targetId] of this.spectators) {
+      if (targetId === player.id) this.io.sockets.sockets.get(spectatorId)?.emit('inventory', payload);
+    }
   }
 
   /**
@@ -1200,13 +1328,20 @@ export class Game {
     const nearest = this.foxTarget(fox);
     const nearestDist = nearest ? Math.hypot(nearest.x - fox.x, nearest.y - fox.y) : Infinity;
 
-    if (!nearest) {
+    if (nearest) {
+      fox.idleTimer = 0; // aggro'd — the despawn clock only runs while idle
+    } else {
       fox.path = [];
+      fox.idleTimer += dt;
       // Lost the scent. If that happened well outside its own biome — it
       // chased someone out onto the plains and they got away — the fox
-      // gives up and disappears rather than milling around out there
-      // forever holding onto one of the FOX_MAX_COUNT slots.
-      if (fox.y > darkForestBandAt(fox.x) + FOX_FOREST_LEEWAY) this.foxes.delete(fox.id);
+      // gives up and disappears immediately rather than trudging back.
+      // Otherwise, idle long enough with nobody to chase (FOX_IDLE_DESPAWN_TIME)
+      // despawns it too, so one that never finds anyone — or loses its
+      // target without ever leaving the forest — doesn't just sit there
+      // holding one of FOX_MAX_COUNT's slots forever.
+      const strandedOutsideForest = fox.y > darkForestBandAt(fox.x) + FOX_FOREST_LEEWAY;
+      if (strandedOutsideForest || fox.idleTimer >= FOX_IDLE_DESPAWN_TIME) this.foxes.delete(fox.id);
       return;
     }
 
@@ -1369,29 +1504,30 @@ export class Game {
       held: p.input.held,
     };
 
-    // Mid-craft or mid-cast: stand still and let it finish, like a player
-    // would. A cast is cancelled if the rod leaves your hand, so keep it out.
-    if (p.crafting || p.fishing) {
-      if (p.fishing) input.held = FISHING_ROD_ID;
+    // Mid-cast: stand still and keep the rod out, unlike crafting below —
+    // wandering off cancels the cast (see tickFishing), so there's a real
+    // cost to moving here that crafting doesn't share.
+    if (p.fishing) {
+      input.held = FISHING_ROD_ID;
       p.input = input;
       return;
     }
 
-    // Crafting freezes the bot in place for the recipe's full craft time (see
-    // the mid-craft check above) — fine while it's just going about its
-    // business, but starting one mid-chase would plant it in front of
-    // whatever it's fleeing, or stood still mid-swing against whatever it's
-    // fighting. The health-triggered campfire is exactly the case that made
-    // this reachable: badly hurt is also exactly when a threat is often still
-    // nearby.
+    // Crafting doesn't freeze anything server-side — ingredients are spent
+    // up front (see handleCraft) and the result lands whenever the timer
+    // finishes regardless of what the player's doing in the meantime, the
+    // same as a human crafting mid-walk. A bot used to hold still for the
+    // recipe's full craft time here too, which is what actually created the
+    // danger the old comment was guarding against: starting one mid-chase
+    // planted it in front of whatever it was fleeing, or stood still
+    // mid-swing against whatever it was fighting — a bot that keeps moving
+    // and fighting through a craft never has that problem in the first
+    // place. What still matters is not *starting* a fresh multi-second
+    // craft while actively threatened, which busyWithThreat below covers.
     const busyWithThreat = bot.goal === 'flee' || bot.goal === 'hunt';
     if (bot.craftTimer <= 0 && !busyWithThreat) {
       bot.craftTimer = BOT_CRAFT_INTERVAL;
       this.botManageGear(bot);
-      if (p.crafting) {
-        p.input = input;
-        return;
-      }
     }
 
     if (bot.decisionTimer <= 0) {
@@ -1446,8 +1582,26 @@ export class Game {
     // regen nudges it back over the line within seconds and it wanders off
     // again — often before it has even reached the fire, which made
     // BOT_HEAL_DONE_HEALTH dead code.
+    // Regen — open-ground or campfire alike — is hard-gated behind hunger
+    // (see HEALTH_REGEN_MIN_HUNGER in ServerPlayer.update). Without this
+    // check a bot that's both hurt and out of food would camp at a fire
+    // that's healing it precisely nothing, burning its hunger down to zero
+    // with no food-gathering behaviour to interrupt it — exactly the state
+    // that starves a bot to death standing in a lit campfire. If it's
+    // already carrying food this doesn't matter: the automatic eat-on-the-go
+    // check in updateBot fixes the hunger up within a tick or two regardless
+    // of goal, so 'heal' is still worth entering.
+    const canRegen = p.hunger > HEALTH_REGEN_MIN_HUNGER || this.botFoodItem(bot) !== null;
     const healUntil = bot.goal === 'heal' ? BOT_HEAL_DONE_HEALTH : BOT_HEAL_SEEK_HEALTH;
-    if (p.health <= healUntil) {
+    // Raw meat is dead weight until it's cooked at a campfire (see
+    // FOOD_ITEMS and BOT_CRAFT_ORDER's cooked_meat entry), so a bot holding
+    // any goes and stands by a fire the same way a hurt one does — this
+    // reuses the 'heal' goal wholesale rather than adding a separate one,
+    // since "find/build a fire and walk to it" is exactly the same errand
+    // either way. botAct's 'heal' case only leaves once both jobs are done
+    // (see its exit check below).
+    const hasRawMeatToCook = this.botHasItem(bot, RAW_MEAT_ID);
+    if ((p.health <= healUntil && canRegen) || hasRawMeatToCook) {
       bot.goal = 'heal';
       bot.targetId = null;
       return;
@@ -1492,11 +1646,29 @@ export class Game {
       return;
     }
 
+    // Nothing worth gathering in reach, but it's sitting on a gold-capable
+    // pickaxe with the gold set still unfinished — the bottleneck is that
+    // gold only seeds near the top of the dark forest (see GOLD_TOP_BAND),
+    // which is routinely well outside BOT_SEARCH_RADIUS of wherever it's
+    // been working the tree line. Rather than wander at random until a
+    // nugget happens to drift into range, head for the band on purpose;
+    // botPickResource will pick up the actual deposit (and anything else
+    // worth grabbing en route) the moment one enters range.
+    if (this.botWantsGold(bot)) {
+      bot.goal = 'idle';
+      bot.targetId = null;
+      bot.path = [];
+      const dest = this.botGoldBandDestination(p.x);
+      bot.targetX = dest.x;
+      bot.targetY = dest.y;
+      return;
+    }
+
     // Picked the area clean — wander off and look somewhere else.
     bot.goal = 'idle';
     bot.targetId = null;
     bot.path = [];
-    const wander = this.botPickOpenDirection(p.x, p.y, 300 + Math.random() * 500);
+    const wander = this.botPickOpenDirection(p.x, p.y, 300 + Math.random() * 500, this.botAvoidsForest(bot));
     bot.targetX = wander.x;
     bot.targetY = wander.y;
   }
@@ -1532,7 +1704,7 @@ export class Game {
         // from a mob that has you backed against the map edge just holds you
         // there against the boundary clamp — and going through botSteer also
         // means fleeing is covered by the stuck detector.
-        const escape = this.botFleeDestination(p, mob);
+        const escape = this.botFleeDestination(p, mob, this.botAvoidsForest(bot));
         input.angle = Math.atan2(p.y - mob.y, p.x - mob.x);
         if (!escape || !this.botSteer(bot, input, escape.x, escape.y, dt)) {
           this.botUnstick(bot);
@@ -1560,10 +1732,12 @@ export class Game {
       }
 
       case 'heal': {
-        // Healed up — or nothing actually happened this run (no wood on
-        // hand, say) and it's been at this a while; either way stop camping
-        // and get back to work.
-        if (p.health >= BOT_HEAL_DONE_HEALTH) {
+        // Healed up and nothing left to cook — or nothing actually happened
+        // this run (no wood on hand, say) and it's been at this a while;
+        // either way stop camping and get back to work. Raw meat still on
+        // hand keeps it here even at full health: see botChooseGoal, which
+        // sends a bot here to cook the same way it does to heal.
+        if (p.health >= BOT_HEAL_DONE_HEALTH && !this.botHasItem(bot, RAW_MEAT_ID)) {
           bot.decisionTimer = 0;
           return;
         }
@@ -1572,18 +1746,43 @@ export class Game {
         // worth it, so the two can't disagree — a bot must never skip
         // building because a fire is "in reach" and then refuse to walk to it.
         const fire = this.botNearestCampfire(p.x, p.y, BOT_FIRE_REUSE_RANGE);
-        if (!fire) {
-          // None in reach — botManageGear (see updateBot) is what actually
-          // builds and places one; just hold position and wait for it rather
-          // than wandering off, which would strand the bot away from the
-          // fire the instant it goes up.
+        if (fire) {
+          bot.targetId = null; // done gathering, if it was — head for the fire instead
+          if (Math.hypot(fire.x - p.x, fire.y - p.y) <= CAMPFIRE_WARMTH_RADIUS * 0.6) {
+            return; // in range — let the passive campfire heal rate do its work
+          }
+          this.botSteer(bot, input, fire.x, fire.y, dt);
           return;
         }
 
-        if (Math.hypot(fire.x - p.x, fire.y - p.y) <= CAMPFIRE_WARMTH_RADIUS * 0.6) {
-          return; // in range — let the passive campfire heal rate do its work
+        // No fire to walk to. If there's already enough wood for one (or
+        // it's literally carrying one), just wait — botManageGear (see
+        // updateBot) is what actually builds and places it, and wandering
+        // off to chop more in the meantime would only strand the bot away
+        // from the fire the instant it goes up.
+        const inv = this.inventories.get(bot.id)!;
+        if (
+          (inv.get(CAMPFIRE_ID) ?? 0) >= 1 ||
+          canAfford(RECIPES_BY_ID[CAMPFIRE_ID], Object.fromEntries(inv))
+        ) {
+          return;
         }
-        this.botSteer(bot, input, fire.x, fire.y, dt);
+
+        // Not enough wood yet: go get some, the same way any other gather
+        // goal would, rather than parking here waiting on regen alone —
+        // which for a bot with nothing on hand could otherwise take well
+        // over a minute of standing completely still.
+        const held = bot.targetId ? this.world.resources.get(bot.targetId) : undefined;
+        const tree = held && !held.isDead ? held : this.botNearestTreeResource(bot);
+        if (!tree) return; // none in reach — nothing to do but wait
+        bot.targetId = tree.id;
+        input.held = this.botToolFor(bot, 'tree') ?? input.held;
+        input.angle = Math.atan2(tree.y - p.y, tree.x - p.x);
+        if (this.botWithinSwing(p, tree.x, tree.y, INTERACT_RADIUS.tree)) {
+          input.harvest = true;
+        } else {
+          this.botSteer(bot, input, tree.x, tree.y, dt);
+        }
         return;
       }
 
@@ -1734,7 +1933,7 @@ export class Game {
 
     // Otherwise strike out blind, rejecting directions that would just pin the
     // bot against the map edge.
-    const dest = this.botPickOpenDirection(p.x, p.y, BOT_UNSTICK_WALK);
+    const dest = this.botPickOpenDirection(p.x, p.y, BOT_UNSTICK_WALK, this.botAvoidsForest(bot));
     bot.escapeX = dest.x;
     bot.escapeY = dest.y;
     bot.escapeTimer = BOT_ESCAPE_TIME;
@@ -1744,12 +1943,25 @@ export class Game {
    * A point `reach` away in some direction that stays well inside the map and
    * is far enough to actually be walked to. Falls back to heading for the
    * middle of the map, which is always a real direction to move in.
+   *
+   * `avoidForest` rejects candidates north of darkForestBandAt, the same as
+   * botPickResource does for gathering targets — an unarmed bot picking a
+   * blind wander/unstick direction shouldn't be able to stumble into the
+   * dark forest any more than it can deliberately head there. The map centre
+   * fallback is always south of the (top-third) forest band already, so it
+   * doesn't need the check.
    */
-  private botPickOpenDirection(x: number, y: number, reach: number): { x: number; y: number } {
+  private botPickOpenDirection(
+    x: number,
+    y: number,
+    reach: number,
+    avoidForest = false,
+  ): { x: number; y: number } {
     for (let attempt = 0; attempt < 8; attempt++) {
       const angle = Math.random() * Math.PI * 2;
       const dx = clamp(x + Math.cos(angle) * reach, BOT_EDGE_MARGIN, MAP_SIZE - BOT_EDGE_MARGIN);
       const dy = clamp(y + Math.sin(angle) * reach, BOT_EDGE_MARGIN, MAP_SIZE - BOT_EDGE_MARGIN);
+      if (avoidForest && this.botInDarkForest(dx, dy)) continue;
       if (Math.hypot(dx - x, dy - y) > BOT_UNSTICK_MIN_DIST) return { x: dx, y: dy };
     }
 
@@ -1764,17 +1976,32 @@ export class Game {
    * Somewhere to run from `threat`. Prefers straight away, but rotates around
    * until it finds a heading that doesn't lead off the map — otherwise a bot
    * cornered against the boundary would flee into it and stop dead.
+   *
+   * `avoidForest` makes a first pass that also rejects headings into the
+   * dark forest — fleeing an unarmed bot into thicker mob pressure would
+   * defeat the point of running in the first place — then falls back to
+   * whatever's available (forest included) rather than leave it standing
+   * still, on the logic that a live bot in the forest beats a dead one
+   * anywhere.
    */
-  private botFleeDestination(p: ServerPlayer, threat: BotThreat): { x: number; y: number } | null {
+  private botFleeDestination(
+    p: ServerPlayer,
+    threat: BotThreat,
+    avoidForest = false,
+  ): { x: number; y: number } | null {
     const away = Math.atan2(p.y - threat.y, p.x - threat.x);
+    const offsets = [0, 0.6, -0.6, 1.2, -1.2, 1.8, -1.8, 2.4, -2.4];
 
-    for (const offset of [0, 0.6, -0.6, 1.2, -1.2, 1.8, -1.8, 2.4, -2.4]) {
-      const angle = away + offset;
-      const x = p.x + Math.cos(angle) * BOT_FLEE_DIST;
-      const y = p.y + Math.sin(angle) * BOT_FLEE_DIST;
-      if (x < BOT_EDGE_MARGIN || y < BOT_EDGE_MARGIN) continue;
-      if (x > MAP_SIZE - BOT_EDGE_MARGIN || y > MAP_SIZE - BOT_EDGE_MARGIN) continue;
-      return { x, y };
+    for (const rejectForest of avoidForest ? [true, false] : [false]) {
+      for (const offset of offsets) {
+        const angle = away + offset;
+        const x = p.x + Math.cos(angle) * BOT_FLEE_DIST;
+        const y = p.y + Math.sin(angle) * BOT_FLEE_DIST;
+        if (x < BOT_EDGE_MARGIN || y < BOT_EDGE_MARGIN) continue;
+        if (x > MAP_SIZE - BOT_EDGE_MARGIN || y > MAP_SIZE - BOT_EDGE_MARGIN) continue;
+        if (rejectForest && this.botInDarkForest(x, y)) continue;
+        return { x, y };
+      }
     }
 
     return null;
@@ -1784,8 +2011,11 @@ export class Game {
     // Only resources are worth remembering. Mobs move — one that's briefly
     // unreachable will have wandered elsewhere a second later, and
     // blacklisting it would leave the bot ignoring something actively biting
-    // it.
-    if (bot.targetId && bot.goal === 'gather') {
+    // it. 'heal' counts too now: an unreachable tree it's chopping for
+    // campfire wood (see botAct's 'heal' case) is a resource target the same
+    // as 'gather's, and without this it would just re-pick the same
+    // unreachable tree on the very next decision tick.
+    if (bot.targetId && (bot.goal === 'gather' || bot.goal === 'heal')) {
       bot.unreachable.set(bot.targetId, BOT_UNREACHABLE_MEMORY);
     }
     bot.targetId = null;
@@ -1806,10 +2036,31 @@ export class Game {
     if (dy < -threshold) input.up = true;
   }
 
+  /**
+   * True when `y` at `x` is inside the dark forest (see darkForestBandAt) —
+   * shorthand shared by everywhere the bot AI needs to keep an unarmed bot
+   * out of it.
+   */
+  private botInDarkForest(x: number, y: number): boolean {
+    return y < darkForestBandAt(x);
+  }
+
+  /**
+   * True for a bot with no sword of any tier — the point at which the dark
+   * forest's heavier spider/fox pressure (see SPIDER_SPAWN_INTERVAL_DARK_FOREST)
+   * stops being a fair fight. Everywhere a bot picks its own destination
+   * (gathering, wandering, fleeing) checks this before letting it head north
+   * of darkForestBandAt.
+   */
+  private botAvoidsForest(bot: ServerBot): boolean {
+    return this.botBestTool(bot, BOT_SWORD_TIERS) === null;
+  }
+
   /** Best resource in reach, weighted by what the bot currently needs. */
   private botPickResource(bot: ServerBot): ServerResource | null {
     const p = bot.player;
     const hungry = p.hunger < BOT_HUNGER_SEEK_FOOD;
+    const avoidForest = this.botAvoidsForest(bot);
     const canMineGold = this.botBestTool(bot, BOT_GOLD_PICKAXE_TIERS) !== null;
     // Every wooden tool costs only wood (see BOT_CRAFT_ORDER) — a bot with no
     // pickaxe yet hasn't reached that first tool set, so there's nothing to
@@ -1819,6 +2070,17 @@ export class Game {
     // itself at all. Skipped outright rather than merely deprioritised, the
     // same as the gold gate right below.
     const hasPickaxe = this.botBestTool(bot, BOT_PICKAXE_TIERS) !== null;
+    // The pickaxe/axe/sword are the actual first thing a bot should be
+    // doing — everything past them (bench, rod, stone tier) already waits
+    // on them via BOT_CRAFT_ORDER, and an unarmed bot is a bad trade against
+    // even a spider (see botChooseGoal's threat handling). That's only
+    // guaranteed on the crafting side, though — left to the priority scoring
+    // below, a fresh bot with no tree nearby would happily wander off after
+    // wheat or a berry patch instead, neither of which the wooden set costs
+    // a single unit of. While the set isn't complete, wood is the only thing
+    // worth gathering — this doesn't apply while hungry, since a starving
+    // bot chasing a sword instead of food is a worse trade, not a better one.
+    const needsStarterTools = !hungry && !this.botHasStarterTools(bot);
 
     let best: ServerResource | null = null;
     let bestScore = -Infinity;
@@ -1826,6 +2088,8 @@ export class Game {
     for (const r of this.world.getNearby(p.x, p.y, BOT_SEARCH_RADIUS)) {
       if (r.type === 'gold' && !canMineGold) continue; // swings would just bounce off
       if (r.type === 'rock' && !hasPickaxe) continue; // wood first — see above
+      if (needsStarterTools && r.type !== 'tree') continue; // wood first — see above
+      if (avoidForest && this.botInDarkForest(r.x, r.y)) continue; // unarmed — not worth the risk
       if (bot.unreachable.has(r.id)) continue; // couldn't get to it recently
       const priority = hungry ? BOT_FOOD_PRIORITY[r.type] : BOT_MATERIAL_PRIORITY[r.type];
       if (priority <= 0) continue;
@@ -1862,6 +2126,35 @@ export class Game {
     }
 
     return best;
+  }
+
+  /**
+   * True once a bot owns a gold-capable pickaxe but hasn't finished the gold
+   * set yet — the point at which gold, specifically, is what's standing
+   * between it and its next tool upgrade. Drives the deliberate trip to
+   * GOLD_TOP_BAND in botChooseGoal, below. No botOwnsBetterTool check is
+   * needed here the way BOT_CRAFT_ORDER's other gates use one — gold is the
+   * top tier, so there's never a better tool to already be holding.
+   */
+  private botWantsGold(bot: ServerBot): boolean {
+    if (this.botBestTool(bot, BOT_GOLD_PICKAXE_TIERS) === null) return false; // can't mine it yet
+    const inv = this.inventories.get(bot.id)!;
+    return [GOLD_AXE_ID, GOLD_PICKAXE_ID, GOLD_SWORD_ID].some((id) => (inv.get(id) ?? 0) < 1);
+  }
+
+  /**
+   * A point near the top of the dark forest, straight north of the bot's
+   * current position, for botWantsGold to march it toward when no gold
+   * deposit is already within BOT_SEARCH_RADIUS. Gold veins are scattered
+   * across the full width of the band (see GOLD_CLUSTER in World.ts) rather
+   * than clustered at one spot, so heading due north is enough to bring one
+   * into range without needing to know where any specific deposit is.
+   */
+  private botGoldBandDestination(x: number): { x: number; y: number } {
+    return {
+      x: clamp(x, BOT_EDGE_MARGIN, MAP_SIZE - BOT_EDGE_MARGIN),
+      y: clamp(GOLD_TOP_BAND * 0.6, BOT_EDGE_MARGIN, GOLD_TOP_BAND),
+    };
   }
 
   /**
@@ -1988,9 +2281,17 @@ export class Game {
     // happily walk to an existing fire, so only put a fresh one down when
     // there's genuinely none in reach.
     const hurtWithNoFireInReach = p.health <= BOT_HEAL_SEEK_HEALTH && !this.botFireWithinReach(p);
+    // Raw meat is just as good a reason as being hurt to want a fire badly
+    // enough to build one on the spot — see botChooseGoal, which sends a bot
+    // with meat on hand to the 'heal' goal the same way it does a hurt one.
+    // Without this, a warm, healthy bot holding a kill would walk to the
+    // 'heal' goal's target, find no campfire in range, and then just wait
+    // there forever: the campfire-building gates below only fired for cold
+    // or hurt, so nothing would ever actually get built.
+    const wantsToCookWithNoFireInReach = this.botHasItem(bot, RAW_MEAT_ID) && !this.botFireWithinReach(p);
     if (
       (inv.get(CAMPFIRE_ID) ?? 0) >= 1 &&
-      (p.temperature < 45 || hurtWithNoFireInReach) &&
+      (p.temperature < 45 || hurtWithNoFireInReach || wantsToCookWithNoFireInReach) &&
       !this.isNearFire(p) &&
       this.botPlaceNearby(bot, CAMPFIRE_ID)
     ) {
@@ -2002,7 +2303,7 @@ export class Game {
     // same wood on a workbench or a sword (both come first in
     // BOT_CRAFT_ORDER) and leave nothing for the fire.
     if (
-      hurtWithNoFireInReach &&
+      (hurtWithNoFireInReach || wantsToCookWithNoFireInReach) &&
       !threatNearby &&
       (inv.get(CAMPFIRE_ID) ?? 0) < 1 &&
       canAfford(RECIPES_BY_ID[CAMPFIRE_ID], Object.fromEntries(inv))
@@ -2017,7 +2318,11 @@ export class Game {
     if (threatNearby) return;
 
     for (const recipeId of BOT_CRAFT_ORDER) {
-      if ((inv.get(recipeId) ?? 0) >= 1) continue; // already carrying one
+      // Every other entry here is a single tool/structure slot — craft one
+      // and stop rebuilding. Cooked meat is a stackable consumable instead
+      // (see BOT_CRAFT_ORDER's comment on it), so "already carrying one"
+      // isn't a reason to leave the rest of a kill raw.
+      if (recipeId !== COOKED_MEAT_ID && (inv.get(recipeId) ?? 0) >= 1) continue; // already carrying one
       if (this.botOwnsBetterTool(bot, recipeId)) continue; // outclassed — don't waste the wood
       // Only build a bench when there's actually something bench-gated ready
       // to make. Otherwise a bot builds one, wanders off to gather, finds
@@ -2031,7 +2336,8 @@ export class Game {
       // the faster healing near one (see CAMPFIRE_HEALTH_REGEN_RATE).
       if (
         recipeId === CAMPFIRE_ID &&
-        (this.isNearFire(p) || (p.temperature > BOT_CAMPFIRE_TEMP && !hurtWithNoFireInReach))
+        (this.isNearFire(p) ||
+          (p.temperature > BOT_CAMPFIRE_TEMP && !hurtWithNoFireInReach && !wantsToCookWithNoFireInReach))
       ) {
         continue;
       }
@@ -2042,6 +2348,7 @@ export class Game {
       const recipe = RECIPES_BY_ID[recipeId];
       if (!recipe) continue;
       if (recipe.requiresBench && !this.isNearBench(p)) continue;
+      if (recipe.requiresCampfire && !this.isNearFire(p)) continue;
       if (!canAfford(recipe, Object.fromEntries(inv))) continue;
 
       this.handleCraft(bot.id, { recipeId });
@@ -2163,25 +2470,41 @@ export class Game {
       const socket = this.io.sockets.sockets.get(player.id);
       if (!socket) continue;
 
-      const nearbyResources = this.world.getNearby(player.x, player.y, VIEW_DISTANCE);
+      // Spectating swaps the view's anchor from this socket's own player to
+      // whoever they're watching (see handleSlashCommand) — everything below
+      // that's centred on a position, plus isMe (and everything client-side
+      // keyed off it: camera-follow, stat bars, hotbar, reach grid), follows
+      // the target instead of the viewer for free. A target that vanished
+      // (disconnected) self-heals back to the viewer's own position here
+      // rather than needing removePlayer to hunt down every watcher.
+      const spectateTargetId = this.spectators.get(player.id);
+      let anchor = player;
+      if (spectateTargetId) {
+        const target = this.players.get(spectateTargetId);
+        if (target) anchor = target;
+        else this.spectators.delete(player.id);
+      }
+
+      const nearbyResources = this.world.getNearby(anchor.x, anchor.y, VIEW_DISTANCE);
 
       const state: GameState = {
         tick: this.tick,
         dayTime: this.dayTime,
         isDay,
         // All players visible regardless of distance (small player counts)
-        players: allPlayers.map(p => p.toState(p.id === player.id, this.heldItemOf(p))),
+        players: allPlayers.map(p => p.toState(p.id === anchor.id, this.heldItemOf(p))),
         // Only send resources within the client's view frustum
         resources: nearbyResources.map(r => r.toState()),
         structures: this.structures
-          .filter(s => Math.hypot(s.x - player.x, s.y - player.y) <= VIEW_DISTANCE)
+          .filter(s => Math.hypot(s.x - anchor.x, s.y - anchor.y) <= VIEW_DISTANCE)
           .map(s => s.toState()),
         spiders: Array.from(this.spiders.values())
-          .filter(s => Math.hypot(s.x - player.x, s.y - player.y) <= VIEW_DISTANCE)
+          .filter(s => Math.hypot(s.x - anchor.x, s.y - anchor.y) <= VIEW_DISTANCE)
           .map(s => s.toState()),
         foxes: Array.from(this.foxes.values())
-          .filter(f => Math.hypot(f.x - player.x, f.y - player.y) <= VIEW_DISTANCE)
+          .filter(f => Math.hypot(f.x - anchor.x, f.y - anchor.y) <= VIEW_DISTANCE)
           .map(f => f.toState()),
+        spectating: anchor.id !== player.id,
       };
 
       socket.emit('state', state);

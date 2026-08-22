@@ -182,6 +182,14 @@ export interface GameState {
   structures: StructureState[]; // Only nearby structures are included
   spiders: SpiderState[]; // Only nearby spiders are included
   foxes: FoxState[]; // Only nearby foxes are included
+  /**
+   * True when this socket is watching another player via "/spectate <name>"
+   * instead of playing their own. When set, `isMe` in `players` marks the
+   * spectated player rather than this socket's own entity — everything
+   * anchored on isMe (camera, stat bars, hotbar, reach grid) follows them
+   * for free. See Game.ts's broadcast and handleSlashCommand.
+   */
+  spectating?: boolean;
 }
 
 /**

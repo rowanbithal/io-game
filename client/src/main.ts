@@ -111,6 +111,10 @@ class ClientGame {
       this.hud.updateInventory({});
       this.flashDeathScreen();
     });
+
+    this.network.onSystem((text) => {
+      this.hud.notify(text, '#56c9ff');
+    });
   }
 
   private setupMenu(): void {
@@ -166,12 +170,18 @@ class ClientGame {
       if (e.target instanceof HTMLInputElement) return;
       if (this.chat.isOpen()) return;
 
-      // R toggles the recipe book, Esc closes it.
+      // R toggles the recipe book, Esc closes it — or, while spectating,
+      // stops spectating instead (recipe book isn't reachable there anyway,
+      // see loopGame's spectating branch).
       if (e.code === 'KeyR') {
         this.hud.toggleRecipeBook();
         return;
       }
       if (e.code === 'Escape') {
+        if (this.state.interpolated()?.spectating) {
+          this.network.chat('/unspectate');
+          return;
+        }
         this.hud.closeRecipeBook();
         return;
       }
@@ -276,24 +286,37 @@ class ClientGame {
       this.camera.follow(me.x, me.y, this.canvas.width, this.canvas.height);
     }
 
-    // Placement/casting are aimed with the mouse, so they have to be
-    // resolved after the camera has been moved for this frame. Right-
-    // click / F means "place" or "cast" depending on what's held — never
-    // both, since nothing is simultaneously placeable and a fishing rod.
-    // Eating isn't part of this: food is never held at all (see HUD's
-    // selectSlot), it's eaten straight from the hotbar — see setupHotbar.
-    const target = this.placementTarget();
-    const fishTarget = this.castTarget();
-    const altAction = this.input.consumeAltAction();
-    if (altAction && target) {
-      this.network.place(this.hud.getSelectedItem()!, target.x, target.y);
-    } else if (altAction && fishTarget) {
-      this.network.cast(fishTarget.x, fishTarget.y);
-    }
+    // While spectating (see GameState.spectating), `me` above is the player
+    // being watched, not this socket's own body — placing/casting would aim
+    // from the wrong position and the server ignores both anyway (see
+    // Game.ts's spectator guards), so skip computing them and show the
+    // target's actual held item instead of this socket's own hotbar
+    // selection (see Renderer's isMe-optimistic held-item rendering).
+    if (snapshot.spectating) {
+      this.input.consumeAltAction();
+      this.renderer.setHeldItem(me?.held ?? null);
+      this.renderer.setPlacementTarget(null);
+      this.renderer.setCastTarget(null);
+    } else {
+      // Placement/casting are aimed with the mouse, so they have to be
+      // resolved after the camera has been moved for this frame. Right-
+      // click / F means "place" or "cast" depending on what's held — never
+      // both, since nothing is simultaneously placeable and a fishing rod.
+      // Eating isn't part of this: food is never held at all (see HUD's
+      // selectSlot), it's eaten straight from the hotbar — see setupHotbar.
+      const target = this.placementTarget();
+      const fishTarget = this.castTarget();
+      const altAction = this.input.consumeAltAction();
+      if (altAction && target) {
+        this.network.place(this.hud.getSelectedItem()!, target.x, target.y);
+      } else if (altAction && fishTarget) {
+        this.network.cast(fishTarget.x, fishTarget.y);
+      }
 
-    this.renderer.setHeldItem(this.hud.getSelectedItem());
-    this.renderer.setPlacementTarget(target);
-    this.renderer.setCastTarget(fishTarget);
+      this.renderer.setHeldItem(this.hud.getSelectedItem());
+      this.renderer.setPlacementTarget(target);
+      this.renderer.setCastTarget(fishTarget);
+    }
     this.renderer.render(snapshot, this.mapSize);
     this.hud.setPointer(this.input.mouseX, this.input.mouseY);
     this.hud.render(snapshot);

@@ -22,6 +22,7 @@ export class Network {
   private onDiedCb: Listener<void> | null = null;
   private onChatCb: Listener<ChatMessage> | null = null;
   private onPreviewCb: Listener<PreviewState> | null = null;
+  private onSystemCb: Listener<string> | null = null;
 
   constructor() {
     this.socket = io({
@@ -51,6 +52,12 @@ export class Network {
 
     this.socket.on('preview', (state: PreviewState) => {
       this.onPreviewCb?.(state);
+    });
+
+    // Private command feedback (e.g. "/spectate" results) — never broadcast
+    // to the public chat log, see Game.ts's sendSystem.
+    this.socket.on('system', (text: string) => {
+      this.onSystemCb?.(text);
     });
 
     this.socket.on('died', () => {
@@ -102,4 +109,5 @@ export class Network {
   onChat(cb: Listener<ChatMessage>): void { this.onChatCb = cb; }
   /** The menu-screen backdrop, sent only before this socket has joined — see PreviewState. */
   onPreview(cb: Listener<PreviewState>): void { this.onPreviewCb = cb; }
+  onSystem(cb: Listener<string>): void { this.onSystemCb = cb; }
 }

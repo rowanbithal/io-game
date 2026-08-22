@@ -437,6 +437,8 @@ export class HUD {
           Math.hypot(me.x - s.x, me.y - s.y) <= CAMPFIRE_WARMTH_RADIUS,
       );
 
+    if (state.spectating) this.drawSpectateBanner(me, W);
+
     this.drawStatBars(me, W, H);
     this.drawHotbar();
     this.drawCrafting(H);
@@ -1277,6 +1279,35 @@ export class HUD {
     });
 
     ctx.globalAlpha = 1;
+  }
+
+  /**
+   * Persistent reminder while `state.spectating` is set (see GameState) —
+   * without it there's nothing on screen to say the camera, stat bars and
+   * hotbar all belong to someone else right now.
+   */
+  private drawSpectateBanner(me: PlayerState | undefined, W: number): void {
+    const { ctx } = this;
+    const text = `👁 Spectating ${me?.name ?? '…'} — Esc or /unspectate to stop`;
+
+    ctx.font = 'bold 13px "Courier New"';
+    const padX = 14;
+    const textW = ctx.measureText(text).width;
+    const boxW = textW + padX * 2;
+    const boxH = 26;
+    const x = (W - boxW) / 2;
+    const y = 10;
+
+    ctx.fillStyle = 'rgba(20,20,20,0.75)';
+    ctx.fillRect(x, y, boxW, boxH);
+    ctx.strokeStyle = '#56c9ff';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x + 0.5, y + 0.5, boxW - 1, boxH - 1);
+
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#56c9ff';
+    ctx.fillText(text, W / 2, y + boxH / 2 + 1);
   }
 
   // ── Controls hint ──────────────────────────────────────────────────────────
