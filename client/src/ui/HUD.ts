@@ -440,7 +440,7 @@ export class HUD {
     if (state.spectating) this.drawSpectateBanner(me, W);
 
     this.drawStatBars(me, W, H);
-    this.drawHotbar();
+    this.drawHotbar(state.spectating ? me?.held ?? null : undefined);
     this.drawCrafting(H);
     this.drawBookTile(W);
     this.drawLeaderboard(state, me, W);
@@ -463,7 +463,12 @@ export class HUD {
   private drawStatBars(me: PlayerState | undefined, W: number, H: number): void {
     if (!me) return;
     const bars = [
-      { label: '♥ HP', value: me.health, max: 100, fill: '#2ecc71', low: '#e74c3c', threshold: 30 },
+      // threshold is an absolute value (see bar.value < bar.threshold below),
+      // not a fraction of max — scaled off maxHealth here so a bot's bigger
+      // pool (see BOT_MAX_HEALTH_MULTIPLIER) still flashes low at the same
+      // 30% mark a human player's does, same as HP's own fill above already
+      // reads a fraction of maxHealth rather than a flat /100.
+      { label: '♥ HP', value: me.health, max: me.maxHealth, fill: '#2ecc71', low: '#e74c3c', threshold: me.maxHealth * 0.3 },
       { label: '🍖 Food', value: me.hunger, max: MAX_HUNGER, fill: '#f39c12', low: '#e74c3c', threshold: 30 },
       { label: '❄ Temp', value: me.temperature, max: 100, fill: '#56c9ff', low: '#8e44ad', threshold: 25 },
     ];
@@ -527,7 +532,17 @@ export class HUD {
     });
   }
 
-  private drawHotbar(): void {
+  /**
+   * `spectatingHeld` overrides which slot reads as selected with whatever
+   * the spectated player actually has out (PlayerState.held, already
+   * resolved server-side against their real inventory — see heldItemOf) —
+   * this socket's own selectedIndex belongs to its own frozen body (see
+   * handleSlashCommand) and has nothing to do with what's on screen while
+   * spectating. `undefined` means "not spectating, use selectedIndex as
+   * normal" — deliberately distinct from `null`, which means "spectating,
+   * and they're holding nothing" (still an override, just to no slot).
+   */
+  private drawHotbar(spectatingHeld?: string | null): void {
     const slots = this.hotbarOrder;
     if (slots.length === 0) return;
 
@@ -539,7 +554,8 @@ export class HUD {
       // Food is never "held" (see selectSlot) — even if selectedIndex
       // transiently points at one (e.g. the first item ever collected
       // happened to be a berry), it shouldn't render as selected.
-      const isSelected = i === this.selectedIndex && !FOOD_ITEMS.has(item);
+      const isSelected =
+        spectatingHeld !== undefined ? item === spectatingHeld : i === this.selectedIndex && !FOOD_ITEMS.has(item);
       const isDragging = i === this.draggingIndex;
       const count = this.inventory[item] ?? 0;
 

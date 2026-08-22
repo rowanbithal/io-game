@@ -3587,7 +3587,9 @@ export class Renderer {
     ctx.fillRect(bx, by, barW, barH);
 
     ctx.fillStyle = '#2ecc71';
-    ctx.fillRect(bx, by, barW * Math.max(0, p.health / 100), barH);
+    // Fraction of maxHealth, not a flat /100 — bots run a bigger pool (see
+    // BOT_MAX_HEALTH_MULTIPLIER) but should still read as "full" at full.
+    ctx.fillRect(bx, by, barW * Math.max(0, p.health / p.maxHealth), barH);
 
     // ── Chat bubble ─────────────────────────────────────────────────────────
     // Sits above the HP bar, so it never covers the name or the bar. The

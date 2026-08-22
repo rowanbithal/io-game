@@ -3,6 +3,7 @@ import {
   PlayerInput,
   PLAYER_SPEED,
   PLAYER_RADIUS,
+  MAX_HEALTH,
   MAX_HUNGER,
   HUNGER_DECAY_RATE,
   TEMP_DECAY_RATE,
@@ -27,7 +28,11 @@ export class ServerPlayer {
   x: number;
   y: number;
   angle = 0;
-  health = 100;
+  // Usually MAX_HEALTH — a bot's constructor passes a higher value (see
+  // ServerBot and BOT_MAX_HEALTH_MULTIPLIER). Not readonly: respawn() resets
+  // health against it, but the pool itself never changes mid-life.
+  readonly maxHealth: number;
+  health: number;
   hunger = MAX_HUNGER;
   temperature = 100;
   score = 0;
@@ -62,9 +67,11 @@ export class ServerPlayer {
   // CHAT_COOLDOWN) — one player can't flood everyone else's log.
   chatCooldown = 0;
 
-  constructor(id: string, name: string) {
+  constructor(id: string, name: string, maxHealth: number = MAX_HEALTH) {
     this.id = id;
     this.name = name;
+    this.maxHealth = maxHealth;
+    this.health = maxHealth;
     // Spawn in the safe middle band of the map
     this.x = MAP_SIZE * (0.3 + Math.random() * 0.4);
     this.y = MAP_SIZE * (0.3 + Math.random() * 0.4);
@@ -79,7 +86,7 @@ export class ServerPlayer {
   }
 
   respawn(): void {
-    this.health = 100;
+    this.health = this.maxHealth;
     this.hunger = MAX_HUNGER;
     this.temperature = 100;
     this.score = 0;
@@ -131,7 +138,7 @@ export class ServerPlayer {
     // never be seen as dead at all.
     if (this.health > 0 && this.hunger > HEALTH_REGEN_MIN_HUNGER && this.temperature > HEALTH_REGEN_MIN_TEMPERATURE) {
       const rate = nearFire ? CAMPFIRE_HEALTH_REGEN_RATE : HEALTH_REGEN_RATE;
-      this.health = Math.min(100, this.health + rate * dt);
+      this.health = Math.min(this.maxHealth, this.health + rate * dt);
     }
 
     // Damage from starvation / cold
@@ -167,6 +174,7 @@ export class ServerPlayer {
       y: this.y,
       angle: this.angle,
       health: this.health,
+      maxHealth: this.maxHealth,
       hunger: this.hunger,
       temperature: this.temperature,
       score: Math.floor(this.score),

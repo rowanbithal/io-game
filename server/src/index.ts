@@ -25,7 +25,12 @@ if (process.env.NODE_ENV === 'production') {
 
 // ── Game ──────────────────────────────────────────────────────────────────────
 const game = new Game(io);
-game.start();
+// Dev-only time acceleration for watching bots play out a full tool
+// progression without actually waiting for it — scales movement, hunger,
+// crafting, the day/night cycle, everything (see Game.step). Leave unset for
+// real time; e.g. GAME_SPEED=8 to run the whole simulation 8x faster.
+const GAME_SPEED = Number(process.env.GAME_SPEED ?? 1);
+game.start(Number.isFinite(GAME_SPEED) && GAME_SPEED > 0 ? GAME_SPEED : 1);
 
 // Server-simulated players, so the world isn't empty with nobody online.
 // Set BOT_COUNT=0 to run without them.

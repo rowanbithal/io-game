@@ -186,6 +186,13 @@ class ClientGame {
         return;
       }
 
+      // The hotbar shown while spectating is the target's, not this
+      // socket's own (see HUD.render's spectatingHeld) — selecting or eating
+      // from it would silently act on a hotbar this socket doesn't actually
+      // own, and the server ignores eat/craft/etc. from a spectator anyway
+      // (see handleEat's spectator guard), so just don't offer it.
+      if (this.state.interpolated()?.spectating) return;
+
       const match = e.code.match(/^Digit([1-9])$/);
       if (!match) return;
       const eaten = this.hud.selectSlot(Number(match[1]) - 1);
@@ -194,6 +201,7 @@ class ClientGame {
 
     this.canvas.addEventListener('wheel', (e) => {
       e.preventDefault();
+      if (this.state.interpolated()?.spectating) return;
       this.hud.scrollSlot(e.deltaY > 0 ? 1 : -1);
     }, { passive: false });
 
@@ -207,6 +215,11 @@ class ClientGame {
 
       const slot = this.hud.hitTestHotbar(x, y);
       if (slot !== null) {
+        // The hotbar shown here is the spectated target's, not this
+        // socket's own (see HUD.render's spectatingHeld) — swallow the
+        // click so it doesn't fall through and swing at whatever's behind
+        // it, but don't act on a hotbar this socket doesn't actually own.
+        if (this.state.interpolated()?.spectating) return true;
         const eaten = this.hud.beginHotbarDrag(slot);
         if (eaten) this.network.eat(eaten);
         else this.hotbarDragActive = true;

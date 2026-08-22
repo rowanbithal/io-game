@@ -91,7 +91,8 @@ export interface PlayerState {
   x: number;
   y: number;
   angle: number; // direction player is facing (radians)
-  health: number; // 0-100
+  health: number; // 0-maxHealth
+  maxHealth: number; // Usually MAX_HEALTH (100) — bots run higher, see BOT_MAX_HEALTH_MULTIPLIER
   hunger: number; // 0-100
   temperature: number; // 0-100
   score: number;

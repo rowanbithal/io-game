@@ -1,3 +1,4 @@
+import { MAX_HEALTH, BOT_MAX_HEALTH_MULTIPLIER } from '@io-game/shared';
 import { ServerPlayer } from './Player';
 
 let nextId = 0;
@@ -72,8 +73,11 @@ export class ServerBot {
   readonly likesFishing: boolean;
 
   constructor(name: string, likesFishing: boolean) {
-    // Prefixed so a bot id can never collide with a socket id.
-    this.player = new ServerPlayer(`bot${nextId++}`, name);
+    // Prefixed so a bot id can never collide with a socket id. Runs a bigger
+    // health pool than a human player (see BOT_MAX_HEALTH_MULTIPLIER) so it
+    // can survive a fox/spider fight or a PvP skirmish long enough for its
+    // AI's once-a-decision-interval reflexes to matter.
+    this.player = new ServerPlayer(`bot${nextId++}`, name, MAX_HEALTH * BOT_MAX_HEALTH_MULTIPLIER);
     this.likesFishing = likesFishing;
     this.lastX = this.player.x;
     this.lastY = this.player.y;

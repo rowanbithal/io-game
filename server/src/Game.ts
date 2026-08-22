@@ -23,6 +23,7 @@ import {
   HARVEST_ANGLE,
   HARVEST_DAMAGE,
   PLAYER_RADIUS,
+  MAX_HEALTH,
   MAX_HUNGER,
   FOOD_ITEMS,
   FOOD_HUNGER_RESTORE,
@@ -43,6 +44,7 @@ import {
   CAMPFIRE_WARMTH_RADIUS,
   ResourceType,
   LakeState,
+  Recipe,
   RECIPES_BY_ID,
   canAfford,
   isDaytime,
@@ -257,6 +259,17 @@ const BOT_CRAFT_ORDER = [
 const BOT_STARTER_TOOLS = [WOODEN_PICKAXE_ID, WOODEN_AXE_ID, WOODEN_SWORD_ID];
 
 /**
+ * The full stone set — see botHasStoneTier, which gates gold on all three of
+ * these rather than just the pickaxe canMineGold needs. Without it, a bot
+ * that had only just crafted a stone pickaxe (the second of the three, per
+ * BOT_CRAFT_ORDER) was already mechanically able to mine gold and would
+ * start beeline-ing for the gold band (see botWantsGold), abandoning the
+ * stone axe/sword it hadn't gotten to yet right as it stopped gathering the
+ * wood/stone they still needed.
+ */
+const BOT_STONE_TOOLS = [STONE_AXE_ID, STONE_PICKAXE_ID, STONE_SWORD_ID];
+
+/**
  * How much a bot wants each resource, normally and when hungry. Higher wins
  * outright; distance only breaks ties between equal priorities. Trees score
  * above zero even on the food pass because they drop a berry alongside wood.
@@ -336,9 +349,22 @@ export class Game {
 
   // ── Lifecycle ──────────────────────────────────────────────────────────────
 
-  start(): void {
+  /**
+   * Multiplies every step's dt before anything reads it — movement, hunger,
+   * crafting, the day/night cycle, resource respawns, bot decision/craft
+   * timers, all of it — since every one of those is driven off the same dt
+   * passed down from step() below. A dev-only knob (see index.ts's
+   * GAME_SPEED) for watching a bot's whole tool progression play out in a
+   * fraction of the real time rather than actually changing any game
+   * balance; 1 (real time) unless start() is told otherwise.
+   */
+  private speedMultiplier = 1;
+
+  start(speedMultiplier = 1): void {
+    this.speedMultiplier = speedMultiplier;
     this.interval = setInterval(() => this.step(), 1000 / TICK_RATE);
     console.log(`[Game] Running at ${TICK_RATE} ticks/s`);
+    if (speedMultiplier !== 1) console.log(`[Game] Time is running at ${speedMultiplier}x`);
   }
 
   stop(): void {
@@ -645,7 +671,11 @@ export class Game {
 
   private step(): void {
     const now = Date.now();
-    const dt = Math.min((now - this.lastTime) / 1000, 0.1); // Cap delta time
+    // Cap delta time against real elapsed time first — a lag spike should
+    // still only ever simulate 0.1 real seconds' worth in one jump — then
+    // apply speedMultiplier, so a dev speed-up scales *that* capped amount
+    // rather than swallowing the cap entirely.
+    const dt = Math.min((now - this.lastTime) / 1000, 0.1) * this.speedMultiplier;
     this.lastTime = now;
     this.tick++;
 
@@ -1019,6 +1049,26 @@ export class Game {
     return best;
   }
 
+  /**
+   * Nearest live gold deposit within BOT_SEARCH_RADIUS — for a bot that
+   * specifically wants gold (see botWantsGold), the same way
+   * botNearestTreeResource is for one that specifically wants wood.
+   */
+  private botNearestGoldResource(bot: ServerBot): ServerResource | null {
+    const { x, y } = bot.player;
+    let best: ServerResource | null = null;
+    let bestDist = BOT_SEARCH_RADIUS;
+    for (const r of this.world.getNearby(x, y, BOT_SEARCH_RADIUS)) {
+      if (r.type !== 'gold') continue;
+      const d = Math.hypot(r.x - x, r.y - y);
+      if (d < bestDist) {
+        bestDist = d;
+        best = r;
+      }
+    }
+    return best;
+  }
+
   /** True while the player is close enough to a crafting bench to use it. */
   private isNearBench(player: ServerPlayer): boolean {
     return this.structures.some(
@@ -1097,6 +1147,14 @@ export class Game {
    * nobody to notify, so it just gets put straight back in — but its AI state
    * has to be wiped too, since every waypoint and target it was holding
    * points at wherever it died rather than where it just respawned.
+   *
+   * A human who's off spectating someone else is a third case: their own body
+   * is frozen but still very much in the world (see handleSlashCommand), so
+   * it can still starve, freeze, or get bitten while they're not looking. It
+   * still respawns the same as any death, but there's no 'died' emit for
+   * it — surfacing "You died!" over the person they're actually watching
+   * would be confusing, and there's nothing for them to do about it anyway
+   * with their own input frozen.
    */
   private checkDeath(player: ServerPlayer): void {
     if (player.health > 0) return;
@@ -1114,6 +1172,8 @@ export class Game {
       bot.resetAfterDeath();
       return;
     }
+
+    if (this.spectators.has(player.id)) return; // see doc comment above
 
     const socket = this.io.sockets.sockets.get(player.id);
     if (socket) socket.emit('died', {});
@@ -1383,21 +1443,58 @@ export class Game {
    * (narrower) FOX_AGGRO_RANGE. Keeping those two thresholds apart is what
    * gives a chase a definite end without the fox twitching in and out of
    * pursuit while a player hovers at the edge of its senses.
+   *
+   * Sticky isn't blind, though: every tick still checks whether someone else
+   * has wandered within FOX_AGGRO_RANGE and is now nearer than the current
+   * quarry, and switches to them if so — the closer target is always the
+   * more tempting one, current chase or not.
+   *
+   * That stickiness is capped at the forest's edge, though: foxes belong to
+   * the dark forest (see trySpawnFox), and a fox that would chase a target
+   * clean across the plains defeats the point of confining them there in the
+   * first place. FOX_FOREST_LEEWAY gives it a little room to dash after
+   * someone right at the treeline without instantly balking, but past that
+   * it drops the chase outright — same leash distance updateFox already uses
+   * to clean up a fox that wandered out and lost interest, just checked here
+   * too so it also applies mid-chase, not only once idle.
    */
   private foxTarget(fox: ServerFox): ServerPlayer | null {
-    if (fox.targetId) {
-      const quarry = this.players.get(fox.targetId);
-      if (quarry && Math.hypot(quarry.x - fox.x, quarry.y - fox.y) <= FOX_LOSE_INTEREST_RANGE) {
-        return quarry;
-      }
-      // Got away (or disconnected/died and respawned elsewhere) — give up.
+    const withinForestLeash = fox.y <= darkForestBandAt(fox.x) + FOX_FOREST_LEEWAY;
+    if (!withinForestLeash) {
+      // Too far out to be chasing anyone, current quarry or a new one alike.
       fox.targetId = null;
       fox.path = [];
+      return null;
     }
 
-    let nearest: ServerPlayer | null = null;
-    let nearestDist = FOX_AGGRO_RANGE;
+    // Current quarry, if it's still around and hasn't broken
+    // FOX_LOSE_INTEREST_RANGE — kept as the baseline the acquisition scan
+    // below has to beat, rather than returned outright, so a closer player
+    // can still steal aggro (see that scan's comment).
+    let current: ServerPlayer | null = null;
+    let currentDist = Infinity;
+    if (fox.targetId) {
+      const quarry = this.players.get(fox.targetId);
+      const d = quarry ? Math.hypot(quarry.x - fox.x, quarry.y - fox.y) : Infinity;
+      if (quarry && d <= FOX_LOSE_INTEREST_RANGE) {
+        current = quarry;
+        currentDist = d;
+      } else {
+        // Got away, or disconnected/died and respawned elsewhere — give up.
+        fox.targetId = null;
+        fox.path = [];
+      }
+    }
+
+    // Switch to anyone closer who's wandered within acquisition range —
+    // sticky aggro (see this method's doc comment) means a fox doesn't drop
+    // its current quarry just because someone else is nearby, but it isn't
+    // blind to them either: the nearer of the two is always the more
+    // tempting target, current chase or not.
+    let nearest = current;
+    let nearestDist = Math.min(currentDist, FOX_AGGRO_RANGE);
     for (const player of this.players.values()) {
+      if (player === current) continue;
       const d = Math.hypot(player.x - fox.x, player.y - fox.y);
       if (d < nearestDist) {
         nearest = player;
@@ -1405,6 +1502,7 @@ export class Game {
       }
     }
 
+    if (nearest !== current) fox.path = []; // switching targets — the old path is for the wrong person now
     fox.targetId = nearest?.id ?? null;
     return nearest;
   }
@@ -1565,7 +1663,7 @@ export class Game {
       // an angler already has reason to fight one unarmed for its string
       // (see botWantsString below), and they're the easier fight regardless.
       const outmatched = threat.kind === 'fox' && this.botBestTool(bot, BOT_SWORD_TIERS) === null;
-      bot.goal = p.health <= BOT_FLEE_HEALTH || outmatched ? 'flee' : 'hunt';
+      bot.goal = p.health <= this.botHealthThreshold(bot, BOT_FLEE_HEALTH) || outmatched ? 'flee' : 'hunt';
       bot.targetId = threat.id;
       bot.targetX = threat.x;
       bot.targetY = threat.y;
@@ -1592,16 +1690,19 @@ export class Game {
     // check in updateBot fixes the hunger up within a tick or two regardless
     // of goal, so 'heal' is still worth entering.
     const canRegen = p.hunger > HEALTH_REGEN_MIN_HUNGER || this.botFoodItem(bot) !== null;
-    const healUntil = bot.goal === 'heal' ? BOT_HEAL_DONE_HEALTH : BOT_HEAL_SEEK_HEALTH;
+    const healUntil = this.botHealthThreshold(
+      bot,
+      bot.goal === 'heal' ? BOT_HEAL_DONE_HEALTH : BOT_HEAL_SEEK_HEALTH,
+    );
     // Raw meat is dead weight until it's cooked at a campfire (see
-    // FOOD_ITEMS and BOT_CRAFT_ORDER's cooked_meat entry), so a bot holding
-    // any goes and stands by a fire the same way a hurt one does — this
-    // reuses the 'heal' goal wholesale rather than adding a separate one,
-    // since "find/build a fire and walk to it" is exactly the same errand
-    // either way. botAct's 'heal' case only leaves once both jobs are done
-    // (see its exit check below).
-    const hasRawMeatToCook = this.botHasItem(bot, RAW_MEAT_ID);
-    if ((p.health <= healUntil && canRegen) || hasRawMeatToCook) {
+    // FOOD_ITEMS and BOT_CRAFT_ORDER's cooked_meat entry), so a bot with none
+    // ready to eat goes and stands by a fire the same way a hurt one does —
+    // this reuses the 'heal' goal wholesale rather than adding a separate
+    // one, since "find/build a fire and walk to it" is exactly the same
+    // errand either way. botAct's 'heal' case only leaves once both jobs are
+    // done (see its exit check below, and botWantsToCook for why this isn't
+    // simply "has raw meat").
+    if ((p.health <= healUntil && canRegen) || this.botWantsToCook(bot)) {
       bot.goal = 'heal';
       bot.targetId = null;
       return;
@@ -1637,30 +1738,46 @@ export class Game {
       bot.fishTimer = BOT_FISH_INTERVAL; // no lake within reach — try again later
     }
 
-    const resource = this.botPickResource(bot);
-    if (resource) {
-      bot.goal = 'gather';
-      bot.targetId = resource.id;
-      bot.targetX = resource.x;
-      bot.targetY = resource.y;
-      return;
-    }
-
-    // Nothing worth gathering in reach, but it's sitting on a gold-capable
-    // pickaxe with the gold set still unfinished — the bottleneck is that
-    // gold only seeds near the top of the dark forest (see GOLD_TOP_BAND),
-    // which is routinely well outside BOT_SEARCH_RADIUS of wherever it's
-    // been working the tree line. Rather than wander at random until a
-    // nugget happens to drift into range, head for the band on purpose;
-    // botPickResource will pick up the actual deposit (and anything else
-    // worth grabbing en route) the moment one enters range.
-    if (this.botWantsGold(bot)) {
+    // A stone-pickaxe-or-better bot with the gold set still unfinished makes
+    // a beeline for gold rather than going through the usual nearest-anything
+    // botPickResource pass below. That pass is priority-weighted, not
+    // need-driven — gold outscores wood/stone when it's in range, but the
+    // plains keep a tree or a rock within BOT_SEARCH_RADIUS of a bot almost
+    // everywhere, so left to that alone a bot would happily spend forever
+    // chopping the nearest tree and never once notice gold only seeds near
+    // the top of the dark forest (see GOLD_TOP_BAND), routinely well outside
+    // that same radius. Skipped while hungry, same reasoning as
+    // needsStarterTools in botPickResource: a starving bot chasing gold
+    // instead of the berries actually in range is a worse trade, not a
+    // better one.
+    if (this.botWantsGold(bot) && p.hunger >= BOT_HUNGER_SEEK_FOOD) {
+      const gold = this.botNearestGoldResource(bot);
+      if (gold) {
+        bot.goal = 'gather';
+        bot.targetId = gold.id;
+        bot.targetX = gold.x;
+        bot.targetY = gold.y;
+        return;
+      }
+      // None in range yet — head for the band on purpose rather than wander
+      // at random until a nugget happens to drift into range. The gather
+      // branch above will take over (and grab anything else worth grabbing
+      // en route) the moment a deposit actually enters BOT_SEARCH_RADIUS.
       bot.goal = 'idle';
       bot.targetId = null;
       bot.path = [];
       const dest = this.botGoldBandDestination(p.x);
       bot.targetX = dest.x;
       bot.targetY = dest.y;
+      return;
+    }
+
+    const resource = this.botPickResource(bot);
+    if (resource) {
+      bot.goal = 'gather';
+      bot.targetId = resource.id;
+      bot.targetX = resource.x;
+      bot.targetY = resource.y;
       return;
     }
 
@@ -1689,8 +1806,23 @@ export class Game {
         }
         input.held = this.botBestTool(bot, BOT_SWORD_TIERS) ?? input.held;
         input.angle = Math.atan2(mob.y - p.y, mob.x - p.x);
-        if (this.botWithinSwing(p, mob.x, mob.y, mob.radius)) input.harvest = true;
-        else this.botSteer(bot, input, mob.x, mob.y, dt);
+        if (this.botWithinSwing(p, mob.x, mob.y, mob.radius)) {
+          input.harvest = true;
+          // Kite rather than trade hits standing still: aim and movement are
+          // independent (see botPressToward's callers elsewhere), so the bot
+          // can keep facing and swinging at the mob while backpedaling away
+          // from it. Works because HARVEST_RANGE reaches well past either
+          // mob's own attack range (SPIDER_ATTACK_RANGE/FOX_ATTACK_RANGE),
+          // and the player outruns both (PLAYER_SPEED > SPIDER_SPEED/
+          // FOX_SPEED) — so backing off costs it nothing offensively but
+          // steadily pulls it out of biting range. Once that opens up enough
+          // ground to fall out of swing range, the branch below takes back
+          // over and closes the distance again, so this settles into a
+          // steady hit-and-step-back rhythm instead of a one-way retreat.
+          this.botPressToward(input, p.x - mob.x, p.y - mob.y);
+        } else {
+          this.botSteer(bot, input, mob.x, mob.y, dt);
+        }
         return;
       }
 
@@ -1732,12 +1864,13 @@ export class Game {
       }
 
       case 'heal': {
-        // Healed up and nothing left to cook — or nothing actually happened
-        // this run (no wood on hand, say) and it's been at this a while;
-        // either way stop camping and get back to work. Raw meat still on
-        // hand keeps it here even at full health: see botChooseGoal, which
+        // Healed up with nothing urgent left to cook — or nothing actually
+        // happened this run (no wood on hand, say) and it's been at this a
+        // while; either way stop camping and get back to work. Still wanting
+        // to cook (see botWantsToCook) keeps it here even at full health,
+        // but only until the first portion lands: see botChooseGoal, which
         // sends a bot here to cook the same way it does to heal.
-        if (p.health >= BOT_HEAL_DONE_HEALTH && !this.botHasItem(bot, RAW_MEAT_ID)) {
+        if (p.health >= this.botHealthThreshold(bot, BOT_HEAL_DONE_HEALTH) && !this.botWantsToCook(bot)) {
           bot.decisionTimer = 0;
           return;
         }
@@ -2059,9 +2192,27 @@ export class Game {
   /** Best resource in reach, weighted by what the bot currently needs. */
   private botPickResource(bot: ServerBot): ServerResource | null {
     const p = bot.player;
+    const inv = this.inventories.get(bot.id)!;
     const hungry = p.hunger < BOT_HUNGER_SEEK_FOOD;
     const avoidForest = this.botAvoidsForest(bot);
-    const canMineGold = this.botBestTool(bot, BOT_GOLD_PICKAXE_TIERS) !== null;
+    // Wood and stone share the same BOT_MATERIAL_PRIORITY weight (see below),
+    // so ordinarily whichever's closer wins — fine when the bot genuinely
+    // wants both, but a bot standing in a patch of rock with plenty of wood
+    // already banked would keep tiebreaking toward trees it doesn't need
+    // over the stone its next tool is actually waiting on. Weighed against
+    // what the very next thing in BOT_CRAFT_ORDER still costs, not the
+    // recipe after that — a stone pickaxe sitting one rock away is what
+    // should pull it, not a gold axe two tiers out.
+    const nextCraft = hungry ? null : this.botNextCraftGoal(bot);
+    const woodShort = !!nextCraft && (nextCraft.cost.wood ?? 0) > (inv.get('wood') ?? 0);
+    const stoneShort = !!nextCraft && (nextCraft.cost.stone ?? 0) > (inv.get('stone') ?? 0);
+    // Mechanically able to mine it (right pickaxe) isn't the same question
+    // as whether the AI should actually be going after it yet — see
+    // botWantsGold and botHasStoneTier: a bot with a fresh stone pickaxe but
+    // no stone axe/sword yet shouldn't get pulled off toward a gold nugget
+    // that happens to be nearby, any more than botWantsGold would send it on
+    // a deliberate trip for one.
+    const readyForGold = this.botBestTool(bot, BOT_GOLD_PICKAXE_TIERS) !== null && this.botHasStoneTier(bot);
     // Every wooden tool costs only wood (see BOT_CRAFT_ORDER) — a bot with no
     // pickaxe yet hasn't reached that first tool set, so there's nothing to
     // do with stone yet. Left alone, a distance tiebreak against a nearby
@@ -2086,12 +2237,17 @@ export class Game {
     let bestScore = -Infinity;
 
     for (const r of this.world.getNearby(p.x, p.y, BOT_SEARCH_RADIUS)) {
-      if (r.type === 'gold' && !canMineGold) continue; // swings would just bounce off
+      if (r.type === 'gold' && !readyForGold) continue; // wrong tool, or stone tier unfinished
       if (r.type === 'rock' && !hasPickaxe) continue; // wood first — see above
       if (needsStarterTools && r.type !== 'tree') continue; // wood first — see above
       if (avoidForest && this.botInDarkForest(r.x, r.y)) continue; // unarmed — not worth the risk
       if (bot.unreachable.has(r.id)) continue; // couldn't get to it recently
-      const priority = hungry ? BOT_FOOD_PRIORITY[r.type] : BOT_MATERIAL_PRIORITY[r.type];
+      let priority = hungry ? BOT_FOOD_PRIORITY[r.type] : BOT_MATERIAL_PRIORITY[r.type];
+      // Only break the tie when exactly one of the two is still short — if
+      // both are (the common case early in a tier), nearest-first is still
+      // the right call, since it'll need the other one too.
+      if (r.type === 'tree' && woodShort && !stoneShort) priority += 1;
+      if (r.type === 'rock' && stoneShort && !woodShort) priority += 1;
       if (priority <= 0) continue;
 
       const score = priority * 1000 - Math.hypot(r.x - p.x, r.y - p.y);
@@ -2129,15 +2285,17 @@ export class Game {
   }
 
   /**
-   * True once a bot owns a gold-capable pickaxe but hasn't finished the gold
-   * set yet — the point at which gold, specifically, is what's standing
-   * between it and its next tool upgrade. Drives the deliberate trip to
-   * GOLD_TOP_BAND in botChooseGoal, below. No botOwnsBetterTool check is
-   * needed here the way BOT_CRAFT_ORDER's other gates use one — gold is the
-   * top tier, so there's never a better tool to already be holding.
+   * True once a bot owns a gold-capable pickaxe *and* has finished the whole
+   * stone set (see botHasStoneTier) but hasn't finished the gold set yet —
+   * the point at which gold, specifically, is what's standing between it and
+   * its next tool upgrade. Drives the deliberate trip to GOLD_TOP_BAND in
+   * botChooseGoal, below. No botOwnsBetterTool check is needed here the way
+   * BOT_CRAFT_ORDER's other gates use one — gold is the top tier, so there's
+   * never a better tool to already be holding.
    */
   private botWantsGold(bot: ServerBot): boolean {
     if (this.botBestTool(bot, BOT_GOLD_PICKAXE_TIERS) === null) return false; // can't mine it yet
+    if (!this.botHasStoneTier(bot)) return false; // stone axe/sword come first
     const inv = this.inventories.get(bot.id)!;
     return [GOLD_AXE_ID, GOLD_PICKAXE_ID, GOLD_SWORD_ID].some((id) => (inv.get(id) ?? 0) < 1);
   }
@@ -2163,7 +2321,7 @@ export class Game {
    */
   private botWantsString(bot: ServerBot): boolean {
     if (!bot.likesFishing) return false;
-    if (bot.player.health < BOT_STRING_HUNT_MIN_HEALTH) return false;
+    if (bot.player.health < this.botHealthThreshold(bot, BOT_STRING_HUNT_MIN_HEALTH)) return false;
     if (!this.botHasStarterTools(bot)) return false; // wooden set comes first
 
     const inv = this.inventories.get(bot.id)!;
@@ -2221,6 +2379,16 @@ export class Game {
     return (this.inventories.get(bot.id)?.get(itemId) ?? 0) >= 1;
   }
 
+  /**
+   * Rescales a BOT_FLEE_HEALTH-style constant (all written against
+   * MAX_HEALTH — see its doc comment) to this bot's actual maxHealth, so
+   * "flee at 35%" means the same thing for a bot running
+   * BOT_MAX_HEALTH_MULTIPLIER as it does for a human player at MAX_HEALTH.
+   */
+  private botHealthThreshold(bot: ServerBot, base: number): number {
+    return (base / MAX_HEALTH) * bot.player.maxHealth;
+  }
+
   /** A food item the bot currently owns, if any — for eating when hungry. */
   private botFoodItem(bot: ServerBot): string | null {
     const inv = this.inventories.get(bot.id);
@@ -2229,6 +2397,25 @@ export class Game {
       if ((inv.get(type) ?? 0) >= 1) return type;
     }
     return null;
+  }
+
+  /**
+   * True when there's an actual reason to make a special trip to a fire and
+   * cook: raw meat on hand and nothing already edible to fall back on. Once
+   * it's got so much as one berry banked, cooking the rest of a big kill
+   * haul stops being urgent — see botChooseGoal and botAct's 'heal' case,
+   * which both used to key off raw-meat-present alone. A bot that came back
+   * from a hunting spree with, say, six raw meat would park itself at a
+   * fire and grind through all six one at a time — several seconds apiece,
+   * since each cook needs its own trip through handleCraft's "already
+   * crafting" gate — reading as frozen solid even at full health, warmth
+   * and hunger the whole time. Gating on "nothing edible yet" instead bounds
+   * that to roughly one cook: as soon as the first portion lands, this goes
+   * false and the bot moves on, leaving any leftover raw meat to get cooked
+   * opportunistically next time it's near a fire for some other reason.
+   */
+  private botWantsToCook(bot: ServerBot): boolean {
+    return this.botHasItem(bot, RAW_MEAT_ID) && this.botFoodItem(bot) === null;
   }
 
   /** Highest tier in `tiers` the bot actually owns. */
@@ -2280,15 +2467,17 @@ export class Game {
     // needs one right here. Being hurt is different: the 'heal' goal will
     // happily walk to an existing fire, so only put a fresh one down when
     // there's genuinely none in reach.
-    const hurtWithNoFireInReach = p.health <= BOT_HEAL_SEEK_HEALTH && !this.botFireWithinReach(p);
-    // Raw meat is just as good a reason as being hurt to want a fire badly
-    // enough to build one on the spot — see botChooseGoal, which sends a bot
-    // with meat on hand to the 'heal' goal the same way it does a hurt one.
-    // Without this, a warm, healthy bot holding a kill would walk to the
-    // 'heal' goal's target, find no campfire in range, and then just wait
-    // there forever: the campfire-building gates below only fired for cold
-    // or hurt, so nothing would ever actually get built.
-    const wantsToCookWithNoFireInReach = this.botHasItem(bot, RAW_MEAT_ID) && !this.botFireWithinReach(p);
+    const hurtWithNoFireInReach =
+      p.health <= this.botHealthThreshold(bot, BOT_HEAL_SEEK_HEALTH) && !this.botFireWithinReach(p);
+    // Wanting to cook (see botWantsToCook) is just as good a reason as being
+    // hurt to want a fire badly enough to build one on the spot — see
+    // botChooseGoal, which sends such a bot to the 'heal' goal the same way
+    // it does a hurt one. Without this, a warm, healthy bot with nothing
+    // edible on hand would walk to the 'heal' goal's target, find no
+    // campfire in range, and then just wait there forever: the
+    // campfire-building gates below only fired for cold or hurt, so nothing
+    // would ever actually get built.
+    const wantsToCookWithNoFireInReach = this.botWantsToCook(bot) && !this.botFireWithinReach(p);
     if (
       (inv.get(CAMPFIRE_ID) ?? 0) >= 1 &&
       (p.temperature < 45 || hurtWithNoFireInReach || wantsToCookWithNoFireInReach) &&
@@ -2369,6 +2558,20 @@ export class Game {
   }
 
   /**
+   * True once the bot holds the whole stone set (or something better in each
+   * slot) — see BOT_STONE_TOOLS. The gold-tier equivalent of
+   * botHasStarterTools: mining gold only needs the pickaxe (see
+   * BOT_GOLD_PICKAXE_TIERS), but the AI shouldn't chase it before it's also
+   * finished the stone axe and sword.
+   */
+  private botHasStoneTier(bot: ServerBot): boolean {
+    const inv = this.inventories.get(bot.id)!;
+    return BOT_STONE_TOOLS.every(
+      (id) => (inv.get(id) ?? 0) >= 1 || this.botOwnsBetterTool(bot, id),
+    );
+  }
+
+  /**
    * True if some bench-gated recipe is affordable right now — the only reason
    * a bot has to spend wood on a workbench.
    */
@@ -2398,6 +2601,30 @@ export class Game {
       return tiers.slice(rank + 1).some((better) => (inv.get(better) ?? 0) >= 1);
     }
     return false;
+  }
+
+  /**
+   * The first *tool/structure* entry in BOT_CRAFT_ORDER this bot hasn't
+   * finished yet — what it's actually working toward next, for
+   * botPickResource to weigh wood vs stone by (see its woodShort/stoneShort).
+   * Cooked meat is skipped: it's a stackable food consumable, not a tool
+   * upgrade, and cooking it isn't what should decide whether a bot goes for
+   * wood or stone (see BOT_CRAFT_ORDER's comment on it). Doesn't reapply
+   * BOT_CRAFT_ORDER's situational gates (bench/campfire worth building right
+   * now, angler-only rod) either — those decide *whether* to spend a craft
+   * slot on an entry this instant, which isn't the question here. A bot two
+   * rocks short of a stone pickaxe still wants those rocks even in a tick
+   * where, say, it's not currently near a bench to spend them.
+   */
+  private botNextCraftGoal(bot: ServerBot): Recipe | null {
+    const inv = this.inventories.get(bot.id)!;
+    for (const recipeId of BOT_CRAFT_ORDER) {
+      if (recipeId === COOKED_MEAT_ID) continue;
+      if ((inv.get(recipeId) ?? 0) >= 1) continue;
+      if (this.botOwnsBetterTool(bot, recipeId)) continue;
+      return RECIPES_BY_ID[recipeId] ?? null;
+    }
+    return null;
   }
 
   /** Tries a few spots around the bot for somewhere a structure will actually go. */

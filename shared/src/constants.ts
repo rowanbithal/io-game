@@ -7,6 +7,11 @@ export const MAP_SIZE = 4000; // World is MAP_SIZE x MAP_SIZE units
 // ── Player stats ─────────────────────────────────────────────────────────────
 export const PLAYER_SPEED = 150; // Units per second
 export const PLAYER_RADIUS = 16;
+// The health pool a human player spawns with. Also the scale the BOT_*
+// health thresholds below (BOT_FLEE_HEALTH and friends) are tuned against —
+// see Game.ts's botHealthThreshold, which rescales them for a bot's actual
+// maxHealth rather than assuming every player tops out at 100.
+export const MAX_HEALTH = 100;
 export const MAX_HUNGER = 100;
 export const HUNGER_DECAY_RATE = 0.65; // Per second
 export const TEMP_DECAY_RATE = 1.5; // Per second at night
@@ -233,6 +238,17 @@ export const FOX_WAYPOINT_REACHED_DIST = 18; // How close counts as having arriv
 // entities driven by an AI that writes the same PlayerInput a browser would
 // send, so every rule below them — movement, collision, harvest cones, hunger,
 // crafting, death — is the exact code path a human plays through.
+//
+// One deliberate difference: a bot's ServerPlayer is constructed with
+// maxHealth scaled by this multiplier (see ServerBot's constructor), so it
+// can outlast a fox/spider scrap or a PvP skirmish long enough for its AI's
+// once-a-decision-interval reflexes to actually matter, rather than trading
+// hits at a human's reaction speed on the same 100-point pool. The
+// BOT_FLEE_HEALTH/BOT_HEAL_* thresholds below stay written against
+// MAX_HEALTH regardless — see Game.ts's botHealthThreshold, which rescales
+// them to whatever the bot's actual maxHealth is, so "flee at 35%" means the
+// same thing whether maxHealth is 100 or 200.
+export const BOT_MAX_HEALTH_MULTIPLIER = 2;
 export const BOT_SEARCH_RADIUS = 900; // How far a bot looks for something to harvest
 export const BOT_ENGAGE_RANGE = 300; // Hostile within this and healthy → fight it
 // How far an angler will travel to pick a fight with a spider when it still
