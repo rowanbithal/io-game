@@ -32,7 +32,7 @@ export interface LakeState {
 // ── Structures ────────────────────────────────────────────────────────────────
 // Player-built objects placed into the world at runtime (unlike resources,
 // which the world generates, and lakes, which never change).
-export type StructureType = 'campfire' | 'crafting_bench';
+export type StructureType = 'campfire' | 'crafting_bench' | 'wall';
 
 export interface StructureState {
   id: string;
@@ -105,6 +105,11 @@ export interface PlayerState {
   // their inventory server-side, so it reflects something they genuinely own
   // rather than the raw claim from PlayerInput.
   held: string | null;
+  // Armor worn, if any — a separate slot from `held` above, so a player can
+  // swing a sword while wearing a suit at the same time. Set via
+  // EquipRequest and, like `held`, already filtered against inventory
+  // server-side (see Game.armorOf).
+  armor: string | null;
   // What this player last said, or null. Lives on the snapshot rather than
   // being tracked client-side off the chat event so that a player who walks
   // into view mid-message still shows their bubble, and so the server owns
@@ -157,6 +162,17 @@ export interface EatRequest {
   itemId: string;
 }
 
+/**
+ * Sent client → server to put on (or take off) a suit of armor. Toggles:
+ * sending the id of whatever's already worn takes it off again. Unlike
+ * PlayerInput.held, armor isn't re-sent every tick — it's a deliberate
+ * equip action, so the server holds onto the choice (see ServerPlayer.armor)
+ * until told otherwise.
+ */
+export interface EquipRequest {
+  itemId: string;
+}
+
 /** Sent client → server when a player sends a chat message */
 export interface ChatRequest {
   text: string;
@@ -191,6 +207,26 @@ export interface GameState {
    * for free. See Game.ts's broadcast and handleSlashCommand.
    */
   spectating?: boolean;
+  /**
+   * True when this socket has toggled "/camera" on: structures/spiders/foxes
+   * above are sent for the whole map instead of just VIEW_DISTANCE around
+   * the player (`resources` itself stays nearby-only always — see
+   * `cameraResources` below), so the client's full-map view (see
+   * Camera.frameMap) has something to draw beyond whatever's already in
+   * earshot.
+   */
+  cameraMode?: boolean;
+  /**
+   * The full map's resources, for the /camera overview inset specifically —
+   * kept out of `resources` above so the normal view's own render doesn't
+   * inherit 1000+ off-screen resources just because the overview is also on
+   * (see Game.ts's broadcast). Only ever present on the tick it's actually
+   * refreshed (every CAMERA_RESOURCE_REFRESH_TICKS, not every tick — 1000+
+   * resources is too much to reserialize and resend at the full rate); the
+   * client caches whatever it last received and keeps drawing that in
+   * between (see main.ts's cachedCameraResources).
+   */
+  cameraResources?: ResourceState[];
 }
 
 /**

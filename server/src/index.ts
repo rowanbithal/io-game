@@ -3,7 +3,7 @@ import { createServer } from 'http';
 import { Server } from 'socket.io';
 import path from 'path';
 import { Game, LOBBY_ROOM } from './Game';
-import { PlayerInput, CraftRequest, PlaceRequest, CastRequest, EatRequest, ChatRequest } from '@io-game/shared';
+import { PlayerInput, CraftRequest, PlaceRequest, CastRequest, EatRequest, EquipRequest, ChatRequest } from '@io-game/shared';
 
 const app = express();
 const httpServer = createServer(app);
@@ -67,6 +67,10 @@ io.on('connection', (socket) => {
 
   socket.on('eat', (req: EatRequest) => {
     game.handleEat(socket.id, req);
+  });
+
+  socket.on('equip', (req: EquipRequest) => {
+    game.handleEquip(socket.id, req);
   });
 
   socket.on('chat', (req: ChatRequest) => {

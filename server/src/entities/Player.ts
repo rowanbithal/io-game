@@ -37,6 +37,12 @@ export class ServerPlayer {
   temperature = 100;
   score = 0;
 
+  // Armor currently worn, or null — a separate slot from input.held (see
+  // PlayerState.armor). Persists across ticks rather than being re-sent with
+  // every input, since equipping is a deliberate action (see
+  // Game.handleEquip), not something held down like movement.
+  armor: string | null = null;
+
   input: PlayerInput = {
     up: false,
     down: false,
@@ -93,6 +99,7 @@ export class ServerPlayer {
     this.crafting = null;
     this.fishing = null;
     this.chat = null;
+    this.armor = null;
     this.x = MAP_SIZE * (0.3 + Math.random() * 0.4);
     this.y = MAP_SIZE * (0.3 + Math.random() * 0.4);
   }
@@ -162,11 +169,11 @@ export class ServerPlayer {
   }
 
   /**
-   * `held` is passed in rather than read off `input` here: the inventory is
-   * the authority on what a player is actually carrying, and this entity
-   * doesn't own it. See Game.heldItemOf.
+   * `held` and `armor` are passed in rather than read straight off this
+   * entity: the inventory is the authority on what a player actually owns,
+   * and this entity doesn't own it. See Game.heldItemOf / Game.armorOf.
    */
-  toState(isMe = false, held: string | null = null): PlayerState {
+  toState(isMe = false, held: string | null = null, armor: string | null = null): PlayerState {
     return {
       id: this.id,
       name: this.name,
@@ -185,6 +192,7 @@ export class ServerPlayer {
         : 0,
       fishing: this.fishing ? { x: this.fishing.x, y: this.fishing.y, bite: this.fishing.bite } : null,
       held,
+      armor,
       chat: this.chat,
       isMe,
     };

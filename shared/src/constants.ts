@@ -1,4 +1,4 @@
-import { ResourceType } from './types';
+import { ResourceType, StructureType } from './types';
 
 // ── Server simulation ────────────────────────────────────────────────────────
 export const TICK_RATE = 20; // Server ticks per second
@@ -112,21 +112,30 @@ export const FOREST_TREE_SCALE = 1.32;
 export const FOREST_ROCK_SCALE = 1.5;
 
 /**
- * How far a structure's centre must sit from a solid resource's centre to be
+ * How far a structure's centre must sit from a resource's centre to be
  * placeable — measured against what's *drawn*, not what blocks movement.
+ * Covers every resource type, walkable ones included: a berry bush or wheat
+ * clump doesn't block a placement the way a tree does, but it still
+ * shouldn't end up buried under (or grow back through) whatever gets built
+ * on top of it — see Game.isPlaceable and World's respawn-blocking check.
  *
- * These differ by a lot, and the gap is a real one: a tree blocks movement
- * within 30 units but its canopy is drawn out to 40 (or ~53 in the dark
- * forest, where trees render enlarged). Clearing only the collision circle
- * leaves a band where a campfire is legally placed and still looks buried in
- * the trunk. Whether any given tree is the enlarged kind is decided by a
- * per-tree coin flip the server doesn't model, so this assumes the larger of
- * the two — better a slightly roomier gap than a structure inside a tree.
+ * The solid types (tree/rock/gold) differ from their own collision radius by
+ * a lot, and the gap is a real one: a tree blocks movement within 30 units
+ * but its canopy is drawn out to 40 (or ~53 in the dark forest, where trees
+ * render enlarged). Clearing only the collision circle leaves a band where a
+ * campfire is legally placed and still looks buried in the trunk. Whether
+ * any given tree is the enlarged kind is decided by a per-tree coin flip the
+ * server doesn't model, so this assumes the larger of the two — better a
+ * slightly roomier gap than a structure inside a tree.
  */
-export const PLACEMENT_CLEARANCE: Partial<Record<ResourceType, number>> = {
+export const PLACEMENT_CLEARANCE: Record<ResourceType, number> = {
   tree: (TREE_SPAN / 2) * FOREST_TREE_SCALE,
   rock: (ROCK_SPAN / 2) * FOREST_ROCK_SCALE,
   gold: GOLD_SPAN / 2,
+  berry: RESOURCE_RADIUS,
+  mushroom: RESOURCE_RADIUS,
+  purple_berry: RESOURCE_RADIUS,
+  wheat: WHEAT_SPAN / 2,
 };
 
 export const MAX_PLACEMENT_CLEARANCE = Math.max(
@@ -134,8 +143,22 @@ export const MAX_PLACEMENT_CLEARANCE = Math.max(
 );
 
 // ── Structures ───────────────────────────────────────────────────────────────
-export const STRUCTURE_SPAN = 40; // World-unit footprint of a campfire
-export const STRUCTURE_COLLISION_RADIUS = 14;
+// World-unit footprint of each placed structure — how much room it takes up
+// for rendering and for keeping structures from overlapping each other or
+// nearby resources (see Game.isPlaceable). A wall is deliberately sized to
+// match a plains tree (TREE_SPAN/TREE_COLLISION_RADIUS) rather than getting
+// its own number: it's meant to read as "about as big an obstacle as a
+// tree," the thing players already know blocks a path.
+export const STRUCTURE_SPAN: Record<StructureType, number> = {
+  campfire: 40,
+  crafting_bench: 40,
+  wall: TREE_SPAN,
+};
+export const STRUCTURE_COLLISION_RADIUS: Record<StructureType, number> = {
+  campfire: 14,
+  crafting_bench: 14,
+  wall: TREE_COLLISION_RADIUS,
+};
 export const PLACE_RANGE = 110; // How far from the player a structure can be placed
 export const CAMPFIRE_WARMTH_RADIUS = 190; // Distance the fire keeps you warm within
 export const CAMPFIRE_WARMTH_RATE = 6; // Temperature regained per second beside a fire

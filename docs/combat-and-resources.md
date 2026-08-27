@@ -72,3 +72,20 @@ berries, and a tree's bonus berry drop is unaffected by axe tier.
 Dark forest trees/rocks spawn oversized (1.32× and 1.5× respectively) and
 scale both their HP and yield up accordingly — the rows above are the
 plains-sized baseline.
+
+## 4. Armor
+
+Worn rather than held — a separate equip slot (`PlayerState.armor`, toggled by
+clicking the item in the hotbar) from whatever's in your hand, so a suit and a
+sword are never mutually exclusive. Reduces incoming damage from fox bites,
+spider bites, and PvP alike, by a flat fraction:
+
+| Suit          | Damage reduction | Craft cost                          | Bench? |
+|---------------|:-----------------:|--------------------------------------|:------:|
+| Wooden Armor  |        15%         | 40 wood                              |   No   |
+| Stone Armor   |        30%         | 1 Wooden Armor + 35 stone + 20 wood  |  Yes   |
+| Gold Armor    |        45%         | 1 Stone Armor + 35 gold + 20 wood    |  Yes   |
+
+Same "authority is the inventory" rule as everything else held/worn: crafting
+away the currently-equipped suit (upgrading it to the next tier) silently
+strips it rather than leaving a phantom armor value applied to nothing.

@@ -1,4 +1,4 @@
-import { GameState, PlayerState, ResourceState, StructureState, SpiderState, FoxState, LakeState, FishingState, PLAYER_RADIUS, FOX_RADIUS, GRID_CELL, TREE_SPAN, ROCK_SPAN, WHEAT_SPAN, GOLD_SPAN, HARVEST_RANGE, HARVEST_ANGLE, HARVEST_COOLDOWN, STRUCTURE_SPAN, PLACE_RANGE, CAMPFIRE_LIGHT_RADIUS, CAMPFIRE_BURNOUT_FADE, SPIDER_RADIUS, CAST_RANGE, RECIPES_BY_ID, WOODEN_AXE_ID, WOODEN_PICKAXE_ID, WOODEN_SWORD_ID, STONE_AXE_ID, STONE_PICKAXE_ID, STONE_SWORD_ID, GOLD_AXE_ID, GOLD_PICKAXE_ID, GOLD_SWORD_ID, CRAFTING_BENCH_ID, FISHING_ROD_ID, MAP_SIZE, DARK_FOREST_BAND, DARK_FOREST_TRANSITION, GOLD_TOP_BAND, FOREST_TREE_SCALE, FOREST_ROCK_SCALE, darkForestBandAt, DARK_FOREST_EDGE_AMPLITUDE, dayPhase, hashCell, clamp01, smoothstep, forestFactor, isForestTree, isForestRock, resourceCell, RESOURCE_SEED_SALT } from '@io-game/shared';
+import { GameState, PlayerState, ResourceState, StructureState, SpiderState, FoxState, LakeState, FishingState, PLAYER_RADIUS, FOX_RADIUS, GRID_CELL, TREE_SPAN, ROCK_SPAN, WHEAT_SPAN, GOLD_SPAN, HARVEST_RANGE, HARVEST_ANGLE, HARVEST_COOLDOWN, STRUCTURE_SPAN, PLACE_RANGE, CAMPFIRE_LIGHT_RADIUS, CAMPFIRE_BURNOUT_FADE, SPIDER_RADIUS, CAST_RANGE, RECIPES_BY_ID, WOODEN_AXE_ID, WOODEN_PICKAXE_ID, WOODEN_SWORD_ID, STONE_AXE_ID, STONE_PICKAXE_ID, STONE_SWORD_ID, GOLD_AXE_ID, GOLD_PICKAXE_ID, GOLD_SWORD_ID, WOODEN_ARMOR_ID, STONE_ARMOR_ID, GOLD_ARMOR_ID, CRAFTING_BENCH_ID, FISHING_ROD_ID, MAP_SIZE, DARK_FOREST_BAND, DARK_FOREST_TRANSITION, GOLD_TOP_BAND, FOREST_TREE_SCALE, FOREST_ROCK_SCALE, darkForestBandAt, DARK_FOREST_EDGE_AMPLITUDE, dayPhase, hashCell, clamp01, smoothstep, forestFactor, isForestTree, isForestRock, resourceCell, RESOURCE_SEED_SALT } from '@io-game/shared';
 import { Camera } from './Camera';
 
 import berryUrl from './assets/sprites/berry.png';
@@ -1238,8 +1238,10 @@ const BRANCH_THICK = BLOCK * 2;
 // low, so tall things (trees) get dramatically longer shadows than squat
 // ones (mushrooms) even where their footprints are similar in size.
 interface ShadowProfile { width: number; length: number }
-const SHADOW_PROFILE: Record<ResourceState['type'] | 'player' | 'campfire' | 'spider' | 'fox', ShadowProfile> = {
+const SHADOW_PROFILE: Record<ResourceState['type'] | 'player' | 'campfire' | 'wall' | 'spider' | 'fox', ShadowProfile> = {
   campfire: { width: 30, length: 10 },
+  wall: { width: 56, length: 20 }, // squat but wide — same footprint class as a tree, without a tree's height
+
   tree: { width: 64, length: 58 },
   rock: { width: 38, length: 18 },
   gold: { width: 52, length: 24 }, // scaled up with the bigger boulder (see GOLD_SPAN)
@@ -1403,6 +1405,193 @@ export function drawCraftingBenchSprite(ctx: CanvasRenderingContext2D, block: nu
 
 /** Half-width of the bench sprite, in blocks — used to size HUD icons. */
 export const BENCH_SPRITE_HALF_BLOCKS = 3.5;
+
+// ── Wooden wall ──────────────────────────────────────────────────────────────
+// A cut log stood on end — a round cross-section banded in alternating
+// growth rings, same wood tones as everything else (see LOG_PALETTE), so it
+// reads as "made from a tree" the way a tree's own crown does. Circular like
+// a tree, but with a clean, near-perfect edge instead of a crown's jagged
+// jitter (see treeCrownCells) — the difference between a living canopy and
+// something cut flat and stood upright. Never rotates, like the
+// campfire/bench.
+
+const WALL_HALF_BLOCKS = Math.round(TREE_SPAN / BLOCK / 2);
+
+const WALL_CELLS: Cell[] = (() => {
+  const half = WALL_HALF_BLOCKS;
+  const maxR = half + 0.4; // fills right out to the footprint, smooth rather than jittered
+  const ringWidth = 1.5; // blocks per growth ring — several rings across the radius
+  const cells: Cell[] = [];
+  for (let gy = -half; gy <= half; gy++) {
+    for (let gx = -half; gx <= half; gx++) {
+      const d = Math.hypot(gx, gy);
+      if (d > maxR) continue;
+      // A solid dark bark ring at the rim, then alternating light/base
+      // growth rings all the way in to the pith at center.
+      const ring = Math.floor(d / ringWidth);
+      const shade: Shade = d > maxR - 1 ? 'dark' : ring % 2 === 0 ? 'light' : 'base';
+      cells.push({ gx, gy, shade });
+    }
+  }
+  return cells;
+})();
+
+/**
+ * Draws a wooden wall centred on the current origin. Exported so the HUD can
+ * reuse the real sprite as its icon, same as the campfire/bench.
+ */
+export function drawWallSprite(ctx: CanvasRenderingContext2D, block: number = BLOCK): void {
+  drawBlockShape(ctx, WALL_CELLS, LOG_PALETTE, block);
+}
+
+/** Half-width of the wall sprite, in blocks — used to size HUD icons. */
+export const WALL_SPRITE_HALF_BLOCKS = WALL_HALF_BLOCKS + 0.5;
+
+// ── Armor ────────────────────────────────────────────────────────────────────
+// Worn rather than held (see PlayerState.armor) — reuses the exact same
+// tiered material palettes the tools already use (wood/stone/gold), so a
+// suit reads as "made of that" the same way a tool head does, rather than
+// getting its own unrelated color scheme.
+const ARMOR_PALETTES: Record<string, Palette3> = {
+  [WOODEN_ARMOR_ID]: LOG_PALETTE,
+  [STONE_ARMOR_ID]: STONE_PALETTE,
+  [GOLD_ARMOR_ID]: GOLD_PALETTE,
+};
+
+// A vest/chestplate silhouette for the HUD/crafting icon: a rounded torso
+// with a V-neck notch and a pair of shoulder pads poking out past its
+// sides — reads as "worn on the body" rather than a raw material chunk,
+// same "circle plus a couple of accent cells" trick the meat/string icons
+// use.
+const ARMOR_ICON_CELLS: Cell[] = (() => {
+  const cells: Cell[] = [];
+  for (let gy = -3; gy <= 3; gy++) {
+    for (let gx = -2; gx <= 2; gx++) {
+      const r = Math.hypot(gx / 1.15, gy / 1.35);
+      if (r > 1.05) continue;
+      if (gy <= -2 && gx === 0) continue; // neckline notch
+      const shade: Shade = gy <= -1 ? 'light' : gy >= 1 ? 'dark' : 'base';
+      cells.push({ gx, gy, shade });
+    }
+  }
+  cells.push({ gx: -3, gy: -2, shade: 'dark' }, { gx: 3, gy: -2, shade: 'dark' });
+  return cells;
+})();
+export const ARMOR_ICON_HALF_BLOCKS = 3.6;
+
+export function drawArmorIcon(ctx: CanvasRenderingContext2D, itemId: string, block: number = BLOCK): void {
+  const palette = ARMOR_PALETTES[itemId];
+  if (!palette) return;
+  drawBlockShape(ctx, ARMOR_ICON_CELLS, palette, block);
+}
+
+// Flat skin tone, as a Palette3 so it can go through the same
+// drawBlockShape/blockCircle pipeline the hair circle does — used for the
+// head's base fill while armor is worn (see ARMOR_HELMET below), so the
+// open visor reveals bare skin rather than hair peeking out from under a helmet.
+const SKIN_PALETTE: Palette3 = { light: P.playerSkin, base: P.playerSkin, dark: P.playerSkin };
+
+// Half-extent of the helmet's rounded-rectangle silhouette, in blocks —
+// bigger than HEAD_RADIUS_BLOCKS on every axis (including the diagonal,
+// once CORNER_RADIUS is accounted for) so the whole head sits comfortably
+// inside it rather than poking out past the corners.
+const ARMOR_HELMET_HALF_W = HEAD_RADIUS_BLOCKS + 0.6;
+const ARMOR_HELMET_HALF_H = HEAD_RADIUS_BLOCKS + 0.6;
+const ARMOR_HELMET_CORNER_RADIUS = ARMOR_HELMET_HALF_W * 0.35;
+// Rectangular visor opening, in the helmet's own local frame (+x = forward
+// — the same frame the arms/tool are drawn in, see drawPlayer's
+// `ctx.rotate(p.angle)`). Starts a little behind center and runs out to the
+// front edge, narrow enough that most of the head still reads as covered.
+const ARMOR_VISOR_MIN_X = -0.4;
+const ARMOR_VISOR_HALF_WIDTH = HEAD_RADIUS_BLOCKS * 0.5;
+
+// Number of front-to-back stripes the helmet's shading is split into — more
+// (thinner) bands than the plain light/base/dark split every other block
+// sprite uses, so the dark-at-back-to-light-at-front gradient actually reads
+// as a gradient instead of three flat chunks.
+const ARMOR_HELMET_BANDS = 6;
+
+/** A helmet cell tagged with its stripe index (0 = backmost, darkest) rather than a fixed Shade — see ARMOR_HELMET_BANDS. */
+interface BandedCell {
+  gx: number;
+  gy: number;
+  band: number;
+}
+
+/**
+ * The helmet worn armor adds over the player's head as seen from directly
+ * above — the player has no separate torso to redraw (see PLAYER_HEAD's own
+ * comment), so a suit instead caps the head itself, in the material's
+ * palette, as a rounded rectangle with a rectangular notch left open on the
+ * facing (+x) side so the face (drawn in SKIN_PALETTE underneath, see
+ * drawPlayer) shows through rather than being fully enclosed.
+ *
+ * Built once as a plain, static list — like PLAYER_HEAD — rather than
+ * redrawn per frame: it's meant to read as a single rigid sprite that spins
+ * with the player (shading, notch, and all) when drawn inside a
+ * `ctx.rotate(p.angle)` block, not a shape that gets recomputed to keep some
+ * part of it screen-fixed while the player turns. Each cell only records
+ * which stripe it falls in — drawArmorHelmet turns that into an actual color
+ * per tier at draw time (see lerpHex), since the gradient runs between
+ * whichever dark/light a given armor's palette uses.
+ */
+const ARMOR_HELMET: BandedCell[] = (() => {
+  const halfW = ARMOR_HELMET_HALF_W;
+  const halfH = ARMOR_HELMET_HALF_H;
+  const corner = ARMOR_HELMET_CORNER_RADIUS;
+  const r = Math.ceil(Math.max(halfW, halfH));
+
+  const cells: BandedCell[] = [];
+  for (let gy = -r; gy <= r; gy++) {
+    for (let gx = -r; gx <= r; gx++) {
+      // Rounded-rectangle silhouette: outside if past the flat edges, or
+      // past the corner circle once both axes are past their own flat run.
+      const px = Math.max(Math.abs(gx) - (halfW - corner), 0);
+      const py = Math.max(Math.abs(gy) - (halfH - corner), 0);
+      if (Math.hypot(px, py) > corner) continue;
+
+      // Rectangular visor notch on the forward (+x) side.
+      if (gx >= ARMOR_VISOR_MIN_X && Math.abs(gy) <= ARMOR_VISOR_HALF_WIDTH) continue;
+
+      // Bands run front-to-back (along local +x, the facing axis) rather
+      // than side-to-side, so each stripe reads as a horizontal band
+      // wrapping ear-to-ear across the head — band 0 at the back (-x, the
+      // darkest end), the highest band toward the visor at the front (+x).
+      const t = clamp01((gx + halfW) / (halfW * 2));
+      const band = Math.min(ARMOR_HELMET_BANDS - 1, Math.floor(t * ARMOR_HELMET_BANDS));
+      cells.push({ gx, gy, band });
+    }
+  }
+  return cells;
+})();
+
+/** Linearly interpolates between two `#rrggbb` colors. */
+function lerpHex(from: string, to: string, t: number): string {
+  const a = parseInt(from.slice(1), 16);
+  const b = parseInt(to.slice(1), 16);
+  const channel = (shift: number): number => {
+    const av = (a >> shift) & 0xff;
+    const bv = (b >> shift) & 0xff;
+    return Math.round(av + (bv - av) * t);
+  };
+  const r = channel(16);
+  const g = channel(8);
+  const bl = channel(0);
+  return `#${((r << 16) | (g << 8) | bl).toString(16).padStart(6, '0')}`;
+}
+
+/** Draws ARMOR_HELMET, resolving each of its stripes to a color interpolated across `palette`'s own dark→light range. */
+function drawArmorHelmet(ctx: CanvasRenderingContext2D, palette: Palette3, block: number): void {
+  const paths = Array.from({ length: ARMOR_HELMET_BANDS }, () => new Path2D());
+  for (const { gx, gy, band } of ARMOR_HELMET) {
+    paths[band].rect(gx * block - block / 2, gy * block - block / 2, block, block);
+  }
+  for (let band = 0; band < ARMOR_HELMET_BANDS; band++) {
+    const t = band / (ARMOR_HELMET_BANDS - 1);
+    ctx.fillStyle = lerpHex(palette.dark, palette.light, t);
+    ctx.fill(paths[band]);
+  }
+}
 
 // ── Raw resource icons ───────────────────────────────────────────────────────
 // Wood/stone/wheat have no in-world sprite of their own to reuse (trees and
@@ -1884,6 +2073,12 @@ const BOBBER_CELLS: Cell[] = (() => {
 })();
 const BOBBER_PALETTE: Palette3 = { light: P.bobberRed, base: P.bobberRed, dark: P.bobberWhite };
 
+// How often the /camera overview's offscreen bitmap actually gets redrawn —
+// see Renderer.renderCameraOverview. ~15fps is still smooth for a small
+// dot moving across a full-map overview, and cuts the cost of redrawing
+// 1000+ resources from every animation frame down to a sixth of them.
+const OVERVIEW_REDRAW_INTERVAL_MS = 66;
+
 export class Renderer {
   private ctx: CanvasRenderingContext2D;
   private groundPattern: CanvasPattern | null = null;
@@ -1906,6 +2101,13 @@ export class Renderer {
   // state.dayTime, then read by every drawShadow() call this frame.
   private sunAngle = 0; // direction shadows point, sweeps a full turn per cycle
   private sunHeight = 1; // 1 = noon (overhead), 0 = horizon, -1 = midnight
+
+  // Set for the duration of renderCameraOverview's inset draw (see there) —
+  // drops shadows, campfire glow, and the harvest-swing lunge, none of which
+  // read as anything but noise at that zoom, and shadows/glow both cost a
+  // shape per resource/structure on top of an already-large draw (1000+
+  // resources when the whole map's in view).
+  private simplifyOverview = false;
 
   /**
    * 0 in broad daylight, 1 in the dead of night. Shared by every effect that
@@ -1970,7 +2172,10 @@ export class Renderer {
 
   constructor(
     private readonly canvas: HTMLCanvasElement,
-    private readonly camera: Camera,
+    // Not readonly — renderCameraOverview temporarily swaps this to the
+    // overview's own Camera for the inset draw, then restores it, so every
+    // other draw method can keep reading `this.camera` unchanged.
+    private camera: Camera,
   ) {
     this.ctx = canvas.getContext('2d')!;
     this.ctx.imageSmoothingEnabled = false;
@@ -2353,9 +2558,388 @@ export class Renderer {
    */
   render(state: GameState, mapSize: number, hideChrome = false): void {
     const { ctx, canvas } = this;
-    const W = canvas.width;
-    const H = canvas.height;
+    this.updateAnimations(state);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    this.drawWorld(state, state.resources, mapSize, hideChrome, canvas.width, canvas.height);
+  }
 
+  /**
+   * Side length of the /camera inset square — exposed so main.ts can frame
+   * its overview Camera (see Camera.frameMap) against the exact pixel size
+   * renderCameraOverview is about to draw into, rather than guessing at a
+   * size independently and drifting out of sync with it.
+   */
+  getCameraOverviewSize(): number {
+    return Math.min(this.canvas.width, this.canvas.height) * 0.8;
+  }
+
+  // Offscreen buffer the /camera overview draws into — see
+  // renderCameraOverview's own doc comment for why this exists.
+  private overviewBitmap: HTMLCanvasElement | null = null;
+  private overviewBitmapCtx: CanvasRenderingContext2D | null = null;
+  // The fully-styled parchment (tear, shadow, tint, edge blend) baked from
+  // overviewBitmap — see renderCameraOverview's `stale` block. Kept
+  // separate so every ordinary frame can just blit this instead of
+  // replaying the path fills/clips/strokes that build it.
+  private overviewComposed: HTMLCanvasElement | null = null;
+  private overviewComposedCtx: CanvasRenderingContext2D | null = null;
+  private lastOverviewDrawTime = 0;
+  // The overview's ripped-parchment silhouette (see tatteredMapPath),
+  // cached by size — regenerating it every frame would make the tear
+  // pattern crawl instead of reading as one physical sheet of paper.
+  private tatteredPath: { size: number; path: Path2D } | null = null;
+  // A blotchy age-stain texture over the parchment (see parchmentStain),
+  // cached the same way.
+  private parchmentStainLayer: { size: number; canvas: HTMLCanvasElement } | null = null;
+  // The parchment edge's speckled blend layer (see parchmentEdgeBlend),
+  // cached by size the same way the tear and stain layers are.
+  private parchmentBlendLayer: { size: number; canvas: HTMLCanvasElement } | null = null;
+
+  /**
+   * The staircase step tatteredMapPath's tear is built from, in screen px —
+   * shared with parchmentEdgeBlend (whose cells are sized to match) so the
+   * two read as one consistent pixel grid rather than looking like separate
+   * textures laid over each other.
+   */
+  private static tearStep(size: number): number {
+    return Math.max(2, Math.round(size / 200));
+  }
+
+  /**
+   * The parchment-to-map transition, built the exact same way the dark
+   * forest floor's dirt edge and the lake shore's sand ring are (see
+   * isForestFloorBlock / lakeShoreCells): solid right up to a per-block
+   * jittered edge, then a speckled fringe whose density thins out with
+   * distance, using blockRandom's stable per-cell hash rather than a
+   * repeating tile — so the boundary reads as organic and never lines up
+   * with itself the way an ordered dither does, the same "blend into
+   * whatever's behind it" look every biome edge in this game already uses.
+   */
+  private parchmentEdgeBlend(size: number): HTMLCanvasElement {
+    if (this.parchmentBlendLayer?.size === size) return this.parchmentBlendLayer.canvas;
+
+    const cell = Renderer.tearStep(size);
+    const solidBlocks = 1; // fully solid cream out to about this many blocks in
+    const edgeJitterBlocks = 1.4; // how ragged that solid edge is
+    const fringeBlocks = 6; // how many further blocks the speckle thins out over
+    const fringeMax = 0.85; // densest the speckle gets, right at the solid edge
+
+    const cols = Math.ceil(size / cell);
+    const canvas = document.createElement('canvas');
+    canvas.width = size;
+    canvas.height = size;
+    const c = canvas.getContext('2d')!;
+    c.imageSmoothingEnabled = false;
+    c.fillStyle = '#f2e7c8';
+
+    for (let gy = 0; gy < cols; gy++) {
+      // Distance from this row/column to the nearest of the four straight
+      // edges of the base square — the tear itself (see tatteredMapPath)
+      // already handles the outer silhouette; this just blends the inside
+      // of that square into the map render it's clipped over.
+      const edgeDistY = Math.min(gy, cols - 1 - gy) * cell;
+      for (let gx = 0; gx < cols; gx++) {
+        const edgeDistX = Math.min(gx, cols - 1 - gx) * cell;
+        const depthBlocks = Math.min(edgeDistX, edgeDistY) / cell;
+
+        const jitter = (blockRandom(gx, gy, 301) - 0.5) * edgeJitterBlocks;
+        const solid = depthBlocks + jitter <= solidBlocks;
+        if (!solid) {
+          const t = clamp01((depthBlocks - solidBlocks) / fringeBlocks);
+          if (t >= 1 || blockRandom(gx, gy, 302) >= (1 - t) * fringeMax) continue;
+        }
+        c.fillRect(gx * cell, gy * cell, cell, cell);
+      }
+    }
+
+    this.parchmentBlendLayer = { size, canvas };
+    return canvas;
+  }
+
+  /**
+   * How far tatteredMapPath's tear can bulge outward from its nominal
+   * size×size square. renderCameraOverview doesn't reserve room for this —
+   * the parchment is free to spill past its allotted footprint into the
+   * dimmed backdrop around it — this just caps how ragged the tear gets.
+   */
+  private static tearMargin(size: number): number {
+    return Renderer.tearStep(size) * 3;
+  }
+
+  /**
+   * A roughly-square path with a torn-paper edge instead of a clean
+   * rectangle — built as an axis-aligned staircase (every segment purely
+   * horizontal or vertical, like the rest of this game's blocky sprites)
+   * rather than jittered diagonals, which the canvas would anti-alias into
+   * smooth lines no other edge in the game has. Stable across frames and
+   * sessions: the seed is a constant, not derived from anything that changes.
+   */
+  private tatteredMapPath(size: number): Path2D {
+    if (this.tatteredPath?.size === size) return this.tatteredPath.path;
+
+    const rng = mulberry32(20260827);
+    const step = Renderer.tearStep(size);
+    const maxJag = Renderer.tearMargin(size); // how far the tear can wander outside the straight edge
+
+    const corners: [number, number][] = [[0, 0], [size, 0], [size, size], [0, size]];
+    const points: [number, number][] = [corners[0]];
+    for (let side = 0; side < 4; side++) {
+      const [x0, y0] = corners[side];
+      const [x1, y1] = corners[(side + 1) % 4];
+      const length = Math.hypot(x1 - x0, y1 - y0);
+      const ux = (x1 - x0) / length; // unit vector along the side
+      const uy = (y1 - y0) / length;
+      // Unit vector perpendicular to it, pointing outward from the square
+      // (corners above run clockwise, so this is the *right* normal of the
+      // side's direction — the left normal would point inward instead).
+      const nx = uy;
+      const ny = -ux;
+
+      // Clamped to [0, maxJag] rather than a plain ±maxJag walk — jag only
+      // ever bulges outward, never inward, so the map image this silhouette
+      // clips (a plain size×size square, see renderCameraOverview) is
+      // always fully covered and none of it gets torn away.
+      let jag = 0;
+      let along = 0;
+      while (along < length) {
+        along = Math.min(length, along + step);
+        // Move along the edge first (a pure horizontal/vertical segment at
+        // the *previous* jog), then jog perpendicular (a second pure
+        // horizontal/vertical segment) — two right-angle moves instead of
+        // one diagonal one, same as a staircase.
+        points.push([x0 + ux * along + nx * jag, y0 + uy * along + ny * jag]);
+        if (along >= length) break; // leave the corner itself un-jogged
+        jag = Math.max(0, Math.min(maxJag, jag + (rng() < 0.5 ? -step : step)));
+        points.push([x0 + ux * along + nx * jag, y0 + uy * along + ny * jag]);
+      }
+    }
+
+    const path = new Path2D();
+    path.moveTo(points[0][0], points[0][1]);
+    for (const [px, py] of points.slice(1)) path.lineTo(px, py);
+    path.closePath();
+
+    this.tatteredPath = { size, path };
+    return path;
+  }
+
+  /**
+   * A blotchy age-stain texture for the parchment tint — built the same way
+   * as the ground tiles (see the "Biome-scale ground blending" section
+   * above): a coarse lattice of random values, smoothly interpolated, but
+   * each block still snapped to one flat alpha rather than a per-pixel
+   * gradient. That's what keeps it reading as blocky/pixelated rather than
+   * a smooth vignette, and reusing the *shape* of that noise (not just its
+   * value) is what makes the tint uneven — patches of heavier staining
+   * fading into barely-tinted parchment — instead of one flat tone.
+   */
+  private getParchmentStain(size: number): HTMLCanvasElement {
+    if (this.parchmentStainLayer?.size === size) return this.parchmentStainLayer.canvas;
+
+    const block = Math.max(6, Math.round(size / 60));
+    const cols = Math.ceil(size / block);
+    const latticeSize = 5;
+    const lattice = buildLattice(latticeSize, mulberry32(20260827 + 1));
+    const patchScale = cols / latticeSize;
+
+    const canvas = document.createElement('canvas');
+    canvas.width = size;
+    canvas.height = size;
+    const c = canvas.getContext('2d')!;
+    c.imageSmoothingEnabled = false;
+
+    for (let gy = 0; gy < cols; gy++) {
+      for (let gx = 0; gx < cols; gx++) {
+        const n = sampleLattice(lattice, latticeSize, patchScale, gx, gy); // ~0..1
+        // Most blocks stay barely tinted — only the upper end of the noise
+        // band darkens into a visible stain — and the ceiling stays low, so
+        // even the heaviest patch is a subtle wash, not a blotch that reads
+        // as damage.
+        const alpha = Math.max(0, n - 0.55) * 0.3;
+        if (alpha <= 0.008) continue;
+        c.fillStyle = `rgba(110,80,45,${alpha.toFixed(3)})`;
+        c.fillRect(gx * block, gy * block, block, block);
+      }
+    }
+
+    this.parchmentStainLayer = { size, canvas };
+    return canvas;
+  }
+
+  /**
+   * Draws the /camera full-map view as a centered square inset on top of
+   * whatever render() just drew — see main.ts's loopGame, which calls this
+   * right after the normal follow-camera frame rather than instead of it.
+   * The rest of the screen dims rather than going blank, so the ordinary
+   * view stays visible (if muted) behind it instead of framing dead space.
+   *
+   * The actual scene (1000+ resources when the whole map's in view, plus
+   * structures/mobs/players) only gets redrawn into an offscreen bitmap at
+   * most every OVERVIEW_REDRAW_INTERVAL_MS — every other call just re-blits
+   * that bitmap, which costs one drawImage instead of the full draw. A
+   * full-map overview doesn't need 60fps redraws of content that's mostly
+   * static tree-and-rock scenery to begin with; capping it here is what
+   * keeps this inset from being the expensive part of every single frame.
+   */
+  renderCameraOverview(state: GameState, resources: ResourceState[], mapSize: number, overviewCamera: Camera): void {
+    const { ctx, canvas } = this;
+    const size = Math.round(this.getCameraOverviewSize());
+    const x = Math.round((canvas.width - size) / 2);
+    const y = Math.round((canvas.height - size) / 2);
+    // overviewComposed (below) has to be padded by this much on every side
+    // — otherwise the tear's outward bulge (see tatteredMapPath) gets cut
+    // off flat by that bitmap's own edge, which is exactly what turns the
+    // torn silhouette back into a plain square.
+    const composedMargin = Renderer.tearMargin(size) + 8;
+
+    // Punched to `size`, not the wider footprint the tear's outward bulge
+    // (see tatteredMapPath) can reach — the parchment is free to cover or
+    // spill past this hole's edge into the dimmed backdrop beyond it.
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, 0, canvas.width, canvas.height);
+    ctx.rect(x, y, size, size);
+    ctx.fillStyle = 'rgba(0,0,0,0.45)';
+    ctx.fill('evenodd');
+    ctx.restore();
+
+    const now = performance.now();
+    const stale = !this.overviewBitmap
+      || this.overviewBitmap.width !== size
+      || now - this.lastOverviewDrawTime >= OVERVIEW_REDRAW_INTERVAL_MS;
+
+    if (stale) {
+      if (!this.overviewBitmap || this.overviewBitmap.width !== size) {
+        this.overviewBitmap = document.createElement('canvas');
+        this.overviewBitmap.width = size;
+        this.overviewBitmap.height = size;
+        this.overviewBitmapCtx = this.overviewBitmap.getContext('2d')!;
+        this.overviewBitmapCtx.imageSmoothingEnabled = false;
+
+        this.overviewComposed = document.createElement('canvas');
+        this.overviewComposed.width = size + composedMargin * 2;
+        this.overviewComposed.height = size + composedMargin * 2;
+        this.overviewComposedCtx = this.overviewComposed.getContext('2d')!;
+        this.overviewComposedCtx.imageSmoothingEnabled = false;
+      }
+      this.lastOverviewDrawTime = now;
+
+      // Redirect every draw call at the offscreen buffer instead of the
+      // real canvas — see the constructor's note on why `ctx` isn't
+      // readonly. Nothing downstream needs to know this is happening.
+      const mainCtx = this.ctx;
+      const mainCamera = this.camera;
+      const mainSunHeight = this.sunHeight;
+      const mainSunAngle = this.sunAngle;
+      this.ctx = this.overviewBitmapCtx!;
+      this.camera = overviewCamera;
+      this.simplifyOverview = true;
+      // Pinned to noon regardless of the real game clock (updateAnimations
+      // sets these from state.dayTime for the normal view — see render())
+      // so the overview always reads as broad daylight: no night tint (see
+      // drawLightingOverlay), forest fog, or fireflies (see the nightness
+      // getter, which they all key off), all of which key off sunHeight.
+      this.sunHeight = 1;
+      this.sunAngle = 0;
+      // hideChrome: name tags/HP bars/chat bubbles are already on screen in
+      // the normal view this sits on top of — repeating them at inset
+      // scale would just be illegible clutter.
+      this.drawWorld(state, resources, mapSize, true, size, size);
+      this.sunHeight = mainSunHeight;
+      this.sunAngle = mainSunAngle;
+
+      // The parchment styling itself — tear silhouette, drop shadow, sepia
+      // tint, edge blend — also only gets rebuilt on this same throttled
+      // cadence, baked into its own bitmap (below) rather than replayed
+      // every frame. Filling/clipping/stroking a several-hundred-point
+      // torn-edge path (see tatteredMapPath) is real rasterization work
+      // every time it's called regardless of whether the Path2D itself is
+      // cached, and doing that at 60fps was the other half of what made
+      // this inset expensive — the underlying map render was the first.
+      this.ctx = this.overviewComposedCtx!;
+      this.ctx.clearRect(0, 0, this.overviewComposed!.width, this.overviewComposed!.height);
+      this.ctx.save();
+      // Shifts local (0,0)..(size,size) — what the tear path and everything
+      // clipped to it are built in — away from this bitmap's own edge, so
+      // the outward bulge (see composedMargin above) has room to render
+      // instead of being cut off flat by the canvas bounds.
+      this.ctx.translate(composedMargin, composedMargin);
+      const path = this.tatteredMapPath(size);
+
+      // Cast from the torn silhouette itself (not a rectangle) — a flat,
+      // hard-edged offset silhouette rather than a blurred drop shadow,
+      // same pixelated-not-soft treatment as every other shadow in this
+      // game (see drawShadow).
+      this.ctx.save();
+      this.ctx.translate(4, 8);
+      this.ctx.fillStyle = 'rgba(0,0,0,0.4)';
+      this.ctx.fill(path);
+      this.ctx.restore();
+
+      this.ctx.fillStyle = '#f2e7c8'; // light cream parchment
+      this.ctx.fill(path);
+
+      // The map render itself, clipped to the torn edge and warmed toward
+      // a light cream parchment palette — on its own it's full-color grass
+      // and water, nothing like aged paper. Bare parchment (the fill
+      // above) shows through wherever the tear's jitter pokes outside the
+      // image's own bounds, reading as though the ink never reached the
+      // torn edge.
+      this.ctx.save();
+      this.ctx.clip(path);
+      this.ctx.drawImage(this.overviewBitmap!, 0, 0, size, size);
+
+      this.ctx.globalCompositeOperation = 'multiply';
+      this.ctx.fillStyle = 'rgba(236,224,188,0.3)';
+      this.ctx.fillRect(0, 0, size, size);
+      // Blotchy, uneven staining on top of that flat base tint — see
+      // getParchmentStain's own doc comment for why a flat tint alone
+      // reads as a uniform color filter rather than aged paper.
+      this.ctx.drawImage(this.getParchmentStain(size), 0, 0);
+      this.ctx.globalCompositeOperation = 'overlay';
+      this.ctx.fillStyle = 'rgba(255,250,230,0.2)';
+      this.ctx.fillRect(0, 0, size, size);
+      this.ctx.globalCompositeOperation = 'source-over';
+
+      // Solid parchment along the inside of the tear, thinning into a
+      // speckled fringe toward the interior (see parchmentEdgeBlend) — the
+      // same organic, blockRandom-driven blend every biome edge in this
+      // game already uses. Painted over the map render's own outer rim
+      // rather than just bordering it from outside, so the torn parchment
+      // reads as sitting on top of the view, partly covering it, rather
+      // than merely framing it.
+      this.ctx.drawImage(this.parchmentEdgeBlend(size), 0, 0);
+
+      // A thin darker fiber right at the tear itself, on top of that band
+      // — reads as the frayed edge of the paper rather than a hard cut.
+      this.ctx.lineWidth = size * 0.012;
+      this.ctx.strokeStyle = 'rgba(150,120,70,0.4)';
+      this.ctx.stroke(path);
+      this.ctx.restore();
+      this.ctx.restore(); // matches the composedMargin translate save() above
+
+      this.ctx = mainCtx;
+      this.camera = mainCamera;
+      this.simplifyOverview = false;
+    }
+
+    // Every frame, regardless of whether the bitmaps above were just
+    // rebuilt: one blit of the fully-composed parchment — see the `stale`
+    // block for everything that's actually baked into it. Offset back by
+    // composedMargin since (x, y) is where the tear's logical (0,0) belongs
+    // on screen, not this padded bitmap's own top-left corner.
+    ctx.drawImage(this.overviewComposed!, x - composedMargin, y - composedMargin);
+  }
+
+  /**
+   * Per-frame simulation state that isn't tied to any one view — sun angle,
+   * walk-cycle pruning, fish/firefly motion, resource recoil. Split out of
+   * render() so renderCameraOverview can draw a second, differently-zoomed
+   * view of the same frame without re-running this (which would double-
+   * advance every real-time animation, fish included, and skew fish's own
+   * frame-delta timing since it's measured off this.lastFrameTime).
+   */
+  private updateAnimations(state: GameState): void {
     // dayTime: 0 = noon, 0.5 = midnight, wraps 0..1. dayPhase warps it so the
     // sun spends DAY_FRACTION of the cycle above the horizon (see shared/daycycle.ts).
     const turn = dayPhase(state.dayTime) * Math.PI * 2;
@@ -2376,8 +2960,23 @@ export class Renderer {
     this.updateFireflies(dt);
     this.updateFishSplashes(state.players, now);
     this.updateResourceRecoil(state.resources, state.players, dt);
+  }
 
-    ctx.clearRect(0, 0, W, H);
+  /**
+   * The actual draw pass, parameterized by viewport size so render() (the
+   * normal full-canvas frame) and renderCameraOverview (a clipped, smaller
+   * inset using a different camera) can share it — everything here reads
+   * `this.camera`, which the caller has already pointed at the right one.
+   */
+  private drawWorld(state: GameState, resources: ResourceState[], mapSize: number, hideChrome: boolean, W: number, H: number): void {
+    const { ctx } = this;
+    // Frozen at 0 for the overview (see simplifyOverview) rather than the
+    // real clock — this only gets redrawn every OVERVIEW_REDRAW_INTERVAL_MS
+    // (see renderCameraOverview), so sampling performance.now() here would
+    // land on a different, effectively random phase of every now-driven
+    // animation each time (campfire flicker included) and read as a jarring
+    // flash rather than smooth motion.
+    const now = this.simplifyOverview ? 0 : performance.now();
 
     const { zoom } = this.camera;
     ctx.save();
@@ -2388,15 +2987,21 @@ export class Renderer {
     this.drawForestFloor(W / zoom, H / zoom);
     this.drawGridLines(W / zoom, H / zoom);
     this.drawLakes();
-    this.drawRipples();
-    this.drawFish();
+    // Ripples and fish are both skipped in the overview inset (see
+    // simplifyOverview) — individually animated small-scale motion that
+    // isn't worth showing (or paying for, redrawn across every lake) at
+    // full-map zoom.
+    if (!this.simplifyOverview) {
+      this.drawRipples();
+      this.drawFish();
+    }
     this.drawMapBorder(mapSize);
-    this.drawTreeBranches(state.resources);
-    this.drawTreeLeafLitter(state.resources);
+    this.drawTreeBranches(resources);
+    this.drawTreeLeafLitter(resources);
 
     // Resources (sorted by Y so overlapping looks natural, with berries/
     // mushrooms always layered under everything else — see resourceDrawOrder)
-    const sorted = [...state.resources].sort(resourceDrawOrder);
+    const sorted = [...resources].sort(resourceDrawOrder);
     for (const r of sorted) this.drawResource(r);
 
     for (const s of state.structures) this.drawStructure(s, now);
@@ -2405,18 +3010,34 @@ export class Renderer {
 
     for (const f of state.foxes) this.drawFox(f);
 
-    // Other players then self on top
     const me = state.players.find((p) => p.isMe);
-    for (const p of state.players) if (!p.isMe) this.drawPlayer(p, hideChrome);
-    if (me) {
-      this.drawReachGrid(me);
-      this.drawPlayer(me, hideChrome);
-      this.drawPlacementGhost(me, now);
-      this.drawCastPreview(me);
-    }
+    if (this.simplifyOverview) {
+      // Plain dots instead of full sprites — same self-blue/others-red
+      // convention as the minimap (see HUD.drawMinimap) rather than
+      // character sprites that would render as a couple of illegible
+      // pixels at full-map zoom. Sized in world units scaled by 1/zoom so
+      // they come out a fixed, legible size on screen regardless of how
+      // zoomed out the overview's camera is.
+      for (const p of state.players) {
+        const { sx, sy } = this.camera.toScreen(p.x, p.y);
+        ctx.fillStyle = p.isMe ? '#56c9ff' : '#ff6b6b';
+        ctx.beginPath();
+        ctx.arc(sx, sy, (p.isMe ? 6 : 2.5) / zoom, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    } else {
+      // Other players then self on top
+      for (const p of state.players) if (!p.isMe) this.drawPlayer(p, hideChrome);
+      if (me) {
+        this.drawReachGrid(me);
+        this.drawPlayer(me, hideChrome);
+        this.drawPlacementGhost(me, now);
+        this.drawCastPreview(me);
+      }
 
-    for (const p of state.players) this.drawFishingLine(p, now);
-    this.drawFishSplashes(now);
+      for (const p of state.players) this.drawFishingLine(p, now);
+      this.drawFishSplashes(now);
+    }
 
     ctx.restore();
 
@@ -2440,6 +3061,9 @@ export class Renderer {
     // burns through the vignette rather than sitting under a layer of
     // shadow the light never reaches.
     this.drawForestFog(W / zoom, H / zoom);
+    // Still shown in the overview inset, just without the flicker — `now`
+    // is frozen at 0 there (see simplifyOverview's use above), so
+    // Renderer.flicker(now) always comes out the same instead of animating.
     for (const s of fires) this.drawCampfireLight(s, now);
     // Fireflies belong in this same post-darkness pass too — they're their
     // own little light sources, so the night (and the fog) shouldn't dim them.
@@ -3003,7 +3627,11 @@ export class Renderer {
 
     ctx.save();
     ctx.translate(sx, sy);
-    const shadow = SHADOW_PROFILE.campfire;
+    // Bench has no shadow profile of its own — it's close enough in size to
+    // the campfire that reusing that one has never been worth a separate
+    // entry. A wall is a different story: much bigger footprint, gets its
+    // own (see SHADOW_PROFILE.wall).
+    const shadow = s.type === 'wall' ? SHADOW_PROFILE.wall : SHADOW_PROFILE.campfire;
     this.drawShadow(ctx, shadow.width, shadow.length);
     this.drawStructureSprite(s.type, now);
     ctx.restore();
@@ -3012,6 +3640,7 @@ export class Renderer {
   /** Body of a structure, in already-translated local space. */
   private drawStructureSprite(type: StructureState['type'], now: number): void {
     if (type === CRAFTING_BENCH_ID) drawCraftingBenchSprite(this.ctx);
+    else if (type === 'wall') drawWallSprite(this.ctx);
     else drawCampfireSprite(this.ctx, now);
   }
 
@@ -3133,15 +3762,11 @@ export class Renderer {
     if (!inRange) return;
 
     // Blocky footprint outline, aligned to the placement grid.
+    const span = STRUCTURE_SPAN[placeAs];
     ctx.save();
     ctx.strokeStyle = 'rgba(255,214,107,0.7)';
     ctx.lineWidth = 1;
-    ctx.strokeRect(
-      sx - STRUCTURE_SPAN / 2,
-      sy - STRUCTURE_SPAN / 2,
-      STRUCTURE_SPAN,
-      STRUCTURE_SPAN,
-    );
+    ctx.strokeRect(sx - span / 2, sy - span / 2, span, span);
     ctx.restore();
   }
 
@@ -3494,18 +4119,37 @@ export class Renderer {
     const R = PLAYER_RADIUS * PLAYER_VISUAL_SCALE; // layout radius only — gameplay hitbox is untouched
     const isMe = !!p.isMe;
     const anim = this.updateWalkAnim(p);
-    const strike = this.harvestStrike(p);
+    // Frozen at rest in the overview inset (see simplifyOverview) — the
+    // tool-arm lunge toward whatever's being harvested is exactly the kind
+    // of small, busy detail that isn't worth showing at full-map zoom.
+    const strike = this.simplifyOverview ? 0 : this.harvestStrike(p);
 
     ctx.save();
     ctx.translate(sx, sy);
 
     this.drawShadow(ctx, SHADOW_PROFILE.player.width * PLAYER_VISUAL_SCALE, SHADOW_PROFILE.player.length * PLAYER_VISUAL_SCALE);
 
-    // Head, turning with the aim direction plus a fixed 90° offset.
+    // Head, turning with the aim direction plus a fixed 90° offset. Worn
+    // armor swaps the base fill from hair to bare skin (see SKIN_PALETTE) —
+    // the helmet drawn over it just below is what then covers most of that
+    // skin back up, leaving only a visor-shaped strip of it showing.
+    const armorPalette = p.armor ? ARMOR_PALETTES[p.armor] : undefined;
     ctx.save();
     ctx.rotate(p.angle + Math.PI / 2);
-    drawBlockShape(ctx, PLAYER_HEAD, HAIR_PALETTE, BLOCK);
+    drawBlockShape(ctx, PLAYER_HEAD, armorPalette ? SKIN_PALETTE : HAIR_PALETTE, BLOCK);
     ctx.restore();
+
+    // Helmet, if armor is worn — capping the head in the armor's material
+    // with a notch left open on the facing side (see ARMOR_HELMET's own
+    // comment) so the bare skin drawn above shows through as a face. A
+    // single rigid sprite that spins with the player, same +x-is-forward
+    // frame as the arms/tool below.
+    if (armorPalette) {
+      ctx.save();
+      ctx.rotate(p.angle);
+      drawArmorHelmet(ctx, armorPalette, BLOCK);
+      ctx.restore();
+    }
 
     // Arms + tool, in the facing-rotated frame: +x = forward, +y = the
     // player's right side. Arms swing opposite each other while walking,
@@ -3518,6 +4162,8 @@ export class Renderer {
     const armSide = R * 1.3;
     const armRest = R * 0.05;
 
+    // Armor is worn on the head only (see ARMOR_HELMET) — hands stay bare
+    // skin regardless.
     ctx.fillStyle = P.playerSkin;
     ctx.fillRect(armRest + walkSwing - armSize / 2, -armSide - armSize / 2, armSize, armSize);
 
@@ -3688,6 +4334,12 @@ export class Renderer {
    * swings around and stretches at dawn/dusk.
    */
   private drawShadow(ctx: CanvasRenderingContext2D, width: number, length: number): void {
+    // Skipped entirely for the /camera overview inset (see
+    // renderCameraOverview) — at that zoom every shadow is a couple of
+    // pixels of noise, and it's one more shape per resource on top of an
+    // already-large draw (1000+ resources when the whole map's in view).
+    if (this.simplifyOverview) return;
+
     // Fades out gradually across dusk/dawn instead of cutting off right at
     // the horizon — full strength in daylight, gone by deep night.
     const strength = smoothstep(clamp01((this.sunHeight + 0.3) / 0.6));

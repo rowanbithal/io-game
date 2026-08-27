@@ -1,6 +1,7 @@
 import { Server, Socket } from 'socket.io';
 import {
   GameState,
+  ResourceState,
   PreviewState,
   PlayerInput,
   HarvestPayload,
@@ -10,6 +11,7 @@ import {
   PlaceRequest,
   CastRequest,
   EatRequest,
+  EquipRequest,
   ChatRequest,
   ChatMessage,
   CHAT_MAX_LENGTH,
@@ -43,6 +45,7 @@ import {
   STRUCTURE_COLLISION_RADIUS,
   CAMPFIRE_WARMTH_RADIUS,
   ResourceType,
+  StructureType,
   LakeState,
   Recipe,
   RECIPES_BY_ID,
@@ -67,6 +70,12 @@ import {
   GOLD_PICKAXE_GOLD_MULTIPLIER,
   GOLD_SWORD_ID,
   GOLD_SWORD_DAMAGE_MULTIPLIER,
+  WOODEN_ARMOR_ID,
+  STONE_ARMOR_ID,
+  GOLD_ARMOR_ID,
+  WOODEN_ARMOR_DAMAGE_REDUCTION,
+  STONE_ARMOR_DAMAGE_REDUCTION,
+  GOLD_ARMOR_DAMAGE_REDUCTION,
   CRAFTING_BENCH_ID,
   BENCH_USE_RADIUS,
   SPIDER_RADIUS,
@@ -188,6 +197,22 @@ const WEAPON_DAMAGE: Record<string, number> = {
   [GOLD_SWORD_ID]: GOLD_SWORD_DAMAGE_MULTIPLIER,
 };
 
+// Worn armor that blocks a fraction of incoming damage — foxes, spiders, and
+// other players alike (see armorReduction). A set of valid ids too, so
+// handleEquip can reject anything that isn't actually a suit of armor.
+const ARMOR_DAMAGE_REDUCTION: Record<string, number> = {
+  [WOODEN_ARMOR_ID]: WOODEN_ARMOR_DAMAGE_REDUCTION,
+  [STONE_ARMOR_ID]: STONE_ARMOR_DAMAGE_REDUCTION,
+  [GOLD_ARMOR_ID]: GOLD_ARMOR_DAMAGE_REDUCTION,
+};
+const ARMOR_IDS = new Set(Object.keys(ARMOR_DAMAGE_REDUCTION));
+
+// How often a "/camera" viewer's full-map resource list is recomputed —
+// twice a second is plenty fresh for an overview (harvest/respawn popping
+// in half a second late is imperceptible there) and cuts the per-tick cost
+// of 1000+ resources down to a tenth of sending them every tick.
+const CAMERA_RESOURCE_REFRESH_TICKS = Math.round(TICK_RATE / 2);
+
 // How far a resource's own footprint reaches for harvest purposes — a
 // player can hit any part of it, not just its exact center point.
 const INTERACT_RADIUS: Record<ResourceType, number> = {
@@ -305,6 +330,17 @@ export class Game {
   // lazily the next time broadcast() looks it up, so removePlayer only needs
   // to clear the watcher's own side of this.
   private readonly spectators = new Map<string, string>();
+  // Sockets with "/camera" toggled on — see handleSlashCommand and
+  // broadcast's viewDistance. Just the viewer's own id, so nothing to
+  // resolve at broadcast time the way spectators' targets are; removePlayer
+  // still clears it so a reused id can't inherit a stale entry.
+  private readonly cameraViewers = new Set<string>();
+  // Cached per-viewer full-map resource list, refreshed only every
+  // CAMERA_RESOURCE_REFRESH_TICKS (see broadcast) rather than recomputed and
+  // resent whole every tick — 1000+ resources at the full 20Hz rate bloats
+  // that socket's own 'state' message enough to visibly delay everything
+  // else riding along in it, player/mob positions included.
+  private readonly cameraResourceCache = new Map<string, ResourceState[]>();
   private readonly structures: ServerStructure[] = [];
   private readonly spiders = new Map<string, ServerSpider>();
   private readonly foxes = new Map<string, ServerFox>();
@@ -389,6 +425,8 @@ export class Game {
     this.players.delete(id);
     this.inventories.delete(id);
     this.spectators.delete(id);
+    this.cameraViewers.delete(id);
+    this.cameraResourceCache.delete(id);
     // Leaving clears what they built, same as dying. Nothing survives a
     // disconnect to be reclaimed — ids are per-socket, so a returning player
     // is a new player and could never own these again. Without this a
@@ -453,7 +491,7 @@ export class Game {
       this.sendInventory(player, 'Too far away');
       return;
     }
-    if (!this.isPlaceable(x, y)) {
+    if (!this.isPlaceable(x, y, recipe.placeAs)) {
       this.sendInventory(player, "Can't build there");
       return;
     }
@@ -462,27 +500,41 @@ export class Game {
     if (left > 0) inv.set(itemId, left);
     else inv.delete(itemId);
 
-    this.structures.push(new ServerStructure(recipe.placeAs, x, y, id));
+    const structure = new ServerStructure(recipe.placeAs, x, y, id);
+    this.structures.push(structure);
+    // Only a wall needs to be stamped into the fox nav grid — it's the one
+    // structure big and solid enough that a fox routing straight through
+    // where it now stands would visibly clip it before the physical push-out
+    // (see pushOutOfStructures) ever caught it. A campfire/bench is small
+    // enough that bumping and settling beside it, same as always, is fine.
+    if (structure.type === 'wall') {
+      this.world.addNavObstacle(structure.id, structure.x, structure.y, STRUCTURE_COLLISION_RADIUS.wall);
+    }
     this.sendInventory(player, `${recipe.name} placed`);
   }
 
   /**
    * Ages every structure, dropping the ones that burn out this tick (see
-   * ServerStructure.update). Structures need no teardown beyond leaving the
-   * array — unlike resources they're never stamped into the fox nav grid, and
-   * everything else that cares about them (warmth, collision, bench range)
-   * reads the live array each tick rather than caching membership.
+   * ServerStructure.update). Torn-down structures need no teardown beyond
+   * leaving the array — except a wall, which also has to give back the nav
+   * grid footprint it was stamped with in handlePlace (see removeStructure).
    */
   private updateStructures(dt: number): void {
     for (let i = this.structures.length - 1; i >= 0; i--) {
-      if (this.structures[i].update(dt)) this.structures.splice(i, 1);
+      if (this.structures[i].update(dt)) this.removeStructure(i);
     }
+  }
+
+  /** Splices out structure `index`, undoing whatever handlePlace set up for it. */
+  private removeStructure(index: number): void {
+    const [structure] = this.structures.splice(index, 1);
+    if (structure.type === 'wall') this.world.removeNavObstacle(structure.id);
   }
 
   /** Removes everything a given player built — see checkDeath. */
   private removeStructuresOwnedBy(ownerId: string): void {
     for (let i = this.structures.length - 1; i >= 0; i--) {
-      if (this.structures[i].ownerId === ownerId) this.structures.splice(i, 1);
+      if (this.structures[i].ownerId === ownerId) this.removeStructure(i);
     }
   }
 
@@ -534,6 +586,23 @@ export class Game {
   }
 
   /**
+   * Puts on (or, if it's already worn, takes back off) a suit of armor.
+   * Ownership is re-checked at broadcast time regardless (see armorOf), so
+   * this just records the player's choice — same toggle-by-resending-the-
+   * same-id shape as EquipRequest documents.
+   */
+  handleEquip(id: string, { itemId }: EquipRequest): void {
+    if (this.spectators.has(id)) return;
+    const player = this.players.get(id);
+    const inv = this.inventories.get(id);
+    if (!player || !inv) return;
+    if (!ARMOR_IDS.has(itemId) || (inv.get(itemId) ?? 0) < 1) return;
+
+    player.armor = player.armor === itemId ? null : itemId;
+    this.sendInventory(player, player.armor ? `${RECIPES_BY_ID[itemId].name} equipped` : `${RECIPES_BY_ID[itemId].name} unequipped`);
+  }
+
+  /**
    * Broadcasts a chat message and puts it above the sender's head. The text is
    * re-sanitised here rather than trusted from the client: control characters
    * (newlines included, which would break the log's line layout) are stripped
@@ -571,9 +640,16 @@ export class Game {
    * bars and hotbar instead of your own (see broadcast's anchor swap and
    * sendInventory's relay) — your own body freezes in place meanwhile (see
    * the spectator guards in handleInput/handleCraft/handlePlace/handleCast/
-   * handleEat). "/spectate" with no name, or "/unspectate", stops. Feedback
-   * goes back over 'system' to just this socket rather than the public chat
-   * log, since nobody else needs to see it.
+   * handleEat). "/spectate" with no name, or "/unspectate", stops.
+   *
+   * "/camera" toggles the full-map view (see broadcast's viewDistance and
+   * GameState.cameraMode) — unlike spectating it doesn't touch movement or
+   * anchor, it just widens what this socket is sent so the client's zoomed-
+   * out camera (see Camera.frameMap) has the whole map's resources to draw
+   * instead of only whatever was already within VIEW_DISTANCE.
+   *
+   * Feedback goes back over 'system' to just this socket rather than the
+   * public chat log, since nobody else needs to see it.
    */
   private handleSlashCommand(player: ServerPlayer, command: string): void {
     const [rawCmd, ...rest] = command.trim().split(/\s+/);
@@ -601,6 +677,14 @@ export class Game {
       // Hands over their current hotbar right away rather than waiting for
       // it to next change (see sendInventory's spectator relay).
       this.sendInventory(target);
+      return;
+    }
+
+    if (cmd === 'camera') {
+      const enabled = !this.cameraViewers.delete(player.id);
+      if (enabled) this.cameraViewers.add(player.id);
+      else this.cameraResourceCache.delete(player.id); // stale once broadcast stops refreshing it
+      this.sendSystem(player, enabled ? 'Full map view — Esc or /camera to return' : 'Camera restored');
       return;
     }
 
@@ -635,7 +719,8 @@ export class Game {
   }
 
   /**
-   * Rejects spots that overlap a solid resource, water, or another structure.
+   * Rejects spots that overlap a resource, water, or another structure, for
+   * whichever structure `type` is about to be placed there.
    *
    * Clearances are measured against what's *drawn* (PLACEMENT_CLEARANCE and
    * STRUCTURE_SPAN) rather than what blocks movement. Collision radii are much
@@ -644,27 +729,51 @@ export class Game {
    * is legally placed and still looks buried in the trunk. Players rarely hit
    * it because they aim by eye; bots pick a spot by rolling an offset and land
    * in it constantly.
+   *
+   * Every resource type has a clearance now, walkable ones included (see
+   * PLACEMENT_CLEARANCE) — not just the solid ones a structure would
+   * otherwise physically overlap. Without that, a campfire dropped on a
+   * berry bush's spot would sit there until the bush respawned right through
+   * it.
+   *
+   * Dead resources don't count here — a harvested stump, an empty berry
+   * bush, is exactly the ground a player should be able to reclaim and build
+   * on. That used to make a structure planted there just get grown through a
+   * minute later, but isBlockedByStructure now stops the resource side of
+   * that instead (see World.update): the respawn itself is what's held off,
+   * not the placement.
    */
-  private isPlaceable(x: number, y: number): boolean {
-    const half = STRUCTURE_SPAN / 2;
+  private isPlaceable(x: number, y: number, type: StructureType): boolean {
+    const half = STRUCTURE_SPAN[type] / 2;
     if (this.world.isBlockedByLake(x, y, half)) return false;
 
-    // Dead resources count here: they respawn in place, so building on a
-    // freshly-chopped stump just means the tree grows back through the
-    // campfire a minute later.
-    for (const r of this.world.getNearby(x, y, half + MAX_PLACEMENT_CLEARANCE, true)) {
-      const clearance = PLACEMENT_CLEARANCE[r.type];
-      if (clearance === undefined) continue; // walkable resource, fine to build over
-      if (Math.hypot(x - r.x, y - r.y) < clearance + half) return false;
+    for (const r of this.world.getNearby(x, y, half + MAX_PLACEMENT_CLEARANCE)) {
+      if (Math.hypot(x - r.x, y - r.y) < PLACEMENT_CLEARANCE[r.type] + half) return false;
     }
 
     // Structures shouldn't overlap each other either — centres a full span
-    // apart leaves two sprites just touching.
+    // apart (averaged between the two types involved) leaves two sprites
+    // just touching.
     for (const s of this.structures) {
-      if (Math.hypot(x - s.x, y - s.y) < STRUCTURE_SPAN) return false;
+      if (Math.hypot(x - s.x, y - s.y) < (STRUCTURE_SPAN[type] + STRUCTURE_SPAN[s.type]) / 2) return false;
     }
 
     return true;
+  }
+
+  /**
+   * True if a structure already occupies the ground a dead resource of
+   * `type` wants to respawn onto. isPlaceable happily lets a player build
+   * over a harvested stump or empty bush (dead resources carry no clearance
+   * of their own there), so this is what actually keeps the tree/rock/etc.
+   * from growing back through whatever got planted on top of it — same
+   * clearance math as isPlaceable, just checked from the resource's side
+   * rather than the structure's. See World.update, which gates a resource's
+   * respawn on this.
+   */
+  private isBlockedByStructure(x: number, y: number, type: ResourceType): boolean {
+    const clearance = PLACEMENT_CLEARANCE[type];
+    return this.structures.some((s) => Math.hypot(x - s.x, y - s.y) < clearance + STRUCTURE_SPAN[s.type] / 2);
   }
 
   // ── Main simulation step ───────────────────────────────────────────────────
@@ -684,7 +793,7 @@ export class Game {
     const isDay = isDaytime(this.dayTime);
 
     // Update world (resource respawning)
-    this.world.update(dt);
+    this.world.update(dt, (x, y, type) => this.isBlockedByStructure(x, y, type));
     this.updateStructures(dt);
 
     // Bots decide first, writing the same PlayerInput a client would have
@@ -696,9 +805,9 @@ export class Game {
       const speedMultiplier = this.getSpeedMultiplier(player);
       player.update(dt, isDay, speedMultiplier, this.isNearFire(player));
       const pushed = this.pushOutOfResources(player.x, player.y, PLAYER_RADIUS);
-      player.x = pushed.x;
-      player.y = pushed.y;
-      this.resolveStructureCollision(player);
+      const structPushed = this.pushOutOfStructures(pushed.x, pushed.y, PLAYER_RADIUS);
+      player.x = structPushed.x;
+      player.y = structPushed.y;
       this.processHarvest(player);
       this.tickCrafting(player, dt);
       this.tickFishing(player, dt);
@@ -757,24 +866,30 @@ export class Game {
     return { x, y };
   }
 
-  /** Campfires are solid — push a player back out of one they walked into. */
-  private resolveStructureCollision(player: ServerPlayer): void {
-    const minDist = PLAYER_RADIUS + STRUCTURE_COLLISION_RADIUS;
-
+  /**
+   * Every structure is solid — push a point back out of any it's overlapping.
+   * Shared by players, spiders, and foxes (see pushOutOfResources, its
+   * resource-side counterpart) so a wall stops all three exactly alike,
+   * rather than just the player.
+   */
+  private pushOutOfStructures(x: number, y: number, radius: number): { x: number; y: number } {
     for (const s of this.structures) {
-      const dx = player.x - s.x;
-      const dy = player.y - s.y;
+      const minDist = radius + STRUCTURE_COLLISION_RADIUS[s.type];
+      const dx = x - s.x;
+      const dy = y - s.y;
       const dist = Math.hypot(dx, dy);
       if (dist >= minDist) continue;
 
-      // A fire can legally be placed right on top of the player, so the
-      // exact-overlap case is reachable here — pick an arbitrary direction
-      // rather than dividing by zero and never pushing them free.
+      // A fire (or a wall dropped point-blank) can legally land right on top
+      // of whoever placed it, so the exact-overlap case is reachable here —
+      // pick an arbitrary direction rather than dividing by zero and never
+      // pushing them free.
       const [nx, ny] = dist > 0.001 ? [dx / dist, dy / dist] : [1, 0];
       const push = minDist - dist;
-      player.x = clamp(player.x + nx * push, PLAYER_RADIUS, MAP_SIZE - PLAYER_RADIUS);
-      player.y = clamp(player.y + ny * push, PLAYER_RADIUS, MAP_SIZE - PLAYER_RADIUS);
+      x = clamp(x + nx * push, radius, MAP_SIZE - radius);
+      y = clamp(y + ny * push, radius, MAP_SIZE - radius);
     }
+    return { x, y };
   }
 
   /** Keeps players from overlapping each other — splits the separation between both. */
@@ -896,6 +1011,21 @@ export class Game {
     return HARVEST_DAMAGE * multiplier;
   }
 
+  /**
+   * Fraction of incoming damage a player's worn armor blocks — 0 if they
+   * have nothing equipped, same inventory-is-the-authority check as every
+   * other equip/hold lookup (see armorOf, which this could just call, but
+   * takes the inventory as a param like combatDamage's sibling above so a
+   * caller that already has it doesn't look it up twice).
+   */
+  private armorReduction(player: ServerPlayer, inv: Map<string, number>): number {
+    const armor = player.armor;
+    if (!armor) return 0;
+    const reduction = ARMOR_DAMAGE_REDUCTION[armor];
+    if (!reduction || (inv.get(armor) ?? 0) < 1) return 0;
+    return reduction;
+  }
+
   private processHarvest(player: ServerPlayer): void {
     if (!player.input.harvest || !player.canHarvest) return;
 
@@ -952,7 +1082,9 @@ export class Game {
     }
 
     for (const victim of playerTargets) {
-      victim.health = Math.max(0, victim.health - combatDamage);
+      const victimInv = this.inventories.get(victim.id);
+      const reduction = victimInv ? this.armorReduction(victim, victimInv) : 0;
+      victim.health = Math.max(0, victim.health - combatDamage * (1 - reduction));
     }
 
     // The held tool's effect on yield, as ServerResource.damage wants it —
@@ -1299,14 +1431,17 @@ export class Game {
         spider.x = clamp(spider.x + nx * speed * dt, SPIDER_RADIUS, MAP_SIZE - SPIDER_RADIUS);
         spider.y = clamp(spider.y + ny * speed * dt, SPIDER_RADIUS, MAP_SIZE - SPIDER_RADIUS);
       } else if (spider.attackCooldown <= 0) {
-        nearest.health = Math.max(0, nearest.health - SPIDER_DAMAGE);
+        const victimInv = this.inventories.get(nearest.id);
+        const reduction = victimInv ? this.armorReduction(nearest, victimInv) : 0;
+        nearest.health = Math.max(0, nearest.health - SPIDER_DAMAGE * (1 - reduction));
         spider.attackCooldown = SPIDER_ATTACK_COOLDOWN;
       }
     }
 
     const pushed = this.pushOutOfResources(spider.x, spider.y, SPIDER_RADIUS);
-    spider.x = pushed.x;
-    spider.y = pushed.y;
+    const structPushed = this.pushOutOfStructures(pushed.x, pushed.y, SPIDER_RADIUS);
+    spider.x = structPushed.x;
+    spider.y = structPushed.y;
   }
 
   // ── Foxes ──────────────────────────────────────────────────────────────────
@@ -1410,7 +1545,9 @@ export class Game {
       fox.angle = Math.atan2(nearest.y - fox.y, nearest.x - fox.x);
       fox.path = [];
       if (fox.attackCooldown <= 0) {
-        nearest.health = Math.max(0, nearest.health - FOX_DAMAGE);
+        const victimInv = this.inventories.get(nearest.id);
+        const reduction = victimInv ? this.armorReduction(nearest, victimInv) : 0;
+        nearest.health = Math.max(0, nearest.health - FOX_DAMAGE * (1 - reduction));
         fox.attackCooldown = FOX_ATTACK_COOLDOWN;
       }
       return;
@@ -1429,8 +1566,9 @@ export class Game {
     fox.y = clamp(fox.y + (dy / dist) * speed * dt, FOX_RADIUS, MAP_SIZE - FOX_RADIUS);
 
     const pushed = this.pushOutOfResources(fox.x, fox.y, FOX_RADIUS);
-    fox.x = pushed.x;
-    fox.y = pushed.y;
+    const structPushed = this.pushOutOfStructures(pushed.x, pushed.y, FOX_RADIUS);
+    fox.x = structPushed.x;
+    fox.y = structPushed.y;
   }
 
   /**
@@ -2629,13 +2767,16 @@ export class Game {
 
   /** Tries a few spots around the bot for somewhere a structure will actually go. */
   private botPlaceNearby(bot: ServerBot, itemId: string): boolean {
+    const type = RECIPES_BY_ID[itemId]?.placeAs;
+    if (!type) return false;
+
     const p = bot.player;
     for (let attempt = 0; attempt < 8; attempt++) {
       const angle = Math.random() * Math.PI * 2;
       const reach = 45 + Math.random() * (PLACE_RANGE - 60);
       const x = p.x + Math.cos(angle) * reach;
       const y = p.y + Math.sin(angle) * reach;
-      if (!this.isPlaceable(x, y)) continue;
+      if (!this.isPlaceable(x, y, type)) continue;
 
       const before = this.structures.length;
       this.handlePlace(bot.id, { itemId, x, y });
@@ -2690,6 +2831,20 @@ export class Game {
     return (this.inventories.get(player.id)?.get(held) ?? 0) >= 1 ? held : null;
   }
 
+  /**
+   * What a player is genuinely wearing, for everyone else to render. Same
+   * ownership check as heldItemOf — player.armor is the equip choice (see
+   * handleEquip), but the inventory still decides whether it actually
+   * applies, so crafting away an equipped suit's last copy quietly strips it
+   * rather than leaving a phantom armor rendered (and damage-reduced) on
+   * nothing.
+   */
+  private armorOf(player: ServerPlayer): string | null {
+    const armor = player.armor;
+    if (!armor) return null;
+    return (this.inventories.get(player.id)?.get(armor) ?? 0) >= 1 ? armor : null;
+  }
+
   private broadcast(isDay: boolean): void {
     const allPlayers = Array.from(this.players.values());
 
@@ -2712,26 +2867,51 @@ export class Game {
         else this.spectators.delete(player.id);
       }
 
-      const nearbyResources = this.world.getNearby(anchor.x, anchor.y, VIEW_DISTANCE);
+      // "/camera" widens structures/spiders/foxes to the whole map — see
+      // handleSlashCommand — everyone else keeps the normal VIEW_DISTANCE
+      // cutoff. Those lists stay small (dozens at most) regardless, unlike
+      // resources (see cameraResources below), so there's no separate
+      // throttling need here.
+      const isCameraViewer = this.cameraViewers.has(player.id);
+      const viewDistance = isCameraViewer ? Infinity : VIEW_DISTANCE;
+
+      // `resources` is always just the nearby list, camera mode or not —
+      // otherwise the normal follow-camera view (rendered right alongside
+      // the overview inset, see Renderer.render vs renderCameraOverview)
+      // would inherit 1000+ off-screen resources it never draws, for
+      // nothing. The overview's own full-map list rides in cameraResources
+      // instead, and only on the tick it's actually refreshed (see that
+      // field's doc comment in GameState) — everyone else's cameraResources
+      // stays undefined, so JSON.stringify drops the key entirely.
+      let cameraResources: ResourceState[] | undefined;
+      if (isCameraViewer) {
+        const cached = this.cameraResourceCache.get(player.id);
+        if (!cached || this.tick % CAMERA_RESOURCE_REFRESH_TICKS === 0) {
+          cameraResources = this.world.getNearby(anchor.x, anchor.y, Infinity).map(r => r.toState());
+          this.cameraResourceCache.set(player.id, cameraResources);
+        }
+      }
 
       const state: GameState = {
         tick: this.tick,
         dayTime: this.dayTime,
         isDay,
         // All players visible regardless of distance (small player counts)
-        players: allPlayers.map(p => p.toState(p.id === anchor.id, this.heldItemOf(p))),
+        players: allPlayers.map(p => p.toState(p.id === anchor.id, this.heldItemOf(p), this.armorOf(p))),
         // Only send resources within the client's view frustum
-        resources: nearbyResources.map(r => r.toState()),
+        resources: this.world.getNearby(anchor.x, anchor.y, VIEW_DISTANCE).map(r => r.toState()),
         structures: this.structures
-          .filter(s => Math.hypot(s.x - anchor.x, s.y - anchor.y) <= VIEW_DISTANCE)
+          .filter(s => Math.hypot(s.x - anchor.x, s.y - anchor.y) <= viewDistance)
           .map(s => s.toState()),
         spiders: Array.from(this.spiders.values())
-          .filter(s => Math.hypot(s.x - anchor.x, s.y - anchor.y) <= VIEW_DISTANCE)
+          .filter(s => Math.hypot(s.x - anchor.x, s.y - anchor.y) <= viewDistance)
           .map(s => s.toState()),
         foxes: Array.from(this.foxes.values())
-          .filter(f => Math.hypot(f.x - anchor.x, f.y - anchor.y) <= VIEW_DISTANCE)
+          .filter(f => Math.hypot(f.x - anchor.x, f.y - anchor.y) <= viewDistance)
           .map(f => f.toState()),
         spectating: anchor.id !== player.id,
+        cameraMode: isCameraViewer,
+        cameraResources,
       };
 
       socket.emit('state', state);
@@ -2759,7 +2939,7 @@ export class Game {
       tick: this.tick,
       dayTime: this.dayTime,
       isDay,
-      players: allPlayers.map(p => p.toState(false, this.heldItemOf(p))),
+      players: allPlayers.map(p => p.toState(false, this.heldItemOf(p), this.armorOf(p))),
       resources: nearbyResources.map(r => r.toState()),
       structures: this.structures
         .filter(s => Math.hypot(s.x - x, s.y - y) <= VIEW_DISTANCE)

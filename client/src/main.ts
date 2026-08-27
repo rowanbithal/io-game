@@ -1,4 +1,4 @@
-import { TICK_RATE, RECIPES_BY_ID, FISHING_ROD_ID, PreviewState } from '@io-game/shared';
+import { TICK_RATE, RECIPES_BY_ID, FISHING_ROD_ID, PreviewState, ResourceState } from '@io-game/shared';
 import { Network } from './Network';
 import { Input } from './Input';
 import { Camera } from './Camera';
@@ -14,6 +14,10 @@ class ClientGame {
   private readonly network: Network;
   private readonly input: Input;
   private readonly camera: Camera;
+  // /camera's full-map inset gets its own Camera (framed via Camera.frameMap
+  // — see Renderer.renderCameraOverview) so it can show a completely
+  // different zoom/pan than the normal follow-camera it's drawn on top of.
+  private readonly overviewCamera = new Camera();
   private readonly renderer: Renderer;
   private readonly state: StateManager;
   // The menu-screen backdrop's own snapshot stream — kept separate from
@@ -28,6 +32,11 @@ class ClientGame {
   private lastInputSend = 0;
   private running = false;
   private hotbarDragActive = false;
+  // The /camera overview's full-map resource list arrives only on the tick
+  // it's refreshed (see GameState.cameraResources) — everything in between,
+  // this holds the last one actually received so the inset keeps drawing
+  // something instead of flashing empty on the ticks it's omitted.
+  private cachedCameraResources: ResourceState[] = [];
 
   constructor() {
     this.canvas = document.getElementById('game-canvas') as HTMLCanvasElement;
@@ -73,6 +82,7 @@ class ClientGame {
     });
 
     this.network.onState((snapshot) => {
+      if (snapshot.cameraResources) this.cachedCameraResources = snapshot.cameraResources;
       this.state.push(snapshot);
     });
 
@@ -177,7 +187,18 @@ class ClientGame {
         this.hud.toggleRecipeBook();
         return;
       }
+      // M opens/closes the full-map view — same toggle either way (see
+      // handleSlashCommand), so there's no separate on/off branch to pick
+      // between the way Escape below has to.
+      if (e.code === 'KeyM') {
+        this.network.chat('/camera');
+        return;
+      }
       if (e.code === 'Escape') {
+        if (this.state.interpolated()?.cameraMode) {
+          this.network.chat('/camera');
+          return;
+        }
         if (this.state.interpolated()?.spectating) {
           this.network.chat('/unspectate');
           return;
@@ -195,8 +216,9 @@ class ClientGame {
 
       const match = e.code.match(/^Digit([1-9])$/);
       if (!match) return;
-      const eaten = this.hud.selectSlot(Number(match[1]) - 1);
-      if (eaten) this.network.eat(eaten);
+      const result = this.hud.selectSlot(Number(match[1]) - 1);
+      if (result?.action === 'eat') this.network.eat(result.itemId);
+      else if (result?.action === 'equip') this.network.equip(result.itemId);
     });
 
     this.canvas.addEventListener('wheel', (e) => {
@@ -220,8 +242,9 @@ class ClientGame {
         // click so it doesn't fall through and swing at whatever's behind
         // it, but don't act on a hotbar this socket doesn't actually own.
         if (this.state.interpolated()?.spectating) return true;
-        const eaten = this.hud.beginHotbarDrag(slot);
-        if (eaten) this.network.eat(eaten);
+        const result = this.hud.beginHotbarDrag(slot);
+        if (result?.action === 'eat') this.network.eat(result.itemId);
+        else if (result?.action === 'equip') this.network.equip(result.itemId);
         else this.hotbarDragActive = true;
         return true;
       }
@@ -298,6 +321,13 @@ class ClientGame {
     if (me) {
       this.camera.follow(me.x, me.y, this.canvas.width, this.canvas.height);
     }
+    // The full-map view draws as an inset over the normal frame (see
+    // renderCameraOverview) rather than replacing this.camera outright, so
+    // the ordinary view above still needs framing even while it's on.
+    if (snapshot.cameraMode) {
+      const size = this.renderer.getCameraOverviewSize();
+      this.overviewCamera.frameMap(this.mapSize, size, size);
+    }
 
     // While spectating (see GameState.spectating), `me` above is the player
     // being watched, not this socket's own body — placing/casting would aim
@@ -331,6 +361,9 @@ class ClientGame {
       this.renderer.setCastTarget(fishTarget);
     }
     this.renderer.render(snapshot, this.mapSize);
+    if (snapshot.cameraMode) {
+      this.renderer.renderCameraOverview(snapshot, this.cachedCameraResources, this.mapSize, this.overviewCamera);
+    }
     this.hud.setPointer(this.input.mouseX, this.input.mouseY);
     this.hud.render(snapshot);
   }

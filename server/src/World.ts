@@ -485,6 +485,44 @@ export class World {
     }
   }
 
+  /**
+   * Stamps a circular obstacle's footprint into the nav grid, inflated by
+   * FOX_RADIUS — the same bookkeeping buildNavGrid uses for a solid resource
+   * baked in at generation, but for one placed at runtime instead (currently
+   * only wall structures, see Game.handlePlace). Keyed by the caller's own
+   * id so removeNavObstacle can find it again later; structure ids (`s...`)
+   * and resource ids (`r...`) never collide, so this shares navFootprint's
+   * map with setResourceNavBlocking's entries without needing a separate one.
+   */
+  addNavObstacle(id: string, x: number, y: number, radius: number): void {
+    const clear = radius + FOX_RADIUS;
+    const minCx = Math.max(0, Math.floor((x - clear) / NAV_CELL));
+    const maxCx = Math.min(NAV_COLS - 1, Math.floor((x + clear) / NAV_CELL));
+    const minCy = Math.max(0, Math.floor((y - clear) / NAV_CELL));
+    const maxCy = Math.min(NAV_ROWS - 1, Math.floor((y + clear) / NAV_CELL));
+
+    const footprint: number[] = [];
+    for (let cy = minCy; cy <= maxCy; cy++) {
+      for (let cx = minCx; cx <= maxCx; cx++) {
+        const centerX = (cx + 0.5) * NAV_CELL;
+        const centerY = (cy + 0.5) * NAV_CELL;
+        if (Math.hypot(centerX - x, centerY - y) > clear) continue;
+        const cell = cy * NAV_COLS + cx;
+        footprint.push(cell);
+        this.navBlockCount[cell]++;
+      }
+    }
+    this.navFootprint.set(id, footprint);
+  }
+
+  /** Undoes addNavObstacle — call once the obstacle it was stamped for is torn down. */
+  removeNavObstacle(id: string): void {
+    const footprint = this.navFootprint.get(id);
+    if (!footprint) return;
+    for (const cell of footprint) this.navBlockCount[cell] = Math.max(0, this.navBlockCount[cell] - 1);
+    this.navFootprint.delete(id);
+  }
+
   /** True if the given flattened nav cell is solid — corridor cells are always exempt. */
   private cellBlocked(cell: number): boolean {
     return this.navCorridorOpen[cell] === 0 && this.navBlockCount[cell] > 0;
@@ -891,9 +929,16 @@ export class World {
 
   // ── Update ─────────────────────────────────────────────────────────────────
 
-  update(dt: number): void {
+  /**
+   * `isRespawnBlocked` gates a resource whose timer has run out from
+   * actually coming back — see ServerResource.update — so a wall or bench
+   * built over a stump keeps it from growing back underneath. Passed in
+   * rather than known here because "occupied" means "a structure sits on
+   * it," and structures are Game's concern, not World's.
+   */
+  update(dt: number, isRespawnBlocked: (x: number, y: number, type: ResourceType) => boolean): void {
     for (const r of this.resources.values()) {
-      if (r.update(dt)) this.setResourceNavBlocking(r.id, true); // respawned this frame — solid again
+      if (r.update(dt, () => isRespawnBlocked(r.x, r.y, r.type))) this.setResourceNavBlocking(r.id, true); // respawned this frame — solid again
     }
   }
 }

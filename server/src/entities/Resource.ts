@@ -140,11 +140,24 @@ export class ServerResource {
     return { drops, destroyed };
   }
 
-  /** Returns true when the resource respawns this frame. */
-  update(dt: number): boolean {
+  /**
+   * Returns true when the resource respawns this frame. `isBlocked`, if
+   * given, is checked once the timer runs out — a player-placed structure
+   * (a wall, a crafting bench) can land on a dead resource's stump (see
+   * Game.isPlaceable's own resource-clearance check, which only stops the
+   * other direction), and a tree growing back through it would look like a
+   * bug. Held at the door with the timer pinned to 0 rather than actually
+   * respawning, so it tries again — cheaply — every tick until whatever's
+   * occupying the spot is gone.
+   */
+  update(dt: number, isBlocked?: () => boolean): boolean {
     if (!this.isDead) return false;
     this.respawnTimer -= dt;
     if (this.respawnTimer <= 0) {
+      if (isBlocked?.()) {
+        this.respawnTimer = 0;
+        return false;
+      }
       this.isDead = false;
       this.hp = this.maxHp;
       // A respawned resource is worth its full yield again, so the harvest

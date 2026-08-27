@@ -41,6 +41,17 @@ export const GOLD_SWORD_ID = 'gold_sword';
 
 export const FISHING_ROD_ID = 'fishing_rod';
 
+export const WALL_ID = 'wall';
+
+// Armor: worn rather than held (see PlayerState.armor / EquipRequest), so a
+// player can be wearing one of these while still holding a sword/tool in
+// hand — a separate equip slot from the hotbar's single "held" item. Same
+// three-tier progression as the tools above, upgraded the same way (see the
+// recipes below).
+export const WOODEN_ARMOR_ID = 'wooden_armor';
+export const STONE_ARMOR_ID = 'stone_armor';
+export const GOLD_ARMOR_ID = 'gold_armor';
+
 // Raw meat (a fox kill drop, see Game.processHarvest) has to be cooked at a
 // campfire before it's edible — see the cooked_meat recipe below and
 // shared/constants.ts's FOOD_ITEMS (raw meat is deliberately absent from it).
@@ -76,6 +87,16 @@ export const SWORD_DAMAGE_MULTIPLIER = 2;
 export const STONE_SWORD_DAMAGE_MULTIPLIER = 3;
 export const GOLD_SWORD_DAMAGE_MULTIPLIER = 4;
 
+/**
+ * Fraction of incoming damage a worn suit blocks — applies to fox bites,
+ * spider bites, and PvP alike (see Game.ts's armorReduction), not just one
+ * of them, so armor is a general "get hit less hard" upgrade rather than
+ * something narrowly aimed at a single threat.
+ */
+export const WOODEN_ARMOR_DAMAGE_REDUCTION = 0.15;
+export const STONE_ARMOR_DAMAGE_REDUCTION = 0.3;
+export const GOLD_ARMOR_DAMAGE_REDUCTION = 0.45;
+
 /** How close a player must be to a crafting bench to use bench-gated recipes. */
 export const BENCH_USE_RADIUS = 160;
 
@@ -95,6 +116,17 @@ export const RECIPES: Recipe[] = [
     cost: { wood: 40 },
     craftTime: 6,
     placeAs: CRAFTING_BENCH_ID,
+  },
+  // A solid, tree-sized barricade (see shared/constants.ts's STRUCTURE_SPAN
+  // and STRUCTURE_COLLISION_RADIUS) — unlike the campfire/bench it blocks
+  // movement outright, for players and mobs alike (see Game.pushOutOfStructures).
+  {
+    id: WALL_ID,
+    name: 'Wooden Wall',
+    icon: '🧱',
+    cost: { wood: 25 },
+    craftTime: 5,
+    placeAs: WALL_ID,
   },
   {
     id: WOODEN_AXE_ID,
@@ -168,6 +200,32 @@ export const RECIPES: Recipe[] = [
     icon: '⚔️',
     cost: { [STONE_SWORD_ID]: 1, gold: 25, wood: 25 },
     craftTime: 12,
+    requiresBench: true,
+  },
+  // Armor: same three-tier shape as the tools above — wooden is unbenched,
+  // stone/gold are bench-gated and consume the tier below them — but priced
+  // higher, since a suit is worn continuously rather than swung once per hit.
+  {
+    id: WOODEN_ARMOR_ID,
+    name: 'Wooden Armor',
+    icon: '🥋',
+    cost: { wood: 40 },
+    craftTime: 8,
+  },
+  {
+    id: STONE_ARMOR_ID,
+    name: 'Stone Armor',
+    icon: '🥋',
+    cost: { [WOODEN_ARMOR_ID]: 1, stone: 35, wood: 20 },
+    craftTime: 12,
+    requiresBench: true,
+  },
+  {
+    id: GOLD_ARMOR_ID,
+    name: 'Gold Armor',
+    icon: '🥋',
+    cost: { [STONE_ARMOR_ID]: 1, gold: 35, wood: 20 },
+    craftTime: 16,
     requiresBench: true,
   },
   {

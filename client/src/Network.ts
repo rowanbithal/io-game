@@ -95,6 +95,10 @@ export class Network {
     this.socket.emit('eat', { itemId });
   }
 
+  equip(itemId: string): void {
+    this.socket.emit('equip', { itemId });
+  }
+
   chat(text: string): void {
     this.socket.emit('chat', { text });
   }
