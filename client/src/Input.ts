@@ -10,7 +10,6 @@ function isTextField(target: EventTarget | null): boolean {
 
 export class Input {
   private keys = new Set<string>();
-  private mouseAngle = 0;
   private mouseDown = false; // Held, like a movement key — swings repeat every tick while true
   // One-shot: right-click / F, consumed by consumeAltAction(). Context-
   // sensitive — the caller decides whether it means "place" or "cast"
@@ -50,9 +49,6 @@ export class Input {
       const rect = canvas.getBoundingClientRect();
       this.mouseX = e.clientX - rect.left;
       this.mouseY = e.clientY - rect.top;
-      const cx = rect.width / 2;
-      const cy = rect.height / 2;
-      this.mouseAngle = Math.atan2(this.mouseY - cy, this.mouseX - cx);
     });
 
     canvas.addEventListener('mousedown', (e) => {
@@ -109,15 +105,19 @@ export class Input {
   /**
    * Returns the current input state and resets one-shot actions.
    * Call once per send interval. `held` is the hotbar selection, which the
-   * server needs in order to apply held-tool bonuses.
+   * server needs in order to apply held-tool bonuses. `aimX`/`aimY` are the
+   * player's own on-screen position in canvas pixels — the facing angle is
+   * measured from there rather than the canvas center, since the camera
+   * clamps at the map edges and stops centering the player once it does
+   * (see Camera.follow).
    */
-  getInput(held: string | null): PlayerInput {
+  getInput(held: string | null, aimX: number, aimY: number): PlayerInput {
     return {
       up: this.keys.has('KeyW') || this.keys.has('ArrowUp'),
       down: this.keys.has('KeyS') || this.keys.has('ArrowDown'),
       left: this.keys.has('KeyA') || this.keys.has('ArrowLeft'),
       right: this.keys.has('KeyD') || this.keys.has('ArrowRight'),
-      angle: this.mouseAngle,
+      angle: Math.atan2(this.mouseY - aimY, this.mouseX - aimX),
       // Held like a movement key, not a one-shot pulse — the server's own
       // HARVEST_COOLDOWN already throttles actual swings, so sending this
       // continuously while the button/key is down is what makes holding it

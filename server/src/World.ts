@@ -1,4 +1,4 @@
-import { MAP_SIZE, GRID_CELL, TREE_SPAN, ROCK_SPAN, WHEAT_SPAN, GOLD_SPAN, GOLD_TOP_BAND, DARK_FOREST_BAND, PLAYER_RADIUS, FOX_RADIUS, SOLID_COLLISION_RADIUS, ResourceType, LakeState, darkForestBandAt } from '@io-game/shared';
+import { MAP_SIZE, GRID_CELL, TREE_SPAN, ROCK_SPAN, WHEAT_SPAN, GOLD_SPAN, GOLD_TOP_BAND, DARK_FOREST_BAND, PLAYER_RADIUS, FOX_RADIUS, SOLID_COLLISION_RADIUS, ResourceType, LakeState, darkForestBandAt, seaCoastAt, seaSandStartAt } from '@io-game/shared';
 import { ServerResource } from './entities/Resource';
 
 // ── Lakes ─────────────────────────────────────────────────────────────────────
@@ -312,6 +312,7 @@ export class World {
         const y = darkForestOnly
           ? margin + Math.random() * Math.max(1, darkForestBandAt(x) - margin)
           : margin + Math.random() * (MAP_SIZE - margin * 2);
+        if (!darkForestOnly && y >= seaSandStartAt(x)) continue; // stay off the beach/sea
         if (this.isBlockedByLake(x, y)) continue;
         this.spawnAt(type, x, y);
         placed++;
@@ -335,7 +336,11 @@ export class World {
     const cellW = MAP_SIZE / LAKE_GRID_COLS;
     const cellH = MAP_SIZE / LAKE_GRID_ROWS;
 
-    for (let row = 0; row < LAKE_GRID_ROWS; row++) {
+    // The grid's rows happen to line up with the map's three biome bands
+    // (forest / plains / sea) — skip the bottom row entirely so no
+    // freshwater lake ever gets seeded inside (or jittered up against) the
+    // ocean's own coastline.
+    for (let row = 0; row < LAKE_GRID_ROWS - 1; row++) {
       for (let col = 0; col < LAKE_GRID_COLS; col++) {
         const cellCx = col * cellW + cellW / 2;
         const cellCy = row * cellH + cellH / 2;
@@ -394,6 +399,31 @@ export class World {
       if (Math.hypot(x - lake.x, y - lake.y) < lake.radius * LAKE_LOBE_BUFFER) return true;
     }
     return false;
+  }
+
+  /** True if (x, y) is out past the sea's coastline — mirrors isInLakeWater's gameplay role for the map's south coast. */
+  isInSeaWater(x: number, y: number): boolean {
+    return seaCoastAt(x) <= y;
+  }
+
+  /** True if (x, y) falls on the sea's beach or in its water — mirrors isBlockedByLake's shore+water reach, for spawn checks that should stay off the coast entirely. */
+  isBlockedBySea(x: number, y: number, extraMargin = 0): boolean {
+    return seaSandStartAt(x) - extraMargin <= y;
+  }
+
+  /**
+   * True if (x, y) — with the given clearance margin — would dip into the
+   * sea's actual water, but not merely its beach. Structures are placeable
+   * on the sand (same as a lake's shore isn't off-limits to build near,
+   * just its water), so this is deliberately narrower than isBlockedBySea.
+   */
+  isBlockedBySeaWater(x: number, y: number, extraMargin = 0): boolean {
+    return seaCoastAt(x) - extraMargin <= y;
+  }
+
+  /** True if (x, y) is water, lake or sea — the single "is this a wading/casting/swimming spot" check the rest of Game.ts wants. */
+  isInWater(x: number, y: number): boolean {
+    return this.isInLakeWater(x, y) || this.isInSeaWater(x, y);
   }
 
   /** Mirrors the client's adjacency check (Renderer.ts drawTreeBranches) to find every connected tree pair. */
@@ -823,7 +853,18 @@ export class World {
       }
     };
 
-    for (const cfg of CLUSTER_CONFIG) runClusterConfig(cfg, () => 0, () => fineRows);
+    // Row cutoff following the sea's actual meandering coastline (see
+    // seaSandStartAt) — every map-wide/plains pass below caps its max row
+    // here instead of at fineRows, so nothing seeds itself onto the beach or
+    // out in the water. Same "function of the seed's own column" deal as
+    // forestBandRowsAt below, for the same reason: a flat row cutoff
+    // wouldn't follow the coastline's wander.
+    const seaBandRowsAt = (seedGX: number): number => {
+      const worldX = margin + seedGX * GRID_CELL;
+      return Math.max(1, Math.floor((seaSandStartAt(worldX) - margin) / GRID_CELL));
+    };
+
+    for (const cfg of CLUSTER_CONFIG) runClusterConfig(cfg, () => 0, seaBandRowsAt);
 
     // Row cutoff following the dark forest's actual meandering edge (see
     // darkForestBandAt) — shared by every biome-confined pass below. Forest
@@ -837,11 +878,12 @@ export class World {
     };
 
     // Plains trees/rocks: confined to y >= the band, i.e. everywhere the
-    // dark forest passes below aren't — so the two biomes' densities (and,
-    // for rocks, clustering) can be tuned independently without one pass's
-    // seed pool eating into the other's.
-    runClusterConfig(PLAINS_TREE_CONFIG, forestBandRowsAt, () => fineRows);
-    runClusterConfig(PLAINS_ROCK_CONFIG, forestBandRowsAt, () => fineRows);
+    // dark forest passes below aren't (and y <= the sea's own band, so they
+    // stop short of the beach) — so the two biomes' densities (and, for
+    // rocks, clustering) can be tuned independently without one pass's seed
+    // pool eating into the other's.
+    runClusterConfig(PLAINS_TREE_CONFIG, forestBandRowsAt, seaBandRowsAt);
+    runClusterConfig(PLAINS_ROCK_CONFIG, forestBandRowsAt, seaBandRowsAt);
 
     // Dark forest trees/rocks, seeds confined to y < the band. A seeded
     // cluster can still grow a member or two past the band edge (growth

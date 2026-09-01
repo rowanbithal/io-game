@@ -304,9 +304,21 @@ class ClientGame {
 
   /** The ordinary in-game frame: input, camera-follow, world + HUD render. */
   private loopGame(timestamp: number): void {
+    const snapshot = this.state.interpolated();
+    const me = snapshot?.players.find((p) => p.isMe);
+    if (me) {
+      this.camera.follow(me.x, me.y, this.canvas.width, this.canvas.height);
+    }
+
     // Send input at server tick rate (not every frame)
     if (timestamp - this.lastInputSend >= INPUT_INTERVAL_MS) {
-      this.network.sendInput(this.input.getInput(this.hud.getSelectedItem()));
+      // Aim from the player's actual on-screen position (falling back to
+      // the canvas center before the first snapshot arrives) rather than
+      // always assuming the center — see Input.getInput.
+      const aim = me ? this.camera.toScreen(me.x, me.y) : null;
+      const aimX = aim ? aim.sx * this.camera.zoom : this.canvas.width / 2;
+      const aimY = aim ? aim.sy * this.camera.zoom : this.canvas.height / 2;
+      this.network.sendInput(this.input.getInput(this.hud.getSelectedItem(), aimX, aimY));
       this.lastInputSend = timestamp;
     }
 
@@ -314,13 +326,7 @@ class ClientGame {
       this.hud.updateHotbarDrag(this.input.mouseX, this.input.mouseY);
     }
 
-    const snapshot = this.state.interpolated();
     if (!snapshot) return;
-
-    const me = snapshot.players.find((p) => p.isMe);
-    if (me) {
-      this.camera.follow(me.x, me.y, this.canvas.width, this.canvas.height);
-    }
     // The full-map view draws as an inset over the normal frame (see
     // renderCameraOverview) rather than replacing this.camera outright, so
     // the ordinary view above still needs framing even while it's on.

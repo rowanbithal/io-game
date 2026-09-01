@@ -11,9 +11,14 @@ import {
   HEALTH_REGEN_RATE,
   HEALTH_REGEN_MIN_HUNGER,
   HEALTH_REGEN_MIN_TEMPERATURE,
+  HEALTH_REGEN_MIN_THIRST,
   CAMPFIRE_HEALTH_REGEN_RATE,
   STARVATION_DAMAGE,
   COLD_DAMAGE,
+  MAX_THIRST,
+  THIRST_DECAY_RATE,
+  THIRST_REGEN_RATE_IN_WATER,
+  DEHYDRATION_DAMAGE,
   HARVEST_COOLDOWN,
   CAMPFIRE_WARMTH_RATE,
   MAP_SIZE,
@@ -35,6 +40,7 @@ export class ServerPlayer {
   health: number;
   hunger = MAX_HUNGER;
   temperature = 100;
+  thirst = MAX_THIRST;
   score = 0;
 
   // Armor currently worn, or null — a separate slot from input.held (see
@@ -95,6 +101,7 @@ export class ServerPlayer {
     this.health = this.maxHealth;
     this.hunger = MAX_HUNGER;
     this.temperature = 100;
+    this.thirst = MAX_THIRST;
     this.score = 0;
     this.crafting = null;
     this.fishing = null;
@@ -104,7 +111,7 @@ export class ServerPlayer {
     this.y = MAP_SIZE * (0.3 + Math.random() * 0.4);
   }
 
-  update(dt: number, isDay: boolean, speedMultiplier = 1, nearFire = false): void {
+  update(dt: number, isDay: boolean, speedMultiplier = 1, nearFire = false, inWater = false): void {
     // ── Movement ────────────────────────────────────────────────────────────
     let dx = 0;
     let dy = 0;
@@ -128,6 +135,15 @@ export class ServerPlayer {
     // ── Survival stats ───────────────────────────────────────────────────────
     this.hunger = Math.max(0, this.hunger - HUNGER_DECAY_RATE * dt);
 
+    // Wading — lake or sea alike, see Game.ts's isInWater — refills thirst
+    // fast enough to overpower the decay entirely, mirroring how a campfire
+    // overrides the temperature swing below.
+    if (inWater) {
+      this.thirst = Math.min(MAX_THIRST, this.thirst + THIRST_REGEN_RATE_IN_WATER * dt);
+    } else {
+      this.thirst = Math.max(0, this.thirst - THIRST_DECAY_RATE * dt);
+    }
+
     // A campfire warms you faster than the night cools you, so sitting by one
     // overrides the day/night swing entirely.
     if (nearFire) {
@@ -143,14 +159,20 @@ export class ServerPlayer {
     // frame), so without this guard a player brought to exactly 0 would tick
     // straight back up to a fraction of a hit point here on the next frame and
     // never be seen as dead at all.
-    if (this.health > 0 && this.hunger > HEALTH_REGEN_MIN_HUNGER && this.temperature > HEALTH_REGEN_MIN_TEMPERATURE) {
+    if (
+      this.health > 0 &&
+      this.hunger > HEALTH_REGEN_MIN_HUNGER &&
+      this.temperature > HEALTH_REGEN_MIN_TEMPERATURE &&
+      this.thirst > HEALTH_REGEN_MIN_THIRST
+    ) {
       const rate = nearFire ? CAMPFIRE_HEALTH_REGEN_RATE : HEALTH_REGEN_RATE;
       this.health = Math.min(this.maxHealth, this.health + rate * dt);
     }
 
-    // Damage from starvation / cold
+    // Damage from starvation / cold / dehydration
     if (this.hunger <= 0) this.health = Math.max(0, this.health - STARVATION_DAMAGE * dt);
     if (this.temperature <= 0) this.health = Math.max(0, this.health - COLD_DAMAGE * dt);
+    if (this.thirst <= 0) this.health = Math.max(0, this.health - DEHYDRATION_DAMAGE * dt);
 
     // ── Cooldowns ────────────────────────────────────────────────────────────
     if (this.harvestCooldown > 0) {
@@ -184,6 +206,7 @@ export class ServerPlayer {
       maxHealth: this.maxHealth,
       hunger: this.hunger,
       temperature: this.temperature,
+      thirst: this.thirst,
       score: Math.floor(this.score),
       harvestCooldown: this.harvestCooldown,
       craftingId: this.crafting?.recipe.id ?? null,

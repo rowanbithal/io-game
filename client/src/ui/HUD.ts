@@ -3,6 +3,7 @@ import {
   GameState,
   MAP_SIZE,
   MAX_HUNGER,
+  MAX_THIRST,
   RECIPES,
   Recipe,
   canAfford,
@@ -30,6 +31,8 @@ import {
   LakeState,
   DARK_FOREST_TRANSITION,
   darkForestBandAt,
+  SEA_SAND_WIDTH,
+  seaCoastAt,
   hashCell,
 } from '@io-game/shared';
 import {
@@ -150,6 +153,18 @@ function terrainColor(
     if (fromWater <= lake.shoreWidth) return pick(MAP_COLORS.sand, noise < 0.5 ? 1 : 2);
     if (fromWater <= lake.shoreWidth * 1.5 && noise < 0.45) return pick(MAP_COLORS.sand, 0);
   }
+
+  // The sea, across the bottom of the map — same coast/sand-ring treatment
+  // as a lake's above, just following seaCoastAt's wandering band instead of
+  // a circular blob.
+  const coast = seaCoastAt(wx);
+  if (wy >= coast) {
+    const depth = wy - coast;
+    return pick(MAP_COLORS.water, depth < 90 ? 2 : depth < 200 ? 1 : 0);
+  }
+  const fromCoast = coast - wy;
+  if (fromCoast <= SEA_SAND_WIDTH) return pick(MAP_COLORS.sand, noise < 0.5 ? 1 : 2);
+  if (fromCoast <= SEA_SAND_WIDTH * 1.2 && noise < 0.45) return pick(MAP_COLORS.sand, 0);
 
   const band = darkForestBandAt(wx);
   if (wy < band) return pick(MAP_COLORS.forest, noise < 0.4 ? 0 : noise < 0.8 ? 1 : 2);
@@ -491,6 +506,7 @@ export class HUD {
       { label: '♥ HP', value: me.health, max: me.maxHealth, fill: '#2ecc71', low: '#e74c3c', threshold: me.maxHealth * 0.3 },
       { label: '🍖 Food', value: me.hunger, max: MAX_HUNGER, fill: '#f39c12', low: '#e74c3c', threshold: 30 },
       { label: '❄ Temp', value: me.temperature, max: 100, fill: '#56c9ff', low: '#8e44ad', threshold: 25 },
+      { label: '💧 Thirst', value: me.thirst, max: MAX_THIRST, fill: '#2980b9', low: '#e74c3c', threshold: 30 },
     ];
 
     const bW = 150;

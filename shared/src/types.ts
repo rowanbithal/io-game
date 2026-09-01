@@ -95,6 +95,7 @@ export interface PlayerState {
   maxHealth: number; // Usually MAX_HEALTH (100) — bots run higher, see BOT_MAX_HEALTH_MULTIPLIER
   hunger: number; // 0-100
   temperature: number; // 0-100
+  thirst: number; // 0-100
   score: number;
   harvestCooldown: number; // Seconds until the next harvest swing is allowed; used client-side to animate the swing
   craftingId: string | null; // Recipe currently being crafted, if any

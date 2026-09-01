@@ -1,5 +1,5 @@
 import { ResourceType } from './types';
-import { DARK_FOREST_BAND, TREE_SPAN, FOREST_TREE_SCALE, FOREST_ROCK_SCALE } from './constants';
+import { DARK_FOREST_BAND, SEA_BAND, SEA_SAND_WIDTH, TREE_SPAN, FOREST_TREE_SCALE, FOREST_ROCK_SCALE } from './constants';
 
 /**
  * How far the dark forest's edge wanders above/below DARK_FOREST_BAND at a
@@ -29,6 +29,41 @@ export function darkForestEdgeOffset(worldX: number): number {
 /** The dark forest's actual boundary y at a given world x — DARK_FOREST_BAND is just its average. */
 export function darkForestBandAt(worldX: number): number {
   return DARK_FOREST_BAND + darkForestEdgeOffset(worldX);
+}
+
+// ── Sea coastline ────────────────────────────────────────────────────────────
+// The bottom-of-map ocean's edge meanders the exact same way the dark
+// forest's does (see darkForestEdgeOffset) — a few summed sine waves, just
+// with different wavelengths/phases so the two borders don't read as mirror
+// images of the same wave.
+
+const SEA_WAVE_A = 130;
+const SEA_WAVE_B = 55;
+const SEA_WAVE_C = 24;
+
+/** Furthest the coastline can push north/south of SEA_BAND — the sum of the three waves' amplitudes. */
+export const SEA_EDGE_AMPLITUDE = SEA_WAVE_A + SEA_WAVE_B + SEA_WAVE_C;
+
+export function seaEdgeOffset(worldX: number): number {
+  const a = Math.sin((worldX / 1100) * Math.PI * 2 + 1.4) * SEA_WAVE_A;
+  const b = Math.sin((worldX / 410) * Math.PI * 2 + 3.7) * SEA_WAVE_B;
+  const c = Math.sin((worldX / 160) * Math.PI * 2 + 0.2) * SEA_WAVE_C;
+  return a + b + c;
+}
+
+/** The water's actual coastline y at a given world x — SEA_BAND is just its average. */
+export function seaCoastAt(worldX: number): number {
+  return SEA_BAND + seaEdgeOffset(worldX);
+}
+
+/** Where the sandy beach begins (the grass/sand seam) — SEA_SAND_WIDTH north of the water's own coastline. */
+export function seaSandStartAt(worldX: number): number {
+  return seaCoastAt(worldX) - SEA_SAND_WIDTH;
+}
+
+/** True south of the water's coastline — mirrors isInLakeWater's "gameplay water" role, but for the sea. */
+export function isInSea(worldX: number, worldY: number): boolean {
+  return worldY >= seaCoastAt(worldX);
 }
 
 // ── Forest variants ──────────────────────────────────────────────────────────

@@ -1,4 +1,4 @@
-import { GameState, PlayerState, ResourceState, StructureState, SpiderState, FoxState, LakeState, FishingState, PLAYER_RADIUS, FOX_RADIUS, GRID_CELL, TREE_SPAN, ROCK_SPAN, WHEAT_SPAN, GOLD_SPAN, HARVEST_RANGE, HARVEST_ANGLE, HARVEST_COOLDOWN, STRUCTURE_SPAN, PLACE_RANGE, CAMPFIRE_LIGHT_RADIUS, CAMPFIRE_BURNOUT_FADE, SPIDER_RADIUS, CAST_RANGE, RECIPES_BY_ID, WOODEN_AXE_ID, WOODEN_PICKAXE_ID, WOODEN_SWORD_ID, STONE_AXE_ID, STONE_PICKAXE_ID, STONE_SWORD_ID, GOLD_AXE_ID, GOLD_PICKAXE_ID, GOLD_SWORD_ID, WOODEN_ARMOR_ID, STONE_ARMOR_ID, GOLD_ARMOR_ID, CRAFTING_BENCH_ID, FISHING_ROD_ID, MAP_SIZE, DARK_FOREST_BAND, DARK_FOREST_TRANSITION, GOLD_TOP_BAND, FOREST_TREE_SCALE, FOREST_ROCK_SCALE, darkForestBandAt, DARK_FOREST_EDGE_AMPLITUDE, dayPhase, hashCell, clamp01, smoothstep, forestFactor, isForestTree, isForestRock, resourceCell, RESOURCE_SEED_SALT } from '@io-game/shared';
+import { GameState, PlayerState, ResourceState, StructureState, SpiderState, FoxState, LakeState, FishingState, PLAYER_RADIUS, FOX_RADIUS, GRID_CELL, TREE_SPAN, ROCK_SPAN, WHEAT_SPAN, GOLD_SPAN, HARVEST_RANGE, HARVEST_ANGLE, HARVEST_COOLDOWN, STRUCTURE_SPAN, PLACE_RANGE, CAMPFIRE_LIGHT_RADIUS, CAMPFIRE_BURNOUT_FADE, SPIDER_RADIUS, CAST_RANGE, RECIPES_BY_ID, WOODEN_AXE_ID, WOODEN_PICKAXE_ID, WOODEN_SWORD_ID, STONE_AXE_ID, STONE_PICKAXE_ID, STONE_SWORD_ID, GOLD_AXE_ID, GOLD_PICKAXE_ID, GOLD_SWORD_ID, WOODEN_ARMOR_ID, STONE_ARMOR_ID, GOLD_ARMOR_ID, CRAFTING_BENCH_ID, FISHING_ROD_ID, MAP_SIZE, DARK_FOREST_BAND, DARK_FOREST_TRANSITION, GOLD_TOP_BAND, FOREST_TREE_SCALE, FOREST_ROCK_SCALE, darkForestBandAt, DARK_FOREST_EDGE_AMPLITUDE, SEA_BAND, SEA_SAND_WIDTH, seaCoastAt, seaSandStartAt, SEA_EDGE_AMPLITUDE, dayPhase, hashCell, clamp01, smoothstep, forestFactor, isForestTree, isForestRock, resourceCell, RESOURCE_SEED_SALT } from '@io-game/shared';
 import { Camera } from './Camera';
 
 import berryUrl from './assets/sprites/berry.png';
@@ -119,6 +119,15 @@ const P = {
   // lake shore's own pebbles stay flat P.pebble.
   pebbleLight: '#aca684',
   pebbleDark: '#5f5b4e',
+
+  // Sea beach clutter (see beachClutter) — seashells and starfish scattered
+  // over the sand, the sea's answer to the plains' flower patches.
+  shellLight: '#ffe9da',
+  shell: '#f0b8a0',
+  shellDark: '#c97f66',
+  starfishLight: '#ff9d5c',
+  starfish: '#e8763a',
+  starfishDark: '#a84f22',
 
   // Campfire
   emberLight: '#ffd76b',
@@ -442,6 +451,15 @@ function forestEdgeWobble(gx: number, gy: number): number {
   const fine = blockRandom(gx, gy, 91) - 0.5;
   const wave = Math.sin((gx * BLOCK) / 55 + (gy * BLOCK) / 70) * 0.5;
   return (fine * 0.3 + wave * 0.7) * FOREST_FINE_WOBBLE_RANGE;
+}
+
+/** Sea coastline's own fine wobble — same construction as forestEdgeWobble, own salt/wavelengths so it doesn't echo the forest edge's exact texture. */
+const SEA_FINE_WOBBLE_RANGE = 90;
+
+function seaEdgeWobble(gx: number, gy: number): number {
+  const fine = blockRandom(gx, gy, 173) - 0.5;
+  const wave = Math.sin((gx * BLOCK) / 48 + (gy * BLOCK) / 63) * 0.5;
+  return (fine * 0.3 + wave * 0.7) * SEA_FINE_WOBBLE_RANGE;
 }
 
 /**
@@ -1126,6 +1144,72 @@ function getClutterPiece(gx: number, gy: number): ClutterPiece | null {
       : null;
 
   clutterCache.set(seed, piece);
+  return piece;
+}
+
+// ── Sea beach clutter ────────────────────────────────────────────────────────
+// Seashells and starfish scattered over the sand — the sea's answer to the
+// flower patches above, but sparser and unpatched (every roll site on the
+// beach gets an independent low-probability roll rather than being confined
+// to a lattice of patches — a beach's shells wash up individually, not in
+// meadow-sized clumps). Gating to the sand band itself is the caller's job
+// (see drawBeachClutter), same as drawGroundClutter skips cells the forest
+// floor would paint over anyway.
+
+const BEACH_CLUTTER_SALT = 511;
+/** Fraction of beach roll sites that get a shell or starfish at all — "occasional", not a carpet of them. */
+const BEACH_CLUTTER_DENSITY = 0.05;
+
+const SHELL_PALETTE: Palette3 = { light: P.shellLight, base: P.shell, dark: P.shellDark };
+const STARFISH_PALETTE: Palette3 = { light: P.starfishLight, base: P.starfish, dark: P.starfishDark };
+
+/** A tiny fluted scallop shell: a shadowed hinge point widening into a light-catching fan. */
+function shellCells(rng: () => number): Cell[] {
+  const cells: Cell[] = [
+    { gx: 0, gy: -1, shade: 'base' },
+    { gx: -1, gy: 0, shade: 'base' },
+    { gx: 0, gy: 0, shade: 'dark' },
+    { gx: 1, gy: 0, shade: 'base' },
+    { gx: -0.5, gy: 1, shade: 'light' },
+    { gx: 0.5, gy: 1, shade: 'light' },
+  ];
+  const ribs = [0, 1, 3];
+  cells[ribs[Math.floor(rng() * ribs.length)]].shade = 'light';
+  return cells;
+}
+
+/** A tiny five-armed starfish, built the same "core plus jittered points" way flowerCells is. */
+function starfishCells(rng: () => number): Cell[] {
+  const cells: Cell[] = [{ gx: 0, gy: 0, shade: 'dark' }];
+  const armLen = 1.4;
+  const tipIndices: number[] = [];
+  for (let i = 0; i < 5; i++) {
+    const angle = (i / 5) * Math.PI * 2 + rng() * 0.3;
+    cells.push({ gx: Math.cos(angle) * armLen * 0.55, gy: Math.sin(angle) * armLen * 0.55, shade: 'base' });
+    tipIndices.push(cells.length);
+    cells.push({ gx: Math.cos(angle) * armLen, gy: Math.sin(angle) * armLen, shade: 'base' });
+  }
+  cells[tipIndices[Math.floor(rng() * tipIndices.length)]].shade = 'light';
+  return cells;
+}
+
+const beachClutterCache = new Map<number, ClutterPiece | null>();
+
+/** Deterministic per-cell roll for beach clutter — same caching/hashing deal as getClutterPiece, own salt so the two never roll in lockstep. */
+function getBeachClutterPiece(gx: number, gy: number): ClutterPiece | null {
+  const seed = hashCell(gx, gy, BEACH_CLUTTER_SALT);
+  const cached = beachClutterCache.get(seed);
+  if (cached !== undefined) return cached;
+
+  const rng = mulberry32(seed);
+  const piece: ClutterPiece | null =
+    rng() < BEACH_CLUTTER_DENSITY
+      ? rng() < 0.55
+        ? { cells: shellCells(rng), palette: SHELL_PALETTE }
+        : { cells: starfishCells(rng), palette: STARFISH_PALETTE }
+      : null;
+
+  beachClutterCache.set(seed, piece);
   return piece;
 }
 
@@ -1950,6 +2034,53 @@ export function drawFishIcon(ctx: CanvasRenderingContext2D, color: FishColor, bl
 }
 export const FISH_ICON_HALF_BLOCKS = 3.5;
 
+// ── Sea fish ─────────────────────────────────────────────────────────────────
+// Ambient fish for the open sea — same sprite and swimming feel as a lake's
+// (see Fish above), but a lake fish is contained by distance from one
+// circular center while the sea has no center to speak of. These instead
+// wander around a fixed anchor point scattered along the coastline, the same
+// anchor-plus-drift containment the fireflies use — and, like the fireflies,
+// live in absolute world coordinates rather than a lake-local offset.
+
+interface SeaFish {
+  ax: number; // anchor, world coords — the point it wanders around
+  ay: number;
+  x: number; // current position, world coords
+  y: number;
+  angle: number;
+  speed: number;
+  drift: number;
+  color: FishColor;
+  wakeTimer: number;
+}
+
+/** How many fish to scatter along the whole coastline. */
+const SEA_FISH_COUNT = 46;
+/** Fixed seed — the sea's fish aren't keyed off any server-sent id the way lake fish are (see setLakes), so this alone has to make them stable across reloads. */
+const SEA_FISH_SEED = 8172311;
+
+function buildSeaFish(): SeaFish[] {
+  const rng = mulberry32(SEA_FISH_SEED);
+  const margin = 150;
+  const fish: SeaFish[] = [];
+  for (let i = 0; i < SEA_FISH_COUNT; i++) {
+    const ax = margin + rng() * (MAP_SIZE - margin * 2);
+    const ay = seaCoastAt(ax) + 60 + rng() * 220; // a little way out past the coastline
+    fish.push({
+      ax,
+      ay,
+      x: ax,
+      y: ay,
+      angle: rng() * Math.PI * 2,
+      speed: 10 + rng() * 8,
+      drift: 40 + rng() * 50,
+      color: FISH_COLORS[Math.floor(rng() * FISH_COLORS.length)],
+      wakeTimer: rng() * 0.4,
+    });
+  }
+  return fish;
+}
+
 // ── Fireflies ────────────────────────────────────────────────────────────────
 // Dark forest ambiance, and purely that — like the lake fish, they're
 // simulated client-side only, never touch the server, and nothing in the
@@ -2141,6 +2272,14 @@ export class Renderer {
   private readonly lakeFish = new Map<string, Fish[]>();
   private readonly lakeRipples = new Map<string, Ripple[]>();
   private lastFrameTime = 0;
+
+  // Sea fish (see the "Sea fish" section above) — same local-only ambiance
+  // as the lake fish, but their positions come from MAP_SIZE alone (the
+  // coastline is a pure function of x, not random per-session like a lake),
+  // so they can be seeded up front the same way the fireflies are rather
+  // than waiting on setLakes.
+  private readonly seaFish: SeaFish[] = buildSeaFish();
+  private readonly seaRipples: Ripple[] = [];
 
   // Dark forest fireflies — same deal as the fish: local-only ambiance, with
   // no server state and nothing that can interact with them. Their positions
@@ -2443,6 +2582,95 @@ export class Renderer {
         drawFishShape(ctx, f.color);
         ctx.restore();
       }
+    }
+  }
+
+  /**
+   * Advances every sea fish — same gentle wander/steer-back/wake-ripple deal
+   * updateFish uses for lake fish, just contained by distance from its own
+   * anchor (see SeaFish) instead of distance from a lake's center. Called
+   * alongside updateFish from updateAnimations.
+   */
+  private updateSeaFish(dt: number): void {
+    if (dt <= 0) return;
+
+    for (const f of this.seaFish) {
+      f.angle += (Math.random() - 0.5) * 1.6 * dt;
+
+      const dx = f.x - f.ax;
+      const dy = f.y - f.ay;
+      if (Math.hypot(dx, dy) > f.drift) {
+        const toAnchor = Math.atan2(-dy, -dx);
+        const diff = Math.atan2(Math.sin(toAnchor - f.angle), Math.cos(toAnchor - f.angle));
+        f.angle += diff * Math.min(1, dt * 3);
+      }
+
+      f.x += Math.cos(f.angle) * f.speed * dt;
+      f.y += Math.sin(f.angle) * f.speed * dt;
+
+      f.wakeTimer -= dt;
+      if (f.wakeTimer <= 0) {
+        f.wakeTimer = 0.35 + Math.random() * 0.25;
+        this.spawnSeaRipple(f.x - Math.cos(f.angle) * 4, f.y - Math.sin(f.angle) * 4, 6, 1.1);
+      }
+    }
+
+    // The odd ambient ripple too, independent of any fish — scattered
+    // anywhere along the coastline rather than tied to one lake's radius.
+    if (Math.random() < dt * 0.6) {
+      const x = Math.random() * MAP_SIZE;
+      const y = seaCoastAt(x) + Math.random() * 180;
+      this.spawnSeaRipple(x, y, 10, 1.8);
+    }
+
+    for (let i = this.seaRipples.length - 1; i >= 0; i--) {
+      this.seaRipples[i].age += dt;
+      if (this.seaRipples[i].age >= this.seaRipples[i].maxAge) this.seaRipples.splice(i, 1);
+    }
+  }
+
+  /** Ripples in the sea are stored in absolute world coordinates (unlike a lake's, which are lake-local) — there's no single center to offset from. */
+  private spawnSeaRipple(x: number, y: number, maxRadius: number, maxAge: number): void {
+    if (this.seaRipples.length > 120) return; // cap so a busy coastline can't grow unbounded
+    this.seaRipples.push({ x, y, age: 0, maxAge, maxRadius });
+  }
+
+  /** Viewport-culled — unlike drawRipples, the sea's ripples are scattered across the whole coastline, not one small lake. */
+  private drawSeaRipples(viewW: number, viewH: number): void {
+    const { ctx, camera } = this;
+    const margin = 20;
+
+    for (const r of this.seaRipples) {
+      if (r.x < camera.x - margin || r.x > camera.x + viewW + margin) continue;
+      if (r.y < camera.y - margin || r.y > camera.y + viewH + margin) continue;
+
+      const t = r.age / r.maxAge;
+      const alpha = (1 - t) * 0.45;
+      if (alpha <= 0.01) continue;
+
+      const { sx, sy } = camera.toScreen(r.x, r.y);
+      ctx.save();
+      ctx.translate(sx, sy);
+      drawPixelRing(ctx, r.maxRadius * t, `rgba(232,247,247,${alpha.toFixed(3)})`);
+      ctx.restore();
+    }
+  }
+
+  /** Viewport-culled — same reasoning as drawSeaRipples. */
+  private drawSeaFish(viewW: number, viewH: number): void {
+    const { ctx, camera } = this;
+    const margin = 20;
+
+    for (const f of this.seaFish) {
+      if (f.x < camera.x - margin || f.x > camera.x + viewW + margin) continue;
+      if (f.y < camera.y - margin || f.y > camera.y + viewH + margin) continue;
+
+      const { sx, sy } = camera.toScreen(f.x, f.y);
+      ctx.save();
+      ctx.translate(sx, sy);
+      ctx.rotate(f.angle);
+      drawFishShape(ctx, f.color);
+      ctx.restore();
     }
   }
 
@@ -2957,6 +3185,7 @@ export class Renderer {
     const dt = this.lastFrameTime ? Math.min((now - this.lastFrameTime) / 1000, 0.1) : 0;
     this.lastFrameTime = now;
     this.updateFish(dt);
+    this.updateSeaFish(dt);
     this.updateFireflies(dt);
     this.updateFishSplashes(state.players, now);
     this.updateResourceRecoil(state.resources, state.players, dt);
@@ -2986,6 +3215,8 @@ export class Renderer {
     this.drawGroundClutter(W / zoom, H / zoom);
     this.drawForestFloor(W / zoom, H / zoom);
     this.drawGridLines(W / zoom, H / zoom);
+    this.drawSea(W / zoom, H / zoom);
+    this.drawBeachClutter(W / zoom, H / zoom);
     this.drawLakes();
     // Ripples and fish are both skipped in the overview inset (see
     // simplifyOverview) — individually animated small-scale motion that
@@ -2994,6 +3225,8 @@ export class Renderer {
     if (!this.simplifyOverview) {
       this.drawRipples();
       this.drawFish();
+      this.drawSeaRipples(W / zoom, H / zoom);
+      this.drawSeaFish(W / zoom, H / zoom);
     }
     this.drawMapBorder(mapSize);
     this.drawTreeBranches(resources);
@@ -3296,6 +3529,127 @@ export class Renderer {
     for (let y = startY; y <= endY; y += GRID_CELL) {
       const { sy } = camera.toScreen(0, y);
       ctx.fillRect(0, sy - lineW / 2, viewW, lineW);
+    }
+  }
+
+  // ── Sea ────────────────────────────────────────────────────────────────────
+  // The map's south coast — a wavy coastline (see seaCoastAt) with a sandy
+  // beach on the plains side and open water beyond. Drawn the exact way
+  // drawForestFloor lays the dark forest's dirt over the grass: only the
+  // blocks the current viewport can actually see, one Path2D per shade
+  // bucket, because the coastline wanders per-column and can't be batched
+  // into solid rows the way a flat boundary could.
+
+  /** How far south of the coastline the water shades from its lightest to its darkest tone. */
+  private static readonly SEA_DEPTH_SHADE_RANGE = 260;
+  /** How far the sand's speckled fringe reaches past its solid edge into the grass — echoes lakeShoreCells' blendWidth. */
+  private static readonly SEA_SAND_BLEND = 90;
+  /** Densest that fringe speckle gets, right at the solid sand edge (lakeShoreCells uses the same 0.5-ish ballpark). */
+  private static readonly SEA_BLEND_MAX = 0.55;
+
+  private drawSea(W: number, H: number): void {
+    const { ctx, camera } = this;
+
+    const bottomWorldY = camera.y + H + BLOCK;
+    // Worst-case (furthest north) the coastline, its sand, and every fringe
+    // around them could possibly reach — nothing to do above that regardless
+    // of where the wandering coastline actually sits at this x.
+    const minReach = SEA_BAND - SEA_EDGE_AMPLITUDE - SEA_SAND_WIDTH - Renderer.SEA_SAND_BLEND - SEA_FINE_WOBBLE_RANGE;
+    if (bottomWorldY < minReach) return;
+
+    const topWorldY = Math.max(Math.floor(camera.y / BLOCK) * BLOCK, Math.floor(minReach / BLOCK) * BLOCK);
+    const leftWorldX = Math.floor(camera.x / BLOCK) * BLOCK;
+    const rightWorldX = camera.x + W + BLOCK;
+
+    const sandPaths: Record<Shade, Path2D> = { light: new Path2D(), base: new Path2D(), dark: new Path2D() };
+    const waterPaths: Record<Shade, Path2D> = { light: new Path2D(), base: new Path2D(), dark: new Path2D() };
+
+    for (let wy = topWorldY; wy < bottomWorldY; wy += BLOCK) {
+      const gy = Math.round(wy / BLOCK);
+      const py = wy - camera.y;
+
+      for (let wx = leftWorldX; wx < rightWorldX; wx += BLOCK) {
+        const gx = Math.round(wx / BLOCK);
+        const coast = seaCoastAt(wx);
+        const wobbledY = wy + seaEdgeWobble(gx, gy);
+        const sandStart = seaSandStartAt(wx);
+        if (wobbledY < sandStart - Renderer.SEA_SAND_BLEND) continue; // still plain grass here
+
+        const px = wx - camera.x;
+
+        if (wobbledY >= coast) {
+          // Water, shading from shallow (light) near the coastline to deep
+          // (dark) further out — same three-band idea lakeWaterCells uses.
+          const depth = clamp01((wobbledY - coast) / Renderer.SEA_DEPTH_SHADE_RANGE);
+          const shade: Shade = depth < 0.35 ? 'light' : depth < 0.75 ? 'base' : 'dark';
+          waterPaths[shade].rect(px, py, BLOCK, BLOCK);
+          continue;
+        }
+
+        if (wobbledY >= sandStart) {
+          // Solid sand: wetter/darker right at the waterline, drier/lighter
+          // further up the beach — the same shading lakeShoreCells uses.
+          const fromWater = coast - wobbledY;
+          const shade: Shade = fromWater < SEA_SAND_WIDTH * 0.35 ? 'dark' : fromWater > SEA_SAND_WIDTH * 0.75 ? 'light' : 'base';
+          sandPaths[shade].rect(px, py, BLOCK, BLOCK);
+          continue;
+        }
+
+        // Past the solid sand's edge: sparse speckle thinning out into the
+        // grass, exactly the fade lakeShoreCells uses beyond its own ring.
+        const t = (sandStart - wobbledY) / Renderer.SEA_SAND_BLEND;
+        if (t > 1 || blockRandom(gx, gy, 174) >= (1 - t) * Renderer.SEA_BLEND_MAX) continue;
+        sandPaths.light.rect(px, py, BLOCK, BLOCK);
+      }
+    }
+
+    for (const shade of ['dark', 'base', 'light'] as const) {
+      ctx.fillStyle = SAND_PALETTE[shade];
+      ctx.fill(sandPaths[shade]);
+    }
+    for (const shade of ['dark', 'base', 'light'] as const) {
+      ctx.fillStyle = WATER_PALETTE[shade];
+      ctx.fill(waterPaths[shade]);
+    }
+  }
+
+  /**
+   * Seashells and starfish over the sand — same viewport-culled per-cell
+   * roll drawGroundClutter uses for flowers, gated to the sand band (between
+   * seaSandStartAt and seaCoastAt for this column) instead of the whole map.
+   */
+  private drawBeachClutter(W: number, H: number): void {
+    const { ctx, camera } = this;
+
+    const bottomWorldY = camera.y + H + CLUTTER_CELL;
+    const minReach = SEA_BAND - SEA_EDGE_AMPLITUDE - SEA_SAND_WIDTH;
+    if (bottomWorldY < minReach) return;
+
+    const leftWorldX = Math.floor(camera.x / CLUTTER_CELL) * CLUTTER_CELL;
+    const topWorldY = Math.max(Math.floor(camera.y / CLUTTER_CELL) * CLUTTER_CELL, Math.floor(minReach / CLUTTER_CELL) * CLUTTER_CELL);
+    const rightWorldX = camera.x + W + CLUTTER_CELL;
+
+    for (let wx = leftWorldX; wx < rightWorldX; wx += CLUTTER_CELL) {
+      const coast = seaCoastAt(wx);
+      const sandStart = seaSandStartAt(wx);
+      const gx = Math.round(wx / CLUTTER_CELL);
+
+      for (let wy = topWorldY; wy < bottomWorldY; wy += CLUTTER_CELL) {
+        if (wy < sandStart || wy > coast) continue; // only on dry-to-wet sand, not grass or open water
+
+        const gy = Math.round(wy / CLUTTER_CELL);
+        const piece = getBeachClutterPiece(gx, gy);
+        if (!piece) continue;
+
+        const jx = (blockRandom(gx, gy, CLUTTER_SALT + 3) - 0.5) * CLUTTER_CELL * 0.8;
+        const jy = (blockRandom(gx, gy, CLUTTER_SALT + 4) - 0.5) * CLUTTER_CELL * 0.8;
+        const { sx, sy } = camera.toScreen(wx + jx, wy + jy);
+
+        ctx.save();
+        ctx.translate(sx, sy);
+        drawBlockShape(ctx, piece.cells, piece.palette, CLUTTER_BLOCK);
+        ctx.restore();
+      }
     }
   }
 

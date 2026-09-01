@@ -9,7 +9,7 @@ let nextId = 0;
  * machine, so a bot reacts to a fox wandering up mid-chop without needing
  * explicit transitions out of every other state.
  */
-export type BotGoal = 'gather' | 'hunt' | 'flee' | 'fish' | 'heal' | 'idle';
+export type BotGoal = 'gather' | 'hunt' | 'flee' | 'fish' | 'heal' | 'drink' | 'idle';
 
 /**
  * A server-simulated player. The `player` field is a perfectly ordinary

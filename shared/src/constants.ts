@@ -25,12 +25,19 @@ export const HEALTH_REGEN_RATE = 0.5; // Per second when hunger/temperature are 
 // while it's hungry enough that the fire wouldn't actually heal it.
 export const HEALTH_REGEN_MIN_HUNGER = 45;
 export const HEALTH_REGEN_MIN_TEMPERATURE = 20;
+export const HEALTH_REGEN_MIN_THIRST = 20;
 // Healing rate while sitting inside a campfire's warmth radius. Several times
 // the open-ground rate, so a fire is somewhere to actually recover after a
 // fight rather than only a way to stay warm.
 export const CAMPFIRE_HEALTH_REGEN_RATE = 3;
 export const STARVATION_DAMAGE = 2; // HP/s when hunger = 0
 export const COLD_DAMAGE = 1.5; // HP/s when temp = 0
+export const MAX_THIRST = 100;
+export const THIRST_DECAY_RATE = 0.8; // Per second
+// Refilling by wading is much faster than the decay rate — a lake is meant to
+// be a quick top-up, not somewhere to camp.
+export const THIRST_REGEN_RATE_IN_WATER = 20; // Per second while in lake water
+export const DEHYDRATION_DAMAGE = 2; // HP/s when thirst = 0
 
 // Item types that restore hunger when eaten (see Game.handleEat). Kept as
 // distinct types rather than a single unified "food" — each has its own
@@ -290,6 +297,12 @@ export const BOT_WOUNDED_PREY_BIAS = 1200;
 export const BOT_HUNT_ABANDON_RANGE = 1300;
 export const BOT_FLEE_HEALTH = 35; // Below this, run from hostiles instead of fighting
 export const BOT_HUNGER_SEEK_FOOD = 83; // Below this, prioritise berries/mushrooms over wood/stone (55% of MAX_HUNGER)
+// Thirst has no inventory item to top up on the go the way hunger does (see
+// updateBot's eat-on-the-go check) — a bot has to physically walk into a
+// lake, so this needs its own goal (see botChooseGoal/botAct's 'drink' case)
+// rather than an opportunistic check like BOT_HUNGER_SEEK_FOOD's.
+export const BOT_THIRST_SEEK_WATER = 30;
+export const BOT_THIRST_DONE = 90; // Wade until back up to here before returning to work
 export const BOT_CAMPFIRE_TEMP = 65; // Only bother making a campfire once this cold
 export const BOT_HEAL_SEEK_HEALTH = 50; // At or below this (and nothing chasing it), go sit by a fire
 export const BOT_HEAL_DONE_HEALTH = 85; // Healed up enough to get back to work
@@ -359,6 +372,15 @@ export const DARK_FOREST_TRANSITION = 130;
 // to see up here" and "this is where the gold lives" stay the same depth as
 // each other even if this number moves.
 export const GOLD_TOP_BAND = 420;
+
+// ── Sea (south coast) ────────────────────────────────────────────────────────
+// A fixed, deterministic band across the bottom of the map — the ocean's
+// mirror of the dark forest band above (see seaCoastAt in biome.ts for the
+// actual wandering coastline this is just the average of).
+export const SEA_BAND = (MAP_SIZE * 4) / 5;
+// World units the sandy beach spans immediately north of the coastline,
+// blending into the plains — the sea's answer to a lake's shoreWidth.
+export const SEA_SAND_WIDTH = 220;
 
 // ── Chat ─────────────────────────────────────────────────────────────────────
 /** Longest message accepted. Enforced server-side too — the client's input

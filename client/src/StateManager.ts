@@ -52,6 +52,7 @@ export class StateManager<T extends GameState = GameState> {
         health: lerp(prev.health, curr.health, alpha),
         hunger: lerp(prev.hunger, curr.hunger, alpha),
         temperature: lerp(prev.temperature, curr.temperature, alpha),
+        thirst: lerp(prev.thirst, curr.thirst, alpha),
       };
     });
 

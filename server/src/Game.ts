@@ -113,6 +113,8 @@ import {
   BOT_HUNT_ABANDON_RANGE,
   BOT_FLEE_HEALTH,
   BOT_HUNGER_SEEK_FOOD,
+  BOT_THIRST_SEEK_WATER,
+  BOT_THIRST_DONE,
   BOT_CAMPFIRE_TEMP,
   BOT_HEAL_SEEK_HEALTH,
   BOT_HEAL_DONE_HEALTH,
@@ -132,6 +134,7 @@ import {
   BOT_EDGE_MARGIN,
   GOLD_TOP_BAND,
   HEALTH_REGEN_MIN_HUNGER,
+  HEALTH_REGEN_MIN_THIRST,
   darkForestBandAt,
   FISHING_ROD_ID,
   CAST_RANGE,
@@ -551,7 +554,7 @@ export class Game {
       this.sendInventory(player, 'Too far to cast');
       return;
     }
-    if (!this.world.isInLakeWater(x, y)) {
+    if (!this.world.isInWater(x, y)) {
       this.sendInventory(player, 'Cast it in the water');
       return;
     }
@@ -746,6 +749,7 @@ export class Game {
   private isPlaceable(x: number, y: number, type: StructureType): boolean {
     const half = STRUCTURE_SPAN[type] / 2;
     if (this.world.isBlockedByLake(x, y, half)) return false;
+    if (this.world.isBlockedBySeaWater(x, y, half)) return false;
 
     for (const r of this.world.getNearby(x, y, half + MAX_PLACEMENT_CLEARANCE)) {
       if (Math.hypot(x - r.x, y - r.y) < PLACEMENT_CLEARANCE[r.type] + half) return false;
@@ -803,7 +807,7 @@ export class Game {
     // Update each player
     for (const player of this.players.values()) {
       const speedMultiplier = this.getSpeedMultiplier(player);
-      player.update(dt, isDay, speedMultiplier, this.isNearFire(player));
+      player.update(dt, isDay, speedMultiplier, this.isNearFire(player), this.world.isInWater(player.x, player.y));
       const pushed = this.pushOutOfResources(player.x, player.y, PLAYER_RADIUS);
       const structPushed = this.pushOutOfStructures(pushed.x, pushed.y, PLAYER_RADIUS);
       player.x = structPushed.x;
@@ -825,9 +829,9 @@ export class Game {
 
   // ── Collision ──────────────────────────────────────────────────────────────
 
-  /** Berries/mushrooms/lake water don't block movement, they just slow the player while standing in them. */
+  /** Berries/mushrooms/lake/sea water don't block movement, they just slow the player while standing in them. */
   private getSpeedMultiplier(player: ServerPlayer): number {
-    if (this.world.isInLakeWater(player.x, player.y)) return LAKE_SLOW_MULTIPLIER;
+    if (this.world.isInWater(player.x, player.y)) return LAKE_SLOW_MULTIPLIER;
 
     for (const r of this.world.getNearby(player.x, player.y, SLOW_RADIUS)) {
       if (!SLOW_TYPES.has(r.type)) continue;
@@ -1358,6 +1362,7 @@ export class Game {
       const x = margin + Math.random() * (MAP_SIZE - margin * 2);
       const y = margin + Math.random() * (MAP_SIZE - margin * 2);
       if (this.world.isBlockedByLake(x, y)) continue;
+      if (this.world.isBlockedBySea(x, y)) continue;
       if (players.some((p) => Math.hypot(p.x - x, p.y - y) < SPIDER_MIN_PLAYER_SPAWN_DIST)) continue;
 
       const spider = new ServerSpider(x, y);
@@ -1393,9 +1398,9 @@ export class Game {
     }
   }
 
-  /** Spiders wade through lake water slower, same as players — but unlike players, berries/mushrooms don't slow them. */
+  /** Spiders wade through lake/sea water slower, same as players — but unlike players, berries/mushrooms don't slow them. */
   private spiderSpeedMultiplier(spider: ServerSpider): number {
-    return this.world.isInLakeWater(spider.x, spider.y) ? LAKE_SLOW_MULTIPLIER : 1;
+    return this.world.isInWater(spider.x, spider.y) ? LAKE_SLOW_MULTIPLIER : 1;
   }
 
   /**
@@ -1495,9 +1500,9 @@ export class Game {
     }
   }
 
-  /** Foxes wade through lake water slower, same as spiders and players. */
+  /** Foxes wade through lake/sea water slower, same as spiders and players. */
   private foxSpeedMultiplier(fox: ServerFox): number {
-    return this.world.isInLakeWater(fox.x, fox.y) ? LAKE_SLOW_MULTIPLIER : 1;
+    return this.world.isInWater(fox.x, fox.y) ? LAKE_SLOW_MULTIPLIER : 1;
   }
 
   /**
@@ -1827,7 +1832,9 @@ export class Game {
     // already carrying food this doesn't matter: the automatic eat-on-the-go
     // check in updateBot fixes the hunger up within a tick or two regardless
     // of goal, so 'heal' is still worth entering.
-    const canRegen = p.hunger > HEALTH_REGEN_MIN_HUNGER || this.botFoodItem(bot) !== null;
+    const canRegen =
+      (p.hunger > HEALTH_REGEN_MIN_HUNGER || this.botFoodItem(bot) !== null) &&
+      p.thirst > HEALTH_REGEN_MIN_THIRST;
     const healUntil = this.botHealthThreshold(
       bot,
       bot.goal === 'heal' ? BOT_HEAL_DONE_HEALTH : BOT_HEAL_SEEK_HEALTH,
@@ -1844,6 +1851,25 @@ export class Game {
       bot.goal = 'heal';
       bot.targetId = null;
       return;
+    }
+
+    // Thirst has no inventory item to top up on the go the way hunger does
+    // (see updateBot's eat-on-the-go check) — a bot has to physically wade
+    // into a lake, so this needs its own goal rather than an opportunistic
+    // check. Same hysteresis idea as healUntil above: once committed it
+    // stays until properly topped up (BOT_THIRST_DONE), not just back over
+    // the bare BOT_THIRST_SEEK_WATER line, so it doesn't turn straight back
+    // around the moment the threshold ticks past.
+    const thirstUntil = bot.goal === 'drink' ? BOT_THIRST_DONE : BOT_THIRST_SEEK_WATER;
+    if (p.thirst < thirstUntil) {
+      const spot = this.botNearestLakeWaterSpot(bot);
+      if (spot) {
+        bot.goal = 'drink';
+        bot.targetId = null;
+        bot.targetX = spot.x;
+        bot.targetY = spot.y;
+        return;
+      }
     }
 
     // An angler short of string goes out looking for spiders. They're the
@@ -2053,6 +2079,23 @@ export class Game {
           input.harvest = true;
         } else {
           this.botSteer(bot, input, tree.x, tree.y, dt);
+        }
+        return;
+      }
+
+      case 'drink': {
+        // Topped back up — get back to whatever it was doing. The
+        // BOT_THIRST_DONE/BOT_THIRST_SEEK_WATER hysteresis in botChooseGoal
+        // is what stops this from immediately re-triggering the moment it
+        // steps back onto the shore.
+        if (p.thirst >= BOT_THIRST_DONE) {
+          bot.decisionTimer = 0;
+          return;
+        }
+        // Arrived (botSteer presses nothing once within 2 units of the
+        // target) — just stand there and let inWater regen do its work.
+        if (!this.botSteer(bot, input, bot.targetX, bot.targetY, dt)) {
+          bot.decisionTimer = 0; // couldn't reach the lake — try something else
         }
         return;
       }
@@ -2813,6 +2856,33 @@ export class Game {
       // Dry land just past the shore ring.
       standX: nearest.x + Math.cos(angle) * (nearest.radius + nearest.shoreWidth + 30),
       standY: nearest.y + Math.sin(angle) * (nearest.radius + nearest.shoreWidth + 30),
+    };
+  }
+
+  /**
+   * Nearest lake's near-edge water — a wading spot for the 'drink' goal.
+   * Unlike botFishingSpot's castX/Y this doesn't need deep open water, just
+   * anywhere isInLakeWater is true, so it aims for the shallow near edge to
+   * keep the walk short.
+   */
+  private botNearestLakeWaterSpot(bot: ServerBot): { x: number; y: number } | null {
+    const p = bot.player;
+    let nearest: LakeState | null = null;
+    let nearestDist = Infinity;
+
+    for (const lake of this.world.lakes) {
+      const d = Math.hypot(lake.x - p.x, lake.y - p.y);
+      if (d < nearestDist) {
+        nearestDist = d;
+        nearest = lake;
+      }
+    }
+    if (!nearest || nearestDist > BOT_SEARCH_RADIUS * 1.5) return null;
+
+    const angle = Math.atan2(p.y - nearest.y, p.x - nearest.x);
+    return {
+      x: nearest.x + Math.cos(angle) * nearest.radius * 0.6,
+      y: nearest.y + Math.sin(angle) * nearest.radius * 0.6,
     };
   }
 
