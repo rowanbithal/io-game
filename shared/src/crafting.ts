@@ -52,6 +52,14 @@ export const WOODEN_ARMOR_ID = 'wooden_armor';
 export const STONE_ARMOR_ID = 'stone_armor';
 export const GOLD_ARMOR_ID = 'gold_armor';
 
+// The torch is the same kind of equip slot as armor — worn (in the off
+// hand) rather than held, so it doesn't compete with the hotbar's held
+// tool/weapon (see PlayerState.torch / EquipRequest). Unlike armor it burns
+// out: once lit it only lasts TORCH_LIFETIME seconds before being consumed
+// (see Game.tickTorch), so it's a cheap, disposable personal light rather
+// than a permanent upgrade.
+export const TORCH_ID = 'torch';
+
 // Raw meat (a fox kill drop, see Game.processHarvest) has to be cooked at a
 // campfire before it's edible — see the cooked_meat recipe below and
 // shared/constants.ts's FOOD_ITEMS (raw meat is deliberately absent from it).
@@ -234,6 +242,13 @@ export const RECIPES: Recipe[] = [
     icon: '🎣',
     cost: { wood: 15, string: 2 },
     craftTime: 5,
+  },
+  {
+    id: TORCH_ID,
+    name: 'Torch',
+    icon: '🔦',
+    cost: { wood: 15 },
+    craftTime: 3,
   },
   {
     id: COOKED_MEAT_ID,

@@ -76,6 +76,8 @@ import {
   WOODEN_ARMOR_DAMAGE_REDUCTION,
   STONE_ARMOR_DAMAGE_REDUCTION,
   GOLD_ARMOR_DAMAGE_REDUCTION,
+  TORCH_ID,
+  TORCH_LIFETIME,
   CRAFTING_BENCH_ID,
   BENCH_USE_RADIUS,
   SPIDER_RADIUS,
@@ -209,6 +211,11 @@ const ARMOR_DAMAGE_REDUCTION: Record<string, number> = {
   [GOLD_ARMOR_ID]: GOLD_ARMOR_DAMAGE_REDUCTION,
 };
 const ARMOR_IDS = new Set(Object.keys(ARMOR_DAMAGE_REDUCTION));
+
+// Valid ids for the torch equip slot — just the one item today, but kept as
+// a set (mirroring ARMOR_IDS) so handleEquip's ownership check stays the
+// same shape as armor's.
+const TORCH_IDS = new Set([TORCH_ID]);
 
 // How often a "/camera" viewer's full-map resource list is recomputed —
 // twice a second is plenty fresh for an overview (harvest/respawn popping
@@ -589,20 +596,53 @@ export class Game {
   }
 
   /**
-   * Puts on (or, if it's already worn, takes back off) a suit of armor.
-   * Ownership is re-checked at broadcast time regardless (see armorOf), so
-   * this just records the player's choice — same toggle-by-resending-the-
-   * same-id shape as EquipRequest documents.
+   * Puts on (or, if it's already worn, takes back off) a suit of armor or a
+   * torch — two independent equip slots (see ServerPlayer.armor/torch) that
+   * share this one handler since both toggle the same way. Ownership is
+   * re-checked at broadcast time regardless (see armorOf/torchOf), so this
+   * just records the player's choice — same toggle-by-resending-the-same-id
+   * shape as EquipRequest documents.
    */
   handleEquip(id: string, { itemId }: EquipRequest): void {
     if (this.spectators.has(id)) return;
     const player = this.players.get(id);
     const inv = this.inventories.get(id);
     if (!player || !inv) return;
-    if (!ARMOR_IDS.has(itemId) || (inv.get(itemId) ?? 0) < 1) return;
+    if ((inv.get(itemId) ?? 0) < 1) return;
 
-    player.armor = player.armor === itemId ? null : itemId;
-    this.sendInventory(player, player.armor ? `${RECIPES_BY_ID[itemId].name} equipped` : `${RECIPES_BY_ID[itemId].name} unequipped`);
+    if (ARMOR_IDS.has(itemId)) {
+      player.armor = player.armor === itemId ? null : itemId;
+      this.sendInventory(player, player.armor ? `${RECIPES_BY_ID[itemId].name} equipped` : `${RECIPES_BY_ID[itemId].name} unequipped`);
+    } else if (TORCH_IDS.has(itemId)) {
+      player.torch = player.torch === itemId ? null : itemId;
+      // Freshly lit each time it's put on — see ServerPlayer.torchRemaining
+      // and Game.tickTorch, which counts it back down to 0 while worn.
+      player.torchRemaining = player.torch ? TORCH_LIFETIME : 0;
+      this.sendInventory(player, player.torch ? `${RECIPES_BY_ID[itemId].name} equipped` : `${RECIPES_BY_ID[itemId].name} unequipped`);
+    }
+  }
+
+  /**
+   * Burns down a worn torch's remaining life (see ServerPlayer.torchRemaining),
+   * only while it's actually equipped — sitting unlit in inventory doesn't
+   * age it. Once it hits 0 the torch is spent: unequipped and removed from
+   * inventory outright, same as a campfire running out (see
+   * CAMPFIRE_LIFETIME) but on a much shorter, disposable timescale.
+   */
+  private tickTorch(player: ServerPlayer, dt: number): void {
+    if (!player.torch) return;
+    player.torchRemaining -= dt;
+    if (player.torchRemaining > 0) return;
+
+    const itemId = player.torch;
+    player.torch = null;
+    player.torchRemaining = 0;
+    const inv = this.inventories.get(player.id);
+    if (!inv) return;
+    const remaining = (inv.get(itemId) ?? 0) - 1;
+    if (remaining > 0) inv.set(itemId, remaining);
+    else inv.delete(itemId);
+    this.sendInventory(player, `${RECIPES_BY_ID[itemId].name} burned out`);
   }
 
   /**
@@ -815,6 +855,7 @@ export class Game {
       this.processHarvest(player);
       this.tickCrafting(player, dt);
       this.tickFishing(player, dt);
+      this.tickTorch(player, dt);
       this.checkDeath(player);
     }
     this.resolvePlayerCollisions();
@@ -2915,6 +2956,13 @@ export class Game {
     return (this.inventories.get(player.id)?.get(armor) ?? 0) >= 1 ? armor : null;
   }
 
+  /** Same ownership check as armorOf, for the torch equip slot. */
+  private torchOf(player: ServerPlayer): string | null {
+    const torch = player.torch;
+    if (!torch) return null;
+    return (this.inventories.get(player.id)?.get(torch) ?? 0) >= 1 ? torch : null;
+  }
+
   private broadcast(isDay: boolean): void {
     const allPlayers = Array.from(this.players.values());
 
@@ -2967,7 +3015,7 @@ export class Game {
         dayTime: this.dayTime,
         isDay,
         // All players visible regardless of distance (small player counts)
-        players: allPlayers.map(p => p.toState(p.id === anchor.id, this.heldItemOf(p), this.armorOf(p))),
+        players: allPlayers.map(p => p.toState(p.id === anchor.id, this.heldItemOf(p), this.armorOf(p), this.torchOf(p))),
         // Only send resources within the client's view frustum
         resources: this.world.getNearby(anchor.x, anchor.y, VIEW_DISTANCE).map(r => r.toState()),
         structures: this.structures
@@ -3009,7 +3057,7 @@ export class Game {
       tick: this.tick,
       dayTime: this.dayTime,
       isDay,
-      players: allPlayers.map(p => p.toState(false, this.heldItemOf(p), this.armorOf(p))),
+      players: allPlayers.map(p => p.toState(false, this.heldItemOf(p), this.armorOf(p), this.torchOf(p))),
       resources: nearbyResources.map(r => r.toState()),
       structures: this.structures
         .filter(s => Math.hypot(s.x - x, s.y - y) <= VIEW_DISTANCE)

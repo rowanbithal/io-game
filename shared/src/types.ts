@@ -111,6 +111,11 @@ export interface PlayerState {
   // EquipRequest and, like `held`, already filtered against inventory
   // server-side (see Game.armorOf).
   armor: string | null;
+  // Torch worn in the off hand, if any — a third, independent slot from
+  // `held`/`armor` above, so a player can light their way while swinging a
+  // tool and wearing armor at the same time. Set via EquipRequest and, like
+  // `armor`, already filtered against inventory server-side (see Game.torchOf).
+  torch: string | null;
   // What this player last said, or null. Lives on the snapshot rather than
   // being tracked client-side off the chat event so that a player who walks
   // into view mid-message still shows their bubble, and so the server owns

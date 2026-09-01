@@ -16,6 +16,13 @@ export const MAX_HUNGER = 100;
 export const HUNGER_DECAY_RATE = 0.65; // Per second
 export const TEMP_DECAY_RATE = 1.5; // Per second at night
 export const TEMP_REGEN_RATE = 0.25; // Per second during day
+// A worn, lit torch blunts the night's cooling rather than beating it the
+// way a campfire does (see CAMPFIRE_WARMTH_RATE) — this is subtracted from
+// TEMP_DECAY_RATE rather than added on top of it, and stays smaller than
+// TEMP_DECAY_RATE on purpose, so temperature still drifts down at night with
+// a torch out, just slower. A torch is something to see by, not a
+// substitute for building a fire.
+export const TORCH_WARMTH_RATE = 1.0;
 export const HEALTH_REGEN_RATE = 0.5; // Per second when hunger/temperature are above the thresholds below
 // Health regen (both the open-ground rate above and CAMPFIRE_HEALTH_REGEN_RATE
 // below) is gated behind these — a starving or freezing player doesn't heal at
@@ -179,6 +186,14 @@ export const CAMPFIRE_BURNOUT_FADE = 10;
 // Visual glow reach (client-side only) — noticeably tighter than the warmth
 // radius, so the fire reads as a small pool of light you huddle around.
 export const CAMPFIRE_LIGHT_RADIUS = 155;
+// A held torch is a personal, portable light — dimmer and shorter-reaching
+// than a campfire so it doesn't trivialize building/keeping one lit.
+export const TORCH_LIGHT_RADIUS = 90;
+// Seconds a torch stays lit once equipped before it burns out and is
+// consumed (see Game.tickTorch) — much shorter than a campfire's
+// CAMPFIRE_LIFETIME, since it's meant to be a cheap, disposable light
+// rather than something to settle in by.
+export const TORCH_LIFETIME = 30;
 
 // ── Spiders (night threat) ──────────────────────────────────────────────────
 export const SPIDER_RADIUS = 26; // "Large" — noticeably bigger than a player (16)

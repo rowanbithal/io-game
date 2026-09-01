@@ -1,4 +1,4 @@
-import { GameState, PlayerState, ResourceState, StructureState, SpiderState, FoxState, LakeState, FishingState, PLAYER_RADIUS, FOX_RADIUS, GRID_CELL, TREE_SPAN, ROCK_SPAN, WHEAT_SPAN, GOLD_SPAN, HARVEST_RANGE, HARVEST_ANGLE, HARVEST_COOLDOWN, STRUCTURE_SPAN, PLACE_RANGE, CAMPFIRE_LIGHT_RADIUS, CAMPFIRE_BURNOUT_FADE, SPIDER_RADIUS, CAST_RANGE, RECIPES_BY_ID, WOODEN_AXE_ID, WOODEN_PICKAXE_ID, WOODEN_SWORD_ID, STONE_AXE_ID, STONE_PICKAXE_ID, STONE_SWORD_ID, GOLD_AXE_ID, GOLD_PICKAXE_ID, GOLD_SWORD_ID, WOODEN_ARMOR_ID, STONE_ARMOR_ID, GOLD_ARMOR_ID, CRAFTING_BENCH_ID, FISHING_ROD_ID, MAP_SIZE, DARK_FOREST_BAND, DARK_FOREST_TRANSITION, GOLD_TOP_BAND, FOREST_TREE_SCALE, FOREST_ROCK_SCALE, darkForestBandAt, DARK_FOREST_EDGE_AMPLITUDE, SEA_BAND, SEA_SAND_WIDTH, seaCoastAt, seaSandStartAt, SEA_EDGE_AMPLITUDE, dayPhase, hashCell, clamp01, smoothstep, forestFactor, isForestTree, isForestRock, resourceCell, RESOURCE_SEED_SALT } from '@io-game/shared';
+import { GameState, PlayerState, ResourceState, StructureState, SpiderState, FoxState, LakeState, FishingState, PLAYER_RADIUS, FOX_RADIUS, GRID_CELL, TREE_SPAN, ROCK_SPAN, WHEAT_SPAN, GOLD_SPAN, HARVEST_RANGE, HARVEST_ANGLE, HARVEST_COOLDOWN, STRUCTURE_SPAN, PLACE_RANGE, CAMPFIRE_LIGHT_RADIUS, CAMPFIRE_BURNOUT_FADE, SPIDER_RADIUS, CAST_RANGE, RECIPES_BY_ID, WOODEN_AXE_ID, WOODEN_PICKAXE_ID, WOODEN_SWORD_ID, STONE_AXE_ID, STONE_PICKAXE_ID, STONE_SWORD_ID, GOLD_AXE_ID, GOLD_PICKAXE_ID, GOLD_SWORD_ID, WOODEN_ARMOR_ID, STONE_ARMOR_ID, GOLD_ARMOR_ID, TORCH_LIGHT_RADIUS, CRAFTING_BENCH_ID, FISHING_ROD_ID, MAP_SIZE, DARK_FOREST_BAND, DARK_FOREST_TRANSITION, GOLD_TOP_BAND, FOREST_TREE_SCALE, FOREST_ROCK_SCALE, darkForestBandAt, DARK_FOREST_EDGE_AMPLITUDE, SEA_BAND, SEA_SAND_WIDTH, seaCoastAt, seaSandStartAt, SEA_EDGE_AMPLITUDE, dayPhase, hashCell, clamp01, smoothstep, forestFactor, isForestTree, isForestRock, resourceCell, RESOURCE_SEED_SALT } from '@io-game/shared';
 import { Camera } from './Camera';
 
 import berryUrl from './assets/sprites/berry.png';
@@ -136,6 +136,12 @@ const P = {
   logLight: '#8a5a2b',
   log: '#6b4a26',
   logDark: '#4a3119',
+
+  // Torch flame — yellower and hotter-looking than the campfire's own
+  // ember tones (see drawHeldTorch), so a carried torch reads as a small,
+  // tight hot flame rather than a shrunken campfire fire.
+  torchFlameYellow: '#ffcf3f',
+  torchFlameCore: '#fff6e2',
 
   // Player
   playerTool: '#a0c4ff',
@@ -346,6 +352,61 @@ export function drawToolIcon(ctx: CanvasRenderingContext2D, itemId: string, bloc
 export function toolIconHalfBlocks(itemId: string): number {
   const visual = TOOL_VISUALS[itemId];
   return visual ? TOOL_ICON_HALF_WIDTH[visual.shape] * visual.scale : 2;
+}
+
+// ── Torch ────────────────────────────────────────────────────────────────────
+// Worn in the off hand (see PlayerState.torch) rather than held like a tool,
+// but drawn the same "silhouette plus a flame tip" way as the tools above —
+// a short haft with a small flickering flame, reusing the campfire's own
+// ember palette so the two flames read as the same kind of fire.
+
+/**
+ * Draws a held torch gripped at (x, y) — that point is the haft's own
+ * vertical center at its near end, matching the hand block it's drawn into
+ * (see drawPlayer), and the haft then runs outward along +x from there.
+ * `block` units per pixel; used both for the in-hand version (block =
+ * BLOCK) and for the HUD icon (a smaller block, via drawTorchIcon below),
+ * same pattern as drawHeldTool/drawToolIcon.
+ */
+function drawHeldTorch(ctx: CanvasRenderingContext2D, x: number, y: number, block: number = BLOCK, now = 0): void {
+  const b = block;
+
+  // A stout, plain haft — noticeably thicker than the fishing rod's own
+  // stick (see drawHeldTool's 'rod' shape) so a torch reads as something
+  // gripped in a fist rather than a slender pole. No binding wrap: just the
+  // one solid length of wood, vertically centered on the grip point.
+  const haftLen = b * 2.7;
+  const haftHeight = block * 1.1;
+  ctx.fillStyle = P.logDark;
+  ctx.fillRect(x, y - haftHeight / 2, haftLen, haftHeight);
+
+  // Flame at the tip, flickering gently — same wobble shape as the
+  // campfire light's own breathing (see Renderer.flicker), applied to the
+  // flame's size here instead of an overlay's alpha. Both layers are
+  // yellow/white (torchFlameYellow/torchFlameCore) rather than the
+  // campfire's own orange embers — a torch flame reads hotter, yellower,
+  // and tighter than the campfire's fire. Both squares are centered on the
+  // same point, directly off the end of the haft, so the flame reads as one
+  // concentric blob rather than a stack of off-axis layers.
+  const flick = 0.85 + 0.15 * Math.sin(now / 90) * Math.sin(now / 37);
+  const s = b * 1.15 * flick;
+  const flameCX = x + haftLen;
+  ctx.fillStyle = P.torchFlameYellow;
+  ctx.fillRect(flameCX - s * 0.45, y - s * 0.55, s * 0.9, s * 1.1);
+  ctx.fillStyle = P.torchFlameCore;
+  ctx.fillRect(flameCX - s * 0.19, y - s * 0.23, s * 0.38, s * 0.46);
+}
+
+const TORCH_ICON_CENTER = { x: -1.6, y: 0 };
+/** Half-width of the torch icon, in blocks — used to size HUD icons. */
+export const TORCH_ICON_HALF_BLOCKS = 3.0;
+
+/** Draws a held torch centred on the origin, tilted diagonally — see drawToolIcon's own comment for why. */
+export function drawTorchIcon(ctx: CanvasRenderingContext2D, block: number = BLOCK): void {
+  ctx.save();
+  ctx.rotate(-Math.PI / 4);
+  drawHeldTorch(ctx, TORCH_ICON_CENTER.x * block, TORCH_ICON_CENTER.y * block, block);
+  ctx.restore();
 }
 
 // ── Block-sprite engine ─────────────────────────────────────────────────────
@@ -3336,10 +3397,10 @@ export class Renderer {
       }
     } else {
       // Other players then self on top
-      for (const p of state.players) if (!p.isMe) this.drawPlayer(p, hideChrome);
+      for (const p of state.players) if (!p.isMe) this.drawPlayer(p, hideChrome, now);
       if (me) {
         this.drawReachGrid(me);
-        this.drawPlayer(me, hideChrome);
+        this.drawPlayer(me, hideChrome, now);
         this.drawPlacementGhost(me, now);
         this.drawCastPreview(me);
       }
@@ -3351,9 +3412,11 @@ export class Renderer {
     ctx.restore();
 
     const fires = state.structures.filter((s) => s.type === 'campfire');
+    const torchBearers = state.players.filter((p) => p.torch);
 
-    // Night darkness, with the lit area around each fire cut back out of it.
-    this.drawLightingOverlay(W, H, fires, now);
+    // Night darkness, with the lit area around each fire and worn torch cut
+    // back out of it.
+    this.drawLightingOverlay(W, H, fires, torchBearers, now);
 
     // Everything from here on draws *after* the night tint rather than
     // being darkened by it — fog included. It used to be the last thing
@@ -3374,6 +3437,7 @@ export class Renderer {
     // is frozen at 0 there (see simplifyOverview's use above), so
     // Renderer.flicker(now) always comes out the same instead of animating.
     for (const s of fires) this.drawCampfireLight(s, now);
+    for (const p of torchBearers) this.drawTorchLight(p, now);
     // Fireflies belong in this same post-darkness pass too — they're their
     // own little light sources, so the night (and the fog) shouldn't dim them.
     this.drawFireflies(W / zoom, H / zoom);
@@ -4075,19 +4139,20 @@ export class Renderer {
   }
 
   /**
-   * A campfire's light, quantized into concentric bands on the world block
-   * grid — the same "keep it on the grid" approach the shadows use, so the
-   * light never turns into a smooth gradient. Returned in pre-zoom screen
-   * space; index 0 is the band at the fire itself.
+   * A light source's reach, quantized into concentric bands on the world
+   * block grid — the same "keep it on the grid" approach the shadows use, so
+   * the light never turns into a smooth gradient. Returned in pre-zoom
+   * screen space; index 0 is the band at the source itself. Shared by
+   * campfires (campfireGlowBands) and worn torches (torchGlowBands) — both
+   * are just a center point and a radius as far as this is concerned.
    */
-  private campfireGlowBands(s: StructureState): Path2D[] {
+  private glowBands(cx: number, cy: number, radius: number): Path2D[] {
     const { camera } = this;
-    const radius = CAMPFIRE_LIGHT_RADIUS;
 
     // Snap the glow's block lattice to world coordinates so the lit pixels
     // stay put as the camera moves, instead of crawling with it.
-    const originGX = Math.floor((s.x - radius) / GLOW_BLOCK);
-    const originGY = Math.floor((s.y - radius) / GLOW_BLOCK);
+    const originGX = Math.floor((cx - radius) / GLOW_BLOCK);
+    const originGY = Math.floor((cy - radius) / GLOW_BLOCK);
     const span = Math.ceil((radius * 2) / GLOW_BLOCK) + 1;
 
     // One path per band, so each band is a single fill — no per-cell seams.
@@ -4097,16 +4162,25 @@ export class Renderer {
       for (let i = 0; i <= span; i++) {
         const wx = (originGX + i) * GLOW_BLOCK;
         const wy = (originGY + j) * GLOW_BLOCK;
-        const d = Math.hypot(wx + GLOW_BLOCK / 2 - s.x, wy + GLOW_BLOCK / 2 - s.y);
+        const d = Math.hypot(wx + GLOW_BLOCK / 2 - cx, wy + GLOW_BLOCK / 2 - cy);
         if (d > radius) continue;
 
-        // 0 at the fire, GLOW_BANDS-1 at the edge of the light.
+        // 0 at the source, GLOW_BANDS-1 at the edge of the light.
         const band = Math.min(GLOW_BANDS - 1, Math.floor((d / radius) * GLOW_BANDS));
         bands[band].rect(wx - camera.x, wy - camera.y, GLOW_BLOCK, GLOW_BLOCK);
       }
     }
 
     return bands;
+  }
+
+  private campfireGlowBands(s: StructureState): Path2D[] {
+    return this.glowBands(s.x, s.y, CAMPFIRE_LIGHT_RADIUS);
+  }
+
+  /** Same idea as campfireGlowBands, but centred on a torch-bearing player instead of a fire. */
+  private torchGlowBands(p: PlayerState): Path2D[] {
+    return this.glowBands(p.x, p.y, TORCH_LIGHT_RADIUS);
   }
 
   /**
@@ -4163,6 +4237,31 @@ export class Renderer {
       // Firelight orange. Because 'overlay' is a per-channel gain, a warmer
       // tint applies *less* gain to green/blue — so pushing the hue toward
       // orange here costs nothing in contrast (it clips less, if anything).
+      ctx.fillStyle = `rgba(255,176,99,${alpha.toFixed(3)})`;
+      ctx.fill(bands[band]);
+    }
+    ctx.restore();
+  }
+
+  /**
+   * A worn torch's light — dimmer (see TORCH_LIGHT_BRIGHTNESS) and shorter-
+   * reaching (see TORCH_LIGHT_RADIUS) than a campfire's, so it reads as a
+   * personal light to see by rather than a substitute for building a fire.
+   * Same overlay-gain approach as drawCampfireLight, minus the burnout fade
+   * — a torch doesn't go out on its own.
+   */
+  private static readonly TORCH_LIGHT_BRIGHTNESS = 0.55;
+
+  private drawTorchLight(p: PlayerState, now: number): void {
+    const { ctx } = this;
+    const flicker = Renderer.flicker(now) * Renderer.TORCH_LIGHT_BRIGHTNESS;
+    const bands = this.torchGlowBands(p);
+
+    ctx.save();
+    ctx.globalCompositeOperation = 'overlay';
+    for (let band = 0; band < GLOW_BANDS; band++) {
+      const alpha = Renderer.bandIntensity(band) * flicker;
+      if (alpha <= 0.004) continue;
       ctx.fillStyle = `rgba(255,176,99,${alpha.toFixed(3)})`;
       ctx.fill(bands[band]);
     }
@@ -4543,7 +4642,7 @@ export class Renderer {
     }
   }
 
-  private drawPlayer(p: PlayerState, hideChrome = false): void {
+  private drawPlayer(p: PlayerState, hideChrome = false, now = 0): void {
     const { ctx, camera } = this;
     const { sx, sy } = camera.toScreen(p.x, p.y);
     const R = PLAYER_RADIUS * PLAYER_VISUAL_SCALE; // layout radius only — gameplay hitbox is untouched
@@ -4594,8 +4693,18 @@ export class Renderer {
 
     // Armor is worn on the head only (see ARMOR_HELMET) — hands stay bare
     // skin regardless.
+    const offArmX = armRest + walkSwing;
     ctx.fillStyle = P.playerSkin;
-    ctx.fillRect(armRest + walkSwing - armSize / 2, -armSide - armSize / 2, armSize, armSize);
+    ctx.fillRect(offArmX - armSize / 2, -armSide - armSize / 2, armSize, armSize);
+
+    // Torch, if worn — a third equip slot alongside `held`/armor (see
+    // PlayerState.torch), so it renders in the off hand regardless of
+    // whatever's out in the tool hand below. Gripped exactly at the hand
+    // block's own center (see drawHeldTorch's own comment on what its (x,y)
+    // means), rather than offset off to one side of it.
+    if (p.torch) {
+      drawHeldTorch(ctx, offArmX, -armSide, BLOCK, now);
+    }
 
     const toolArmX = armRest - walkSwing + strike * R * 0.85;
     ctx.fillRect(toolArmX - armSize / 2, armSide - armSize / 2, armSize, armSize);
@@ -4682,7 +4791,7 @@ export class Renderer {
    * below the horizon, and a warm glow that peaks right at the horizon
    * (dawn/dusk) and fades out toward both full day and full night.
    */
-  private drawLightingOverlay(W: number, H: number, fires: StructureState[], now: number): void {
+  private drawLightingOverlay(W: number, H: number, fires: StructureState[], torchBearers: PlayerState[], now: number): void {
     const { ctx } = this;
     const height = this.sunHeight;
 
@@ -4690,12 +4799,12 @@ export class Renderer {
     const warmth = smoothstep(clamp01(1 - Math.abs(height) / 0.35)) * 0.20;
 
     if (darkness > 0) {
-      if (fires.length > 0) {
-        // Build the darkness on its own layer and erase the fire-lit areas
-        // from it, so those pixels keep their original brightness and
-        // contrast. Painting light on top of the darkness instead would only
-        // ever wash out an image whose range has already been crushed.
-        ctx.drawImage(this.buildNightLayer(W, H, darkness, fires, now), 0, 0);
+      if (fires.length > 0 || torchBearers.length > 0) {
+        // Build the darkness on its own layer and erase the lit areas from
+        // it, so those pixels keep their original brightness and contrast.
+        // Painting light on top of the darkness instead would only ever
+        // wash out an image whose range has already been crushed.
+        ctx.drawImage(this.buildNightLayer(W, H, darkness, fires, torchBearers, now), 0, 0);
       } else {
         ctx.fillStyle = `rgba(8,10,30,${darkness.toFixed(3)})`;
         ctx.fillRect(0, 0, W, H);
@@ -4708,12 +4817,13 @@ export class Renderer {
     }
   }
 
-  /** Full-screen night tint with a hole punched out around every campfire. */
+  /** Full-screen night tint with a hole punched out around every campfire and torch-bearing player. */
   private buildNightLayer(
     W: number,
     H: number,
     darkness: number,
     fires: StructureState[],
+    torchBearers: PlayerState[],
     now: number,
   ): HTMLCanvasElement {
     if (!this.nightCanvas) this.nightCanvas = document.createElement('canvas');
@@ -4741,6 +4851,19 @@ export class Renderer {
         // Clears the night tint in proportion to how lit that band is —
         // fully at the fire, tapering to untouched at the edge of the light,
         // and tapering again as the fire itself burns out.
+        const alpha = clamp01(Renderer.bandIntensity(band) * burn);
+        if (alpha <= 0.004) continue;
+        lctx.fillStyle = `rgba(0,0,0,${alpha.toFixed(3)})`;
+        lctx.fill(bands[band]);
+      }
+    }
+    // A torch punches the same kind of hole, just dimmer (see
+    // TORCH_LIGHT_BRIGHTNESS) and smaller (TORCH_LIGHT_RADIUS) — it never
+    // burns out on its own, so there's no burnFade term here.
+    for (const p of torchBearers) {
+      const bands = this.torchGlowBands(p);
+      const burn = flicker * Renderer.TORCH_LIGHT_BRIGHTNESS;
+      for (let band = 0; band < GLOW_BANDS; band++) {
         const alpha = clamp01(Renderer.bandIntensity(band) * burn);
         if (alpha <= 0.004) continue;
         lctx.fillStyle = `rgba(0,0,0,${alpha.toFixed(3)})`;

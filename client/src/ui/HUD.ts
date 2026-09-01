@@ -23,6 +23,7 @@ import {
   WOODEN_ARMOR_ID,
   STONE_ARMOR_ID,
   GOLD_ARMOR_ID,
+  TORCH_ID,
   FISHING_ROD_ID,
   FISH_SPECIES_BY_ID,
   FOOD_ITEMS,
@@ -46,6 +47,8 @@ import {
   toolIconHalfBlocks,
   drawArmorIcon,
   ARMOR_ICON_HALF_BLOCKS,
+  drawTorchIcon,
+  TORCH_ICON_HALF_BLOCKS,
   drawWoodIcon,
   WOOD_ICON_HALF_BLOCKS,
   drawStoneIcon,
@@ -92,6 +95,12 @@ import { ANIMALS } from './animals';
 
 /** Armor items — worn via a toggle (see EquipRequest) rather than held like a tool. */
 const ARMOR_ITEM_IDS = new Set([WOODEN_ARMOR_ID, STONE_ARMOR_ID, GOLD_ARMOR_ID]);
+
+/** The torch — same worn-via-toggle shape as armor, just a separate equip slot (see PlayerState.torch). */
+const TORCH_ITEM_IDS = new Set([TORCH_ID]);
+
+/** Every item that's worn/toggled rather than held — armor and the torch alike (see selectSlot and friends below). */
+const EQUIP_ITEM_IDS = new Set([...ARMOR_ITEM_IDS, ...TORCH_ITEM_IDS]);
 
 /** What clicking/selecting a hotbar slot should do, when it isn't a plain tool selection. */
 interface HotbarSlotAction {
@@ -364,21 +373,22 @@ export class HUD {
 
   /**
    * Selects a hotbar slot by index (0-based) — unless it holds food (eaten
-   * immediately instead) or armor (worn/unworn instead, via a toggle — see
-   * EquipRequest), neither of which can be "held" the way a tool/weapon is.
-   * Either way the current selection is left untouched, and the action to
-   * take is returned instead of a plain selection.
+   * immediately instead) or something worn (armor or a torch, worn/unworn
+   * instead via a toggle — see EquipRequest), neither of which can be
+   * "held" the way a tool/weapon is. Either way the current selection is
+   * left untouched, and the action to take is returned instead of a plain
+   * selection.
    */
   selectSlot(index: number): HotbarSlotAction | null {
     if (index < 0 || index >= this.hotbarOrder.length) return null;
     const item = this.hotbarOrder[index];
     if (FOOD_ITEMS.has(item)) return { action: 'eat', itemId: item };
-    if (ARMOR_ITEM_IDS.has(item)) return { action: 'equip', itemId: item };
+    if (EQUIP_ITEM_IDS.has(item)) return { action: 'equip', itemId: item };
     this.selectedIndex = index;
     return null;
   }
 
-  /** Cycles the selected slot by +1/-1, wrapping around — skips food/armor slots, neither of which can be held (see selectSlot). */
+  /** Cycles the selected slot by +1/-1, wrapping around — skips food/worn-equip slots, neither of which can be held (see selectSlot). */
   scrollSlot(direction: number): void {
     const n = this.hotbarOrder.length;
     if (n === 0) return;
@@ -387,24 +397,25 @@ export class HUD {
     for (let i = 0; i < n; i++) {
       next = ((next + step) % n + n) % n;
       const item = this.hotbarOrder[next];
-      if (!FOOD_ITEMS.has(item) && !ARMOR_ITEM_IDS.has(item)) {
+      if (!FOOD_ITEMS.has(item) && !EQUIP_ITEM_IDS.has(item)) {
         this.selectedIndex = next;
         return;
       }
     }
-    // Every slot is food/armor — nothing else to cycle to.
+    // Every slot is food/worn-equip — nothing else to cycle to.
   }
 
   /**
    * Starts dragging a hotbar slot to reorder it (also selects it) — unless
-   * it holds food or armor, same exception as selectSlot: acted on
-   * immediately instead, no drag started, current selection untouched.
+   * it holds food or something worn (armor/torch), same exception as
+   * selectSlot: acted on immediately instead, no drag started, current
+   * selection untouched.
    */
   beginHotbarDrag(index: number): HotbarSlotAction | null {
     if (index < 0 || index >= this.hotbarOrder.length) return null;
     const item = this.hotbarOrder[index];
     if (FOOD_ITEMS.has(item)) return { action: 'eat', itemId: item };
-    if (ARMOR_ITEM_IDS.has(item)) return { action: 'equip', itemId: item };
+    if (EQUIP_ITEM_IDS.has(item)) return { action: 'equip', itemId: item };
     this.draggingIndex = index;
     this.selectedIndex = index;
     return null;
@@ -440,14 +451,15 @@ export class HUD {
 
   /**
    * The item type currently held, or null if nothing has been collected yet
-   * — or if selectedIndex happens to be sitting on food or armor, neither of
-   * which is ever actually "held" (see selectSlot). That's a defensive
-   * filter here rather than something selectSlot/scrollSlot/etc. all have to
-   * guarantee never happens on their own.
+   * — or if selectedIndex happens to be sitting on food or something worn
+   * (armor/torch), none of which is ever actually "held" (see selectSlot).
+   * That's a defensive filter here rather than something
+   * selectSlot/scrollSlot/etc. all have to guarantee never happens on their
+   * own.
    */
   getSelectedItem(): string | null {
     const item = this.hotbarOrder[this.selectedIndex] ?? null;
-    return item && (FOOD_ITEMS.has(item) || ARMOR_ITEM_IDS.has(item)) ? null : item;
+    return item && (FOOD_ITEMS.has(item) || EQUIP_ITEM_IDS.has(item)) ? null : item;
   }
 
   getItemCount(item: string): number {
@@ -498,7 +510,7 @@ export class HUD {
     if (state.spectating) this.drawSpectateBanner(me, W);
 
     this.drawStatBars(me, W, H);
-    this.drawHotbar(state.spectating ? me?.held ?? null : undefined, me?.armor ?? null);
+    this.drawHotbar(state.spectating ? me?.held ?? null : undefined, me?.armor ?? null, me?.torch ?? null);
     this.drawCrafting(H);
     this.drawBookTile(W);
     this.drawBestiaryTile(W);
@@ -605,7 +617,7 @@ export class HUD {
    * normal" — deliberately distinct from `null`, which means "spectating,
    * and they're holding nothing" (still an override, just to no slot).
    */
-  private drawHotbar(spectatingHeld?: string | null, equippedArmor: string | null = null): void {
+  private drawHotbar(spectatingHeld?: string | null, equippedArmor: string | null = null, equippedTorch: string | null = null): void {
     const slots = this.hotbarOrder;
     if (slots.length === 0) return;
 
@@ -614,15 +626,15 @@ export class HUD {
 
     slots.forEach((item, i) => {
       const { x, y, w: slotSize } = rects[i];
-      // Food/armor are never "held" (see selectSlot) — even if selectedIndex
-      // transiently points at one (e.g. the first item ever collected
-      // happened to be a berry), it shouldn't render as selected.
+      // Food/worn-equip are never "held" (see selectSlot) — even if
+      // selectedIndex transiently points at one (e.g. the first item ever
+      // collected happened to be a berry), it shouldn't render as selected.
       const isSelected =
         spectatingHeld !== undefined
           ? item === spectatingHeld
-          : i === this.selectedIndex && !FOOD_ITEMS.has(item) && !ARMOR_ITEM_IDS.has(item);
+          : i === this.selectedIndex && !FOOD_ITEMS.has(item) && !EQUIP_ITEM_IDS.has(item);
       const isDragging = i === this.draggingIndex;
-      const isWorn = item === equippedArmor;
+      const isWorn = item === equippedArmor || item === equippedTorch;
       const count = this.inventory[item] ?? 0;
 
       ctx.fillStyle = isDragging ? 'rgba(255,255,255,0.4)' : isSelected || isWorn ? 'rgba(255,255,255,0.25)' : 'rgba(0,0,0,0.45)';
@@ -1729,7 +1741,7 @@ export class HUD {
     ctx.textBaseline = 'bottom';
     ctx.fillStyle = 'rgba(255,255,255,0.25)';
     ctx.fillText(
-      'WASD: Move  |  E / Click: Harvest  |  1-9 / Click Food: Eat  |  Click Armor: Equip  |  Scroll / Drag: Hotbar  |  Right-click / F: Place / Cast  |  R: Recipes  |  B: Animals  |  M: Map  |  Enter / T: Chat',
+      'WASD: Move  |  E / Click: Harvest  |  1-9 / Click Food: Eat  |  Click Armor / Torch: Equip  |  Scroll / Drag: Hotbar  |  Right-click / F: Place / Cast  |  R: Recipes  |  B: Animals  |  M: Map  |  Enter / T: Chat',
       W / 2,
       H - 8,
     );
@@ -1811,6 +1823,11 @@ export class HUD {
 
     if (TOOL_ITEM_IDS.has(item)) {
       drawSprite(toolIconHalfBlocks(item), (block) => drawToolIcon(ctx, item, block));
+      return;
+    }
+
+    if (TORCH_ITEM_IDS.has(item)) {
+      drawSprite(TORCH_ICON_HALF_BLOCKS, (block) => drawTorchIcon(ctx, block));
       return;
     }
 

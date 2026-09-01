@@ -21,6 +21,7 @@ import {
   DEHYDRATION_DAMAGE,
   HARVEST_COOLDOWN,
   CAMPFIRE_WARMTH_RATE,
+  TORCH_WARMTH_RATE,
   MAP_SIZE,
   Recipe,
   FishingState,
@@ -48,6 +49,14 @@ export class ServerPlayer {
   // every input, since equipping is a deliberate action (see
   // Game.handleEquip), not something held down like movement.
   armor: string | null = null;
+
+  // Torch worn in the off hand, or null — a third slot alongside input.held
+  // and armor above (see PlayerState.torch), crafted and equipped like
+  // armor (see Game.handleEquip). Unlike armor it burns down: torchRemaining
+  // counts off the seconds left before it's consumed (see Game.tickTorch),
+  // reset to TORCH_LIFETIME each time it's newly lit.
+  torch: string | null = null;
+  torchRemaining = 0;
 
   input: PlayerInput = {
     up: false,
@@ -107,6 +116,8 @@ export class ServerPlayer {
     this.fishing = null;
     this.chat = null;
     this.armor = null;
+    this.torch = null;
+    this.torchRemaining = 0;
     this.x = MAP_SIZE * (0.3 + Math.random() * 0.4);
     this.y = MAP_SIZE * (0.3 + Math.random() * 0.4);
   }
@@ -145,11 +156,14 @@ export class ServerPlayer {
     }
 
     // A campfire warms you faster than the night cools you, so sitting by one
-    // overrides the day/night swing entirely.
+    // overrides the day/night swing entirely. A lit torch only blunts that
+    // swing (see TORCH_WARMTH_RATE's own comment) — night still wins, just
+    // more slowly, so a torch is no substitute for an actual fire.
     if (nearFire) {
       this.temperature = Math.min(100, this.temperature + CAMPFIRE_WARMTH_RATE * dt);
     } else if (!isDay) {
-      this.temperature = Math.max(0, this.temperature - TEMP_DECAY_RATE * dt);
+      const decay = TEMP_DECAY_RATE - (this.torch ? TORCH_WARMTH_RATE : 0);
+      this.temperature = Math.max(0, this.temperature - decay * dt);
     } else {
       this.temperature = Math.min(100, this.temperature + TEMP_REGEN_RATE * dt);
     }
@@ -191,11 +205,17 @@ export class ServerPlayer {
   }
 
   /**
-   * `held` and `armor` are passed in rather than read straight off this
-   * entity: the inventory is the authority on what a player actually owns,
-   * and this entity doesn't own it. See Game.heldItemOf / Game.armorOf.
+   * `held`, `armor`, and `torch` are passed in rather than read straight off
+   * this entity: the inventory is the authority on what a player actually
+   * owns, and this entity doesn't own it. See Game.heldItemOf / Game.armorOf
+   * / Game.torchOf.
    */
-  toState(isMe = false, held: string | null = null, armor: string | null = null): PlayerState {
+  toState(
+    isMe = false,
+    held: string | null = null,
+    armor: string | null = null,
+    torch: string | null = null,
+  ): PlayerState {
     return {
       id: this.id,
       name: this.name,
@@ -216,6 +236,7 @@ export class ServerPlayer {
       fishing: this.fishing ? { x: this.fishing.x, y: this.fishing.y, bite: this.fishing.bite } : null,
       held,
       armor,
+      torch,
       chat: this.chat,
       isMe,
     };
