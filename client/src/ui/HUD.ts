@@ -68,8 +68,27 @@ import {
   lakeHarmonics,
   lobeRadius,
   LakeHarmonic,
+  drawFoxPortrait,
+  FOX_PORTRAIT_HALF_BLOCKS,
+  drawSpiderPortrait,
+  SPIDER_PORTRAIT_HALF_BLOCKS,
+  drawFireflyShape,
+  FIREFLY_PORTRAIT_HALF_BLOCKS,
 } from '../Renderer';
-import { WOOD, woodPanel, woodDivider, woodSlot, woodTile, drawCarvedBook } from './wood';
+import {
+  WOOD,
+  woodPanel,
+  woodDivider,
+  woodSlot,
+  woodTile,
+  drawCarvedBook,
+  drawCarvedPaw,
+  LEATHER,
+  drawLeatherCover,
+  drawPageSheet,
+  drawLeatherTab,
+} from './wood';
+import { ANIMALS } from './animals';
 
 /** Armor items — worn via a toggle (see EquipRequest) rather than held like a tool. */
 const ARMOR_ITEM_IDS = new Set([WOODEN_ARMOR_ID, STONE_ARMOR_ID, GOLD_ARMOR_ID]);
@@ -299,6 +318,10 @@ export class HUD {
 
   // Whether the full recipe catalogue is open over the game.
   private bookOpen = false;
+  // Whether the animal compendium is open over the game, and which of
+  // ANIMALS its current page shows.
+  private bestiaryOpen = false;
+  private bestiaryPage = 0;
   // Last known cursor position, fed in each frame by the game loop — the HUD
   // draws hover states for its wooden buttons, which a click-only interface
   // can't tell it about.
@@ -478,6 +501,7 @@ export class HUD {
     this.drawHotbar(state.spectating ? me?.held ?? null : undefined, me?.armor ?? null);
     this.drawCrafting(H);
     this.drawBookTile(W);
+    this.drawBestiaryTile(W);
     this.drawLeaderboard(state, me, W);
     this.drawChatLog(W);
     this.drawDayNight(state, W);
@@ -485,8 +509,11 @@ export class HUD {
     this.drawMinimap(state, me, W, H);
     this.drawNotifications(me, W, H);
     this.drawControls(W, H);
-    // Last, so its dimmed backdrop sits over the rest of the HUD.
+    // Last, so their dimmed backdrops sit over the rest of the HUD. Only one
+    // of the two is ever open at once (see toggleRecipeBook/toggleBestiary),
+    // so which one is drawn last here doesn't actually matter.
     this.drawRecipeBook(W, H);
+    this.drawBestiary(W, H);
 
     // Prune expired notifications
     const now = Date.now();
@@ -842,9 +869,10 @@ export class HUD {
 
   // ── Recipe book ────────────────────────────────────────────────────────────
 
-  /** Opens/closes the full recipe catalogue. */
+  /** Opens/closes the full recipe catalogue. Opening it closes the bestiary — only one full-screen book at a time. */
   toggleRecipeBook(): void {
     this.bookOpen = !this.bookOpen;
+    if (this.bookOpen) this.bestiaryOpen = false;
   }
 
   closeRecipeBook(): void {
@@ -1060,6 +1088,324 @@ export class HUD {
       rectHas(this.bookButtonRect(this.canvas.width), x, y) ||
       this.craftRows(this.canvas.height).some((r) => rectHas(r, x, y))
     );
+  }
+
+  // ── Animal compendium ──────────────────────────────────────────────────────
+  // A field-journal-styled book (leather cover, cream pages — see wood.ts's
+  // LEATHER chrome) describing the game's fauna, one animal per page-spread.
+  // Deliberately a different material from the recipe book's wooden panel, so
+  // the two read as distinct objects rather than the same UI reskinned.
+
+  /** Opens/closes the compendium. Opening it closes the recipe book — only one full-screen book at a time. */
+  toggleBestiary(): void {
+    this.bestiaryOpen = !this.bestiaryOpen;
+    if (this.bestiaryOpen) this.bookOpen = false;
+  }
+
+  closeBestiary(): void {
+    this.bestiaryOpen = false;
+  }
+
+  isBestiaryOpen(): boolean {
+    return this.bestiaryOpen;
+  }
+
+  /** Screen rect of the compendium's button — just left of the recipe book tile, same size. */
+  private bestiaryButtonRect(W: number): Rect {
+    const book = this.bookButtonRect(W);
+    return { x: book.x - 8 - BOOK_TILE, y: book.y, w: BOOK_TILE, h: BOOK_TILE };
+  }
+
+  /** The paw-stamped wooden tile that opens the compendium, styled to match drawBookTile. */
+  private drawBestiaryTile(W: number): void {
+    const { ctx } = this;
+    const t = this.bestiaryButtonRect(W);
+    const hovered = this.pointerInside(t.x, t.y, t.w, t.h);
+
+    woodTile(ctx, t.x, t.y, t.w, t.h, { radius: 6, seed: 41, hover: hovered, active: this.bestiaryOpen });
+    drawCarvedPaw(ctx, t.x + t.w / 2, t.y + t.h / 2 - 1, t.w - 14);
+
+    ctx.font = 'bold 8px "Courier New"';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = hovered || this.bestiaryOpen ? WOOD.ink : WOOD.inkDim;
+    ctx.fillText('B', t.x + t.w / 2, t.y + t.h - 7);
+  }
+
+  /**
+   * The book's outer panel plus its two-page spread and nav tabs, all in one
+   * place so the renderer and the click hit-test agree (same reasoning as
+   * bookLayout). One entry from ANIMALS is shown per spread: a portrait page
+   * on the left, its write-up on the right.
+   */
+  private bestiaryLayout(W: number, H: number): {
+    panel: Rect;
+    close: Rect;
+    prev: Rect;
+    next: Rect;
+    left: Rect;
+    right: Rect;
+  } {
+    const panelW = Math.min(820, W - 80);
+    const panelH = Math.min(560, H - 80);
+    const px = Math.round((W - panelW) / 2);
+    const py = Math.round((H - panelH) / 2);
+
+    const pad = 22;
+    const gutter = 14;
+    const titleH = 26;
+    const navH = 30;
+    const pageW = (panelW - pad * 2 - gutter) / 2;
+    const pageH = panelH - pad * 2 - titleH - navH;
+
+    const left: Rect = { x: px + pad, y: py + pad + titleH, w: pageW, h: pageH };
+    const right: Rect = { x: left.x + pageW + gutter, y: left.y, w: pageW, h: pageH };
+    const navY = py + panelH - pad - 22;
+
+    return {
+      panel: { x: px, y: py, w: panelW, h: panelH },
+      close: { x: px + panelW - pad - 22, y: py + 10, w: 22, h: 22 },
+      prev: { x: px + panelW / 2 - 66, y: navY, w: 34, h: 22 },
+      next: { x: px + panelW / 2 + 32, y: navY, w: 34, h: 22 },
+      left,
+      right,
+    };
+  }
+
+  private drawBestiary(W: number, H: number): void {
+    if (!this.bestiaryOpen) return;
+    const { ctx } = this;
+    const { panel, close, prev, next, left, right } = this.bestiaryLayout(W, H);
+    const entry = ANIMALS[this.bestiaryPage];
+
+    ctx.fillStyle = 'rgba(0,0,0,0.55)';
+    ctx.fillRect(0, 0, W, H);
+
+    drawLeatherCover(ctx, panel.x, panel.y, panel.w, panel.h, { seed: 11 });
+
+    ctx.font = 'bold 15px "Courier New"';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = LEATHER.stitch;
+    ctx.fillText('ANIMAL COMPENDIUM', panel.x + panel.w / 2, panel.y + 24);
+
+    drawPageSheet(ctx, left.x, left.y, left.w, left.h, 3);
+    drawPageSheet(ctx, right.x, right.y, right.w, right.h, 4);
+
+    // Shadow pooling into both pages at the fold between them.
+    ctx.globalAlpha = 0.3;
+    ctx.fillStyle = LEATHER.spine;
+    ctx.fillRect(left.x + left.w - 5, left.y, 5, left.h);
+    ctx.fillRect(right.x, right.y, 5, right.h);
+    ctx.globalAlpha = 1;
+
+    // Left page: portrait, name, tagline, and a hand-ruled underline.
+    const portraitCY = left.y + left.h * 0.36;
+    this.drawAnimalPortrait(entry.id, left.x + left.w / 2, portraitCY, Math.min(left.w, left.h) * 0.5);
+
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'alphabetic';
+    ctx.font = 'bold 19px "Courier New"';
+    ctx.fillStyle = LEATHER.ink;
+    const nameY = left.y + left.h * 0.68;
+    ctx.fillText(entry.name.toUpperCase(), left.x + left.w / 2, nameY);
+
+    ctx.font = 'italic 12px "Courier New"';
+    ctx.fillStyle = LEATHER.inkDim;
+    ctx.fillText(entry.tagline, left.x + left.w / 2, nameY + 20);
+
+    ctx.globalAlpha = 0.5;
+    ctx.fillStyle = LEATHER.inkDim;
+    ctx.fillRect(left.x + left.w * 0.2, nameY + 30, left.w * 0.6, 1);
+    ctx.globalAlpha = 1;
+
+    // Right page: the write-up, word-wrapped to the page width, plus a
+    // rarity strip under the fish entry's text (see drawFishRarityStrip).
+    // Clipped to the page rect as a backstop — the panel's sized to fit
+    // every entry's text (checked when writing it), but a clip means a
+    // future edit that runs long bleeds off the bottom of its own page
+    // rather than into the nav strip below it.
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(right.x, right.y, right.w, right.h);
+    ctx.clip();
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
+    ctx.font = '12px "Courier New"';
+    const textPad = 16;
+    let ty = right.y + 22;
+    for (const para of entry.paragraphs) {
+      for (const line of wrapText(ctx, para, right.w - textPad * 2)) {
+        ctx.fillStyle = LEATHER.ink;
+        ctx.fillText(line, right.x + textPad, ty);
+        ty += 16;
+      }
+      ty += 9;
+    }
+    if (entry.id === 'fish') this.drawFishRarityStrip(right.x + textPad, ty, right.w - textPad * 2);
+    ctx.restore();
+
+    // Prev/next/close tabs, plus a page counter sitting in the gap between
+    // prev and next.
+    const hoverClose = this.pointerInside(close.x, close.y, close.w, close.h);
+    drawLeatherTab(ctx, close.x, close.y, close.w, close.h, { hover: hoverClose });
+    ctx.font = 'bold 11px "Courier New"';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = hoverClose ? LEATHER.page : LEATHER.stitch;
+    ctx.fillText('✕', close.x + close.w / 2, close.y + close.h / 2 + 1);
+
+    const hoverPrev = this.pointerInside(prev.x, prev.y, prev.w, prev.h);
+    drawLeatherTab(ctx, prev.x, prev.y, prev.w, prev.h, { hover: hoverPrev });
+    ctx.fillStyle = hoverPrev ? LEATHER.page : LEATHER.stitch;
+    ctx.fillText('‹', prev.x + prev.w / 2, prev.y + prev.h / 2 + 1);
+
+    const hoverNext = this.pointerInside(next.x, next.y, next.w, next.h);
+    drawLeatherTab(ctx, next.x, next.y, next.w, next.h, { hover: hoverNext });
+    ctx.fillStyle = hoverNext ? LEATHER.page : LEATHER.stitch;
+    ctx.fillText('›', next.x + next.w / 2, next.y + next.h / 2 + 1);
+
+    ctx.font = '10px "Courier New"';
+    ctx.fillStyle = LEATHER.stitch;
+    ctx.fillText(`${this.bestiaryPage + 1} / ${ANIMALS.length}`, panel.x + panel.w / 2, prev.y + prev.h / 2 + 1);
+
+    ctx.font = '9px "Courier New"';
+    ctx.fillStyle = 'rgba(255,255,255,0.35)';
+    ctx.fillText('click the tabs to flip pages  ·  B or Esc to close', panel.x + panel.w / 2, panel.y + panel.h - 6);
+  }
+
+  /**
+   * Draws one animal's portrait centred on (cx, cy), roughly `size` px
+   * across — dispatched by id onto the matching in-world sprite (see
+   * Renderer's *Portrait exports), reused rather than redrawn so the
+   * compendium shows the same art the creature actually appears as in play.
+   */
+  private drawAnimalPortrait(id: string, cx: number, cy: number, size: number): void {
+    const { ctx } = this;
+    const px = Math.round(cx);
+    const py = Math.round(cy);
+
+    if (id === 'fox') {
+      const block = Math.max(1, size / (FOX_PORTRAIT_HALF_BLOCKS * 2));
+      ctx.save();
+      ctx.translate(px, py);
+      drawFoxPortrait(ctx, block);
+      ctx.restore();
+      return;
+    }
+
+    if (id === 'spider') {
+      const block = Math.max(1, size / (SPIDER_PORTRAIT_HALF_BLOCKS * 2));
+      ctx.save();
+      ctx.translate(px, py);
+      drawSpiderPortrait(ctx, block);
+      ctx.restore();
+      return;
+    }
+
+    if (id === 'firefly') {
+      // A patch of night behind the glow: on the page's cream background the
+      // additive glow (see drawFireflyShape) needs something dark to shine
+      // against, the way it does over the real dark forest at night.
+      const inset = Math.round(size * 0.85);
+      ctx.fillStyle = '#0d1420';
+      ctx.fillRect(px - inset / 2, py - inset / 2, inset, inset);
+
+      // Scaled up from its actual in-world size — a single firefly is a tiny
+      // point of light by design, which would read as an empty page — but
+      // clipped to the inset patch so the additive glow can't wash out onto
+      // the cream page around it.
+      const block = inset / (FIREFLY_PORTRAIT_HALF_BLOCKS * 2);
+      const blink = 0.45 + 0.55 * Math.pow(0.5 + 0.5 * Math.cos((performance.now() / 900) * Math.PI * 2), 1.4);
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(px - inset / 2, py - inset / 2, inset, inset);
+      ctx.clip();
+      ctx.translate(px, py);
+      ctx.globalCompositeOperation = 'lighter';
+      // drawFireflyShape paints in whatever fillStyle is already set (see
+      // Renderer's own drawFireflies, which sets this once before its loop)
+      // rather than picking a color itself — same glow-yellow it uses in-world.
+      ctx.fillStyle = '#e8ff7a';
+      drawFireflyShape(ctx, blink, block);
+      ctx.restore();
+      return;
+    }
+
+    if (id === 'fish') {
+      const species = FISH_SPECIES_BY_ID['fish_silverfin'];
+      if (!species) return;
+      const block = Math.max(1, size / (FISH_ICON_HALF_BLOCKS * 2));
+      ctx.save();
+      ctx.translate(px, py);
+      drawFishIcon(ctx, species.color, block);
+      ctx.restore();
+    }
+  }
+
+  /**
+   * A row of small fish icons spanning the game's catch-rarity tiers, for
+   * the fish page — the compendium's one entry that stands for a whole
+   * family of species (see pickRandomFish) rather than a single creature.
+   */
+  private drawFishRarityStrip(x: number, y: number, w: number): void {
+    const { ctx } = this;
+    const ids = ['fish_silverfin', 'fish_bluegill', 'fish_koi', 'fish_golden_carp'];
+    const species = ids.map((id) => FISH_SPECIES_BY_ID[id]).filter((s): s is NonNullable<typeof s> => !!s);
+    if (species.length === 0) return;
+
+    const cell = w / species.length;
+    const iconSize = Math.min(26, cell - 10);
+
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    species.forEach((fish, i) => {
+      const cx = Math.round(x + cell * i + cell / 2);
+      const cy = Math.round(y + iconSize / 2);
+      const block = Math.max(1, iconSize / (FISH_ICON_HALF_BLOCKS * 2));
+      ctx.save();
+      ctx.translate(cx, cy);
+      drawFishIcon(ctx, fish.color, block);
+      ctx.restore();
+
+      ctx.font = 'bold 9px "Courier New"';
+      ctx.fillStyle = LEATHER.ink;
+      ctx.fillText(fish.name, cx, y + iconSize + 4);
+      ctx.font = '8px "Courier New"';
+      ctx.fillStyle = LEATHER.inkDim;
+      ctx.fillText(fish.rarity, cx, y + iconSize + 15);
+    });
+  }
+
+  /**
+   * Click handling for the compendium's chrome: the corner button toggles
+   * it, the tabs flip pages or close it, and — since there's no interactive
+   * content behind the pages themselves (unlike the recipe book's clickable
+   * entries) — any other click while it's open is simply swallowed rather
+   * than tested against anything further.
+   */
+  handleBestiaryClick(x: number, y: number): boolean {
+    const button = this.bestiaryButtonRect(this.canvas.width);
+    if (rectHas(button, x, y)) {
+      this.toggleBestiary();
+      return true;
+    }
+    if (!this.bestiaryOpen) return false;
+
+    const { panel, close, prev, next } = this.bestiaryLayout(this.canvas.width, this.canvas.height);
+    if (rectHas(close, x, y) || !rectHas(panel, x, y)) {
+      this.bestiaryOpen = false;
+      return true;
+    }
+    if (rectHas(prev, x, y)) {
+      this.bestiaryPage = (this.bestiaryPage - 1 + ANIMALS.length) % ANIMALS.length;
+      return true;
+    }
+    if (rectHas(next, x, y)) {
+      this.bestiaryPage = (this.bestiaryPage + 1) % ANIMALS.length;
+      return true;
+    }
+    return true;
   }
 
   // ── Chat log ───────────────────────────────────────────────────────────────
@@ -1383,7 +1729,7 @@ export class HUD {
     ctx.textBaseline = 'bottom';
     ctx.fillStyle = 'rgba(255,255,255,0.25)';
     ctx.fillText(
-      'WASD: Move  |  E / Click: Harvest  |  1-9 / Click Food: Eat  |  Click Armor: Equip  |  Scroll / Drag: Hotbar  |  Right-click / F: Place / Cast  |  R: Recipes  |  M: Map  |  Enter / T: Chat',
+      'WASD: Move  |  E / Click: Harvest  |  1-9 / Click Food: Eat  |  Click Armor: Equip  |  Scroll / Drag: Hotbar  |  Right-click / F: Place / Cast  |  R: Recipes  |  B: Animals  |  M: Map  |  Enter / T: Chat',
       W / 2,
       H - 8,
     );

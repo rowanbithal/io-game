@@ -187,6 +187,12 @@ class ClientGame {
         this.hud.toggleRecipeBook();
         return;
       }
+      // B opens/closes the animal compendium — same toggle-both-ways
+      // pattern as R above.
+      if (e.code === 'KeyB') {
+        this.hud.toggleBestiary();
+        return;
+      }
       // M opens/closes the full-map view — same toggle either way (see
       // handleSlashCommand), so there's no separate on/off branch to pick
       // between the way Escape below has to.
@@ -204,6 +210,7 @@ class ClientGame {
           return;
         }
         this.hud.closeRecipeBook();
+        this.hud.closeBestiary();
         return;
       }
 
@@ -234,6 +241,11 @@ class ClientGame {
       // Before joining there's no HUD on screen at all (see
       // loopMenuBackdrop) — nothing here to hit-test against.
       if (!this.running) return false;
+
+      // The animal compendium's button and (while open) its whole panel —
+      // checked first since it's a full-screen modal with nothing clickable
+      // behind it, same reasoning as the recipe book below.
+      if (this.hud.handleBestiaryClick(x, y)) return true;
 
       const slot = this.hud.hitTestHotbar(x, y);
       if (slot !== null) {

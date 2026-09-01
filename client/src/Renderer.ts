@@ -1904,6 +1904,75 @@ const FOX_PAW_SIZE = BLOCK * 1.2;
 const FOX_PAW_SWING = 0.9; // blocks each paw travels fore/aft while trotting
 const FOX_TROT_SPEED = 0.16; // radians of phase per world-unit moved
 
+/**
+ * A static, front-facing spider — the same two body segments and splayed
+ * legs as the real scuttling sprite (see drawSpider), just held at rest with
+ * no gait or heading rotation. Exported for places that want to depict a
+ * spider rather than simulate one, e.g. the animal compendium.
+ */
+export function drawSpiderPortrait(ctx: CanvasRenderingContext2D, block: number = BLOCK): void {
+  const legLength = block * 4.4;
+  const legThickness = block * 0.55;
+
+  ctx.fillStyle = P.spiderDark;
+  SPIDER_LEG_ANGLES.forEach((base) => {
+    for (const side of [-1, 1]) {
+      const a = side * (Math.PI / 2) + base * side;
+      ctx.save();
+      ctx.rotate(a);
+      ctx.fillRect(0, -legThickness / 2, legLength, legThickness);
+      ctx.restore();
+    }
+  });
+
+  drawBlockShape(ctx, SPIDER_ABDOMEN, SPIDER_PALETTE, block);
+  drawBlockShape(ctx, SPIDER_THORAX, SPIDER_PALETTE, block);
+
+  ctx.fillStyle = P.spiderEye;
+  ctx.fillRect(block * 2.6, -block * 1.1, block * 0.7, block * 0.7);
+  ctx.fillRect(block * 2.6, block * 0.4, block * 0.7, block * 0.7);
+}
+
+/** Half-width of the spider portrait (legs included), in blocks — used to size HUD icons. */
+export const SPIDER_PORTRAIT_HALF_BLOCKS = 6.5;
+
+/**
+ * A static, front-facing fox — the same body/tail/head as the real trotting
+ * sprite (see drawFox), just held at rest with paws planted and no heading
+ * rotation. Exported for the animal compendium, same reasoning as
+ * drawSpiderPortrait above.
+ */
+export function drawFoxPortrait(ctx: CanvasRenderingContext2D, block: number = BLOCK): void {
+  const pawSize = block * 1.2;
+
+  ctx.fillStyle = P.foxPaw;
+  for (const paw of FOX_PAWS) {
+    ctx.fillRect(
+      paw.x * block - pawSize / 2,
+      paw.side * FOX_PAW_SPREAD * block - pawSize / 2,
+      pawSize,
+      pawSize,
+    );
+  }
+
+  drawBlockShape(ctx, FOX_TAIL, FOX_PALETTE, block);
+  drawBlockShape(ctx, FOX_TAIL_TIP, FOX_CREAM_PALETTE, block);
+  drawBlockShape(ctx, FOX_BODY, FOX_PALETTE, block);
+  drawBlockShape(ctx, FOX_CHEST, FOX_CREAM_PALETTE, block);
+  drawBlockShape(ctx, FOX_EARS, FOX_PALETTE, block);
+  drawBlockShape(ctx, FOX_HEAD, FOX_PALETTE, block);
+  drawBlockShape(ctx, FOX_SNOUT, FOX_CREAM_PALETTE, block);
+
+  ctx.fillStyle = P.foxPaw;
+  ctx.fillRect(block * 5.4, -block * 0.4, block * 0.8, block * 0.8);
+  ctx.fillStyle = P.foxEye;
+  ctx.fillRect(block * 3.5, -block * 1.3, block * 0.6, block * 0.6);
+  ctx.fillRect(block * 3.5, block * 0.7, block * 0.6, block * 0.6);
+}
+
+/** Half-width of the fox portrait (tail to snout), in blocks — used to size HUD icons. */
+export const FOX_PORTRAIT_HALF_BLOCKS = 8;
+
 // Warm light cast by a campfire, drawn as concentric blocky bands rather than
 // a smooth radial gradient so the glow stays as pixelated as everything else.
 const GLOW_BLOCK = BLOCK * 2; // chunkier than sprites — light reads as soft, not detailed
@@ -2118,16 +2187,23 @@ const FIREFLY_GLOW_LAYERS: [number, number][] = [
  * would need anti-aliasing to read as round at all, which is exactly what
  * the rest of the game's art avoids. Drawn additively by the caller, so the
  * halos read as light spilling onto what's behind them.
+ *
+ * Exported (with `block` defaulting to the in-world FIREFLY_BLOCK) so the HUD
+ * can reuse the exact same glow shape at a bigger, HUD-scale size — e.g. the
+ * animal compendium's firefly page — without duplicating the layered-glow art.
  */
-function drawFireflyShape(ctx: CanvasRenderingContext2D, brightness: number): void {
+export function drawFireflyShape(ctx: CanvasRenderingContext2D, brightness: number, block: number = FIREFLY_BLOCK): void {
   for (const [halfBlocks, alphaScale] of FIREFLY_GLOW_LAYERS) {
-    const size = halfBlocks * 2 * FIREFLY_BLOCK;
+    const size = halfBlocks * 2 * block;
     ctx.globalAlpha = brightness * alphaScale;
     ctx.fillRect(-size / 2, -size / 2, size, size);
   }
   ctx.globalAlpha = brightness;
-  ctx.fillRect(-FIREFLY_BLOCK / 2, -FIREFLY_BLOCK / 2, FIREFLY_BLOCK, FIREFLY_BLOCK);
+  ctx.fillRect(-block / 2, -block / 2, block, block);
 }
+
+/** Half-extent of the firefly's outer glow layer, in blocks — used to size HUD portraits. */
+export const FIREFLY_PORTRAIT_HALF_BLOCKS = FIREFLY_GLOW_LAYERS[0][0];
 
 /**
  * A ripple ring built from BLOCK cells at roughly `radius` from the local

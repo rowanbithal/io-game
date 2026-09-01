@@ -357,3 +357,342 @@ export function woodDivider(
   ctx.fillRect(x, y + 1, w, 1);
   ctx.globalAlpha = 1;
 }
+
+// A paw print stamped on the animal compendium's button — a big round pad
+// plus four toes fanned above it, carved into the board with the same
+// lip/outline/fill trick drawCarvedBook uses. Cells sit on a whole-number
+// lattice (unlike a naive filled-circle union) so the fill layer can be
+// derived by erosion — dropping any cell missing an orthogonal neighbor —
+// the same "outline, then the shape inset by one ring" idea drawCarvedBook
+// gets for free from its rectangular rows. Without that, toes only a couple
+// of cells across have no clean interior left once the lip/outline is on top
+// of them, and the whole print reads as a muddy blob instead of five
+// separate pads.
+function pawCells(): { gx: number; gy: number }[] {
+  const set = new Set<string>();
+  const addBlob = (rx: number, ry: number, ox: number, oy: number): void => {
+    const spanX = Math.ceil(rx);
+    const spanY = Math.ceil(ry);
+    for (let dy = -spanY; dy <= spanY; dy++) {
+      for (let dx = -spanX; dx <= spanX; dx++) {
+        if ((dx / rx) ** 2 + (dy / ry) ** 2 <= 1) set.add(`${ox + dx},${oy + dy}`);
+      }
+    }
+  };
+
+  addBlob(3, 2, 0, 3); // main pad: a wide oval at the bottom
+  // Four toes fanned well above it, each spaced a clear cell or more from
+  // its neighbors *and* from the pad — real paw prints show every toe as
+  // its own separate mark, not fused to the pad behind it.
+  addBlob(1, 1, -4, 0);
+  addBlob(1, 1, -2, -3);
+  addBlob(1, 1, 2, -3);
+  addBlob(1, 1, 4, 0);
+
+  return Array.from(set, (key) => {
+    const [gx, gy] = key.split(',').map(Number);
+    return { gx, gy };
+  });
+}
+
+const PAW_CELLS = pawCells();
+const PAW_CELL_SET = new Set(PAW_CELLS.map((c) => `${c.gx},${c.gy}`));
+
+/** Cells with all four orthogonal neighbors also in the shape — erosion by one ring, for the carve's interior fill (see pawCells' comment). */
+const PAW_INNER_CELLS = PAW_CELLS.filter(
+  (c) =>
+    PAW_CELL_SET.has(`${c.gx + 1},${c.gy}`) &&
+    PAW_CELL_SET.has(`${c.gx - 1},${c.gy}`) &&
+    PAW_CELL_SET.has(`${c.gx},${c.gy + 1}`) &&
+    PAW_CELL_SET.has(`${c.gx},${c.gy - 1}`),
+);
+
+/**
+ * The paw-print glyph for the animal compendium's button: same carved-into-
+ * the-board treatment as drawCarvedBook (a light lip below, a dark outline,
+ * a filled body a shade lighter so the rim stays visible), just built from
+ * round pad shapes instead of a rectangular silhouette.
+ */
+export function drawCarvedPaw(
+  ctx: CanvasRenderingContext2D,
+  cx: number,
+  cy: number,
+  size: number,
+): void {
+  const b = Math.max(1, size / 12);
+
+  const stamp = (cells: { gx: number; gy: number }[], fill: string, offY = 0): void => {
+    ctx.fillStyle = fill;
+    for (const c of cells) {
+      ctx.fillRect(
+        Math.round(cx + c.gx * b - b / 2),
+        Math.round(cy + c.gy * b - b / 2 + offY),
+        Math.ceil(b),
+        Math.ceil(b),
+      );
+    }
+  };
+
+  // The lip of the carve: the whole shape in light, offset down.
+  ctx.globalAlpha = 0.5;
+  stamp(PAW_CELLS, WOOD.light, Math.max(1, Math.round(b / 2)));
+  ctx.globalAlpha = 1;
+
+  // Outline, then the interior (eroded by one ring) a shade lighter so the
+  // outline rim stays visible all the way around, tiny toes included.
+  stamp(PAW_CELLS, WOOD.edge);
+  stamp(PAW_INNER_CELLS, WOOD.dark);
+}
+
+// ── Animal compendium: leather book chrome ──────────────────────────────────
+// A different material vocabulary from the wood panels above — a stitched
+// leather cover around cream parchment pages — so the compendium reads as a
+// naturalist's field journal rather than another wooden crafting sign.
+
+export const LEATHER = {
+  cover: '#5a3420',
+  coverLight: '#7a4a2c',
+  coverDark: '#3c2113',
+  edge: '#1c0f07',
+  stitch: '#caa968',
+  stitchDark: '#8a6c3c',
+  page: '#f1e6c6',
+  pageShade: '#e2d3a6',
+  pageDark: '#cdb989',
+  spine: '#241209',
+  ink: '#3a2a16',
+  inkDim: '#8c7857',
+};
+
+export interface LeatherCoverOptions {
+  /** Grain seed — vary between panels so they don't look stamped. */
+  seed?: number;
+}
+
+/**
+ * A rectangle silhouette with a hand-worn, staircase-jagged edge instead of
+ * a clean line — the same "torn edge built from axis-aligned steps" idea the
+ * full-map camera view's parchment uses (see Renderer's tatteredMapPath),
+ * reimplemented standalone here since wood.ts has no per-instance cache to
+ * share that method's memoization through. Every segment is purely
+ * horizontal or vertical, like the rest of the game's blocky sprites — a
+ * jittered diagonal would anti-alias into a smooth line nothing else here
+ * has. `rand` is the caller's own seeded stream, so two calls (outer edge,
+ * inset cover) can be given different streams and jag independently.
+ */
+function raggedRectPath(
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  rand: () => number,
+  maxJag: number,
+  step: number,
+): Path2D {
+  const corners: [number, number][] = [
+    [x, y],
+    [x + w, y],
+    [x + w, y + h],
+    [x, y + h],
+  ];
+  const points: [number, number][] = [corners[0]];
+  for (let side = 0; side < 4; side++) {
+    const [x0, y0] = corners[side];
+    const [x1, y1] = corners[(side + 1) % 4];
+    const length = Math.hypot(x1 - x0, y1 - y0);
+    const ux = (x1 - x0) / length; // unit vector along the side
+    const uy = (y1 - y0) / length;
+    const nx = uy; // perpendicular to it, pointing outward (corners run clockwise)
+    const ny = -ux;
+
+    let jag = 0;
+    let along = 0;
+    while (along < length) {
+      along = Math.min(length, along + step);
+      // Move along the edge first (a pure horizontal/vertical segment at the
+      // *previous* jog), then jog perpendicular — two right-angle moves
+      // instead of one diagonal one, same as a staircase.
+      points.push([x0 + ux * along + nx * jag, y0 + uy * along + ny * jag]);
+      if (along >= length) break; // leave the corner itself un-jogged
+      jag = Math.max(-maxJag, Math.min(maxJag, jag + (rand() < 0.5 ? -step : step)));
+      points.push([x0 + ux * along + nx * jag, y0 + uy * along + ny * jag]);
+    }
+  }
+
+  const path = new Path2D();
+  path.moveTo(Math.round(points[0][0]), Math.round(points[0][1]));
+  for (const [px, py] of points.slice(1)) path.lineTo(Math.round(px), Math.round(py));
+  path.closePath();
+  return path;
+}
+
+/**
+ * The compendium's outer cover: a dark leather slab, hand-worn rather than
+ * die-cut — a ragged edge (see raggedRectPath) on both the outer silhouette
+ * and the inset face, leather grain speckles, a few scuff scratches, corners
+ * rubbed lighter from handling, a stitched border, and brass-ish corner
+ * studs. Coordinates snap to whole pixels.
+ */
+export function drawLeatherCover(
+  ctx: CanvasRenderingContext2D,
+  rx: number,
+  ry: number,
+  rw: number,
+  rh: number,
+  opts: LeatherCoverOptions = {},
+): void {
+  const { seed = 1 } = opts;
+  const x = Math.round(rx);
+  const y = Math.round(ry);
+  const w = Math.round(rw);
+  const h = Math.round(rh);
+  if (w <= 0 || h <= 0) return;
+
+  const step = 7;
+  const outerRand = seeded(seed);
+  ctx.fillStyle = LEATHER.edge;
+  ctx.fill(raggedRectPath(x, y, w, h, outerRand, 3, step));
+
+  const inset = 4;
+  const innerRand = seeded(seed + 97);
+  const innerPath = raggedRectPath(x + inset, y + inset, w - inset * 2, h - inset * 2, innerRand, 2, step);
+  ctx.fillStyle = LEATHER.cover;
+  ctx.fill(innerPath);
+
+  const rand = seeded(seed + 211);
+  ctx.save();
+  ctx.clip(innerPath);
+
+  // Leather grain: sparse speckles, lighter and darker than the base tone.
+  const speckles = Math.floor((w * h) / 900);
+  for (let i = 0; i < speckles; i++) {
+    const gx = x + inset + Math.floor(rand() * (w - inset * 2));
+    const gy = y + inset + Math.floor(rand() * (h - inset * 2));
+    ctx.globalAlpha = 0.12 + rand() * 0.15;
+    ctx.fillStyle = rand() < 0.5 ? LEATHER.coverDark : LEATHER.coverLight;
+    ctx.fillRect(gx, gy, 2, 2);
+  }
+
+  // Scuff marks: short axis-aligned scratches, longer and sparser than the
+  // grain speckles, for a more battered look.
+  const scuffs = 5 + Math.floor(rand() * 4);
+  for (let i = 0; i < scuffs; i++) {
+    const sx = x + inset + Math.floor(rand() * (w - inset * 2));
+    const sy = y + inset + Math.floor(rand() * (h - inset * 2));
+    const len = 6 + Math.floor(rand() * 16);
+    ctx.globalAlpha = 0.16 + rand() * 0.14;
+    ctx.fillStyle = rand() < 0.6 ? LEATHER.coverDark : LEATHER.coverLight;
+    if (rand() < 0.5) ctx.fillRect(sx, sy, len, 1);
+    else ctx.fillRect(sx, sy, 1, len);
+  }
+
+  // Corners rubbed lighter from handling — a book's edges wear first.
+  ctx.globalAlpha = 0.14;
+  ctx.fillStyle = LEATHER.coverLight;
+  for (const [ccx, ccy] of [
+    [x + inset + 2, y + inset + 2],
+    [x + w - inset - 2, y + inset + 2],
+    [x + inset + 2, y + h - inset - 2],
+    [x + w - inset - 2, y + h - inset - 2],
+  ]) {
+    ctx.fillRect(ccx - 7, ccy - 7, 14, 14);
+  }
+
+  ctx.globalAlpha = 1;
+  ctx.restore();
+
+  // A stitched line inset from the edge, dashed like real saddle-stitching.
+  // Comfortably clear of the ragged edge's ±3px wander, so it never clips.
+  const stitchInset = 10;
+  ctx.fillStyle = LEATHER.stitch;
+  for (let px = x + stitchInset; px < x + w - stitchInset; px += 6) {
+    ctx.fillRect(px, y + stitchInset, 2, 1);
+    ctx.fillRect(px, y + h - stitchInset - 1, 2, 1);
+  }
+  for (let py = y + stitchInset; py < y + h - stitchInset; py += 6) {
+    ctx.fillRect(x + stitchInset, py, 1, 2);
+    ctx.fillRect(x + w - stitchInset - 1, py, 1, 2);
+  }
+
+  // Brass corner studs at the stitching's corners.
+  const studInset = stitchInset - 3;
+  for (const scx of [x + studInset, x + w - studInset - 3]) {
+    for (const scy of [y + studInset, y + h - studInset - 3]) {
+      ctx.fillStyle = LEATHER.stitchDark;
+      ctx.fillRect(scx, scy, 3, 3);
+      ctx.fillStyle = LEATHER.stitch;
+      ctx.fillRect(scx, scy, 2, 2);
+    }
+  }
+}
+
+/**
+ * One cream page — a rough parchment rect with a darker underlay (so its
+ * edge reads as a sheet with a bit of thickness), scattered foxing spots for
+ * an aged look, and a shaded strip down the spine side. The silhouette
+ * itself is lightly torn rather than a clean rectangle (see raggedRectPath,
+ * shared with drawLeatherCover) — much finer than the cover's worn edge,
+ * since a page's rough cut is small frequent nicks, not big worn notches.
+ */
+export function drawPageSheet(
+  ctx: CanvasRenderingContext2D,
+  rx: number,
+  ry: number,
+  rw: number,
+  rh: number,
+  seed = 1,
+): void {
+  const x = Math.round(rx);
+  const y = Math.round(ry);
+  const w = Math.round(rw);
+  const h = Math.round(rh);
+  if (w <= 0 || h <= 0) return;
+
+  const step = 4;
+  const outerRand = seeded(seed);
+  ctx.fillStyle = LEATHER.pageDark;
+  ctx.fill(raggedRectPath(x, y, w, h, outerRand, 1, step));
+
+  const innerRand = seeded(seed + 53);
+  const innerPath = raggedRectPath(x + 1, y + 1, w - 2, h - 2, innerRand, 1, step);
+  ctx.fillStyle = LEATHER.page;
+  ctx.fill(innerPath);
+
+  const rand = seeded(seed);
+  ctx.save();
+  ctx.clip(innerPath);
+  for (let i = 0; i < 16; i++) {
+    const gx = x + Math.floor(rand() * w);
+    const gy = y + Math.floor(rand() * h);
+    ctx.globalAlpha = 0.08 + rand() * 0.1;
+    ctx.fillStyle = LEATHER.pageShade;
+    ctx.fillRect(gx, gy, 2, 2);
+  }
+  ctx.globalAlpha = 1;
+  ctx.restore();
+}
+
+/**
+ * A small leather tab — used for the compendium's prev/next/close controls.
+ * Same two-layer edge-then-fill construction as woodTile, just in the
+ * leather palette and without the plank texture.
+ */
+export function drawLeatherTab(
+  ctx: CanvasRenderingContext2D,
+  rx: number,
+  ry: number,
+  rw: number,
+  rh: number,
+  opts: { hover?: boolean } = {},
+): void {
+  const { hover = false } = opts;
+  const x = Math.round(rx);
+  const y = Math.round(ry);
+  const w = Math.round(rw);
+  const h = Math.round(rh);
+
+  ctx.fillStyle = hover ? LEATHER.stitch : LEATHER.edge;
+  ctx.fill(pixelRoundRect(x, y, w, h, 4));
+  ctx.fillStyle = hover ? LEATHER.coverLight : LEATHER.coverDark;
+  ctx.fill(pixelRoundRect(x + 1, y + 1, w - 2, h - 2, 3));
+}
