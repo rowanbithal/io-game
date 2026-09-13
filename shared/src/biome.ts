@@ -1,5 +1,5 @@
 import { ResourceType } from './types';
-import { DARK_FOREST_BAND, SEA_BAND, SEA_SAND_WIDTH, TREE_SPAN, FOREST_TREE_SCALE, FOREST_ROCK_SCALE } from './constants';
+import { DARK_FOREST_BAND, SEA_BAND, SEA_SAND_WIDTH, DESERT_BAND, TREE_SPAN, FOREST_TREE_SCALE, FOREST_ROCK_SCALE } from './constants';
 
 /**
  * How far the dark forest's edge wanders above/below DARK_FOREST_BAND at a
@@ -66,6 +66,64 @@ export function isInSea(worldX: number, worldY: number): boolean {
   return worldY >= seaCoastAt(worldX);
 }
 
+// ── Desert (top-right corner) ───────────────────────────────────────────────
+// The east third of the dark forest's band, carved out of it — bounded on
+// its west by its own wandering vertical border (below, meandering the same
+// way the dark forest's and sea's own edges do — see
+// darkForestEdgeOffset/seaEdgeOffset — a few summed sine waves, own
+// wavelengths/phases so the three borders don't echo each other; the one
+// difference is axis, since this one wanders as a function of y rather than
+// x) and on its south by darkForestBandAt itself — the exact same line the
+// dark forest's own southern edge already uses, not a second independently-
+// wandering one, so the two biomes share that seam without ever disagreeing
+// about where it runs.
+
+const DESERT_WAVE_A = 110;
+const DESERT_WAVE_B = 48;
+const DESERT_WAVE_C = 22;
+
+/** Furthest the border can push west/east of DESERT_BAND — the sum of the three waves' amplitudes. */
+export const DESERT_EDGE_AMPLITUDE = DESERT_WAVE_A + DESERT_WAVE_B + DESERT_WAVE_C;
+
+export function desertEdgeOffset(worldY: number): number {
+  const a = Math.sin((worldY / 980) * Math.PI * 2 + 3.1) * DESERT_WAVE_A;
+  const b = Math.sin((worldY / 390) * Math.PI * 2 + 5.4) * DESERT_WAVE_B;
+  const c = Math.sin((worldY / 150) * Math.PI * 2 + 1.7) * DESERT_WAVE_C;
+  return a + b + c;
+}
+
+/** The desert's actual boundary x at a given world y — DESERT_BAND is just its average. */
+export function desertBandAt(worldY: number): number {
+  return DESERT_BAND + desertEdgeOffset(worldY);
+}
+
+/**
+ * True inside the desert corner: east of its own wandering western border
+ * AND still within the dark forest's own band (north of darkForestBandAt) —
+ * mirrors isInSea's "gameplay biome" role, but for a bounded corner rather
+ * than an edge-to-edge band. South of that shared line it's plains, same as
+ * everywhere else the dark forest gives way to them.
+ */
+export function isInDesert(worldX: number, worldY: number): boolean {
+  return worldX >= desertBandAt(worldY) && worldY < darkForestBandAt(worldX);
+}
+
+/**
+ * True when the dark forest at this world x has been entirely replaced by
+ * the desert corner — checked just inside the forest's own y-range, right at
+ * its border, since that's the point closest to actually being forest that
+ * a given x can have. darkForestBandAt(worldX) itself has no idea the desert
+ * exists (it's a pure function of x, unaware of the corner carved out of its
+ * own north side) — every effect that assumes "north of the band = real
+ * forest" (the tree canopy's approach feather, the minimap's dirt-fringe/
+ * grass-shade bleed) has to check this first, or it keeps applying a few
+ * hundred units into what's now the desert's own territory, or south of it,
+ * with nothing there to be approaching.
+ */
+export function forestBorderIsDesert(worldX: number): boolean {
+  return isInDesert(worldX, darkForestBandAt(worldX) - 1);
+}
+
 // ── Forest variants ──────────────────────────────────────────────────────────
 // Dark forest trees and rocks are the same shapes drawn bigger (see
 // FOREST_TREE_SCALE / FOREST_ROCK_SCALE and the renderer's FOREST_VARIANT).
@@ -102,7 +160,7 @@ export function hashCell(gx: number, gy: number, salt: number): number {
  * same grid cell don't derive the identical seed (and therefore the identical
  * shape variation).
  */
-export const RESOURCE_SEED_SALT = { tree: 1, rock: 2, wheat: 3, gold: 4 } as const;
+export const RESOURCE_SEED_SALT = { tree: 1, rock: 2, wheat: 3, gold: 4, diamond: 5 } as const;
 
 /** Which SPAN-sized cell (x, y) falls in, for a resource with the given footprint span. */
 export function resourceCell(x: number, y: number, span: number): { gx: number; gy: number } {
@@ -118,6 +176,11 @@ export function resourceCell(x: number, y: number, span: number): { gx: number; 
 const FOREST_CANOPY_FEATHER = 700;
 
 export function forestFactor(worldX: number, worldY: number): number {
+  // This x-column's "dark forest" is actually the desert corner — there's no
+  // real canopy anywhere north of here for a tree this far south to be
+  // thickening toward, so it stays a plains tree regardless of how close it
+  // sits to darkForestBandAt(worldX)'s own line.
+  if (forestBorderIsDesert(worldX)) return 0;
   const band = darkForestBandAt(worldX);
   return smoothstep(clamp01((band + FOREST_CANOPY_FEATHER - worldY) / FOREST_CANOPY_FEATHER));
 }

@@ -34,6 +34,8 @@ import {
   darkForestBandAt,
   SEA_SAND_WIDTH,
   seaCoastAt,
+  isInDesert,
+  forestBorderIsDesert,
   hashCell,
 } from '@io-game/shared';
 import {
@@ -55,6 +57,8 @@ import {
   STONE_ICON_HALF_BLOCKS,
   drawGoldIcon,
   GOLD_ICON_HALF_BLOCKS,
+  drawDiamondIcon,
+  DIAMOND_ICON_HALF_BLOCKS,
   drawWheatIcon,
   WHEAT_ICON_HALF_BLOCKS,
   drawStringIcon,
@@ -75,6 +79,8 @@ import {
   FOX_PORTRAIT_HALF_BLOCKS,
   drawSpiderPortrait,
   SPIDER_PORTRAIT_HALF_BLOCKS,
+  drawBeetlePortrait,
+  BEETLE_PORTRAIT_HALF_BLOCKS,
   drawFireflyShape,
   FIREFLY_PORTRAIT_HALF_BLOCKS,
 } from '../Renderer';
@@ -176,10 +182,14 @@ function terrainColor(
       const depth = d / coast;
       return pick(MAP_COLORS.water, depth < 0.5 ? 0 : depth < 0.85 ? 1 : 2);
     }
-    // Sand ring, dithering out into the grass over its last stretch.
+    // Sand ring, dithering out into the grass over its last stretch — mud
+    // instead, for the desert's one oasis (see Renderer.ts's drawLakes,
+    // which tells it apart from an ordinary lake the same way: purely by
+    // position).
+    const shoreTones = isInDesert(lake.x, lake.y) ? MAP_COLORS.mud : MAP_COLORS.sand;
     const fromWater = d - coast;
-    if (fromWater <= lake.shoreWidth) return pick(MAP_COLORS.sand, noise < 0.5 ? 1 : 2);
-    if (fromWater <= lake.shoreWidth * 1.5 && noise < 0.45) return pick(MAP_COLORS.sand, 0);
+    if (fromWater <= lake.shoreWidth) return pick(shoreTones, noise < 0.5 ? 1 : 2);
+    if (fromWater <= lake.shoreWidth * 1.5 && noise < 0.45) return pick(shoreTones, 0);
   }
 
   // The sea, across the bottom of the map — same coast/sand-ring treatment
@@ -194,18 +204,33 @@ function terrainColor(
   if (fromCoast <= SEA_SAND_WIDTH) return pick(MAP_COLORS.sand, noise < 0.5 ? 1 : 2);
   if (fromCoast <= SEA_SAND_WIDTH * 1.2 && noise < 0.45) return pick(MAP_COLORS.sand, 0);
 
+  // The desert — the dark forest's own top-right corner (see isInDesert,
+  // which checks both of its borders at once) — takes over from the forest
+  // there, so this has to preempt the forest/grass logic below rather than
+  // fall through to it.
+  if (isInDesert(wx, wy)) {
+    return pick(MAP_COLORS.desertSand, noise < 0.35 ? 0 : noise < 0.75 ? 2 : 1);
+  }
+
   const band = darkForestBandAt(wx);
   if (wy < band) return pick(MAP_COLORS.forest, noise < 0.4 ? 0 : noise < 0.8 ? 1 : 2);
 
   // The seam: dirt speckled into grass just below the border, thinning out
-  // with distance from it.
+  // with distance from it — but only where there's real dark forest north of
+  // here to be the seam of. Along the desert's own stretch of this same
+  // band(wx) line, there isn't (see forestBorderIsDesert) — that "band" is
+  // the desert's south border instead, and it draws its own transition (see
+  // isInDesert above), so bleeding a dirt seam south of it too would show
+  // dark forest ground the desert doesn't actually border there.
   const belowBand = wy - band;
-  if (belowBand < DARK_FOREST_TRANSITION && noise > belowBand / DARK_FOREST_TRANSITION) {
-    return pick(MAP_COLORS.forest, 1);
-  }
-  // Grass in the forest's shadow, thinning out over a much longer approach.
-  if (belowBand < FOREST_SHADE_REACH && noise > belowBand / FOREST_SHADE_REACH) {
-    return pick(MAP_COLORS.grassShade, noise < 0.6 ? 0 : 1);
+  if (!forestBorderIsDesert(wx)) {
+    if (belowBand < DARK_FOREST_TRANSITION && noise > belowBand / DARK_FOREST_TRANSITION) {
+      return pick(MAP_COLORS.forest, 1);
+    }
+    // Grass in the forest's shadow, thinning out over a much longer approach.
+    if (belowBand < FOREST_SHADE_REACH && noise > belowBand / FOREST_SHADE_REACH) {
+      return pick(MAP_COLORS.grassShade, noise < 0.6 ? 0 : 1);
+    }
   }
 
   return pick(MAP_COLORS.grass, noise < 0.45 ? 0 : noise < 0.85 ? 1 : 2);
@@ -1315,6 +1340,15 @@ export class HUD {
       return;
     }
 
+    if (id === 'beetle') {
+      const block = Math.max(1, size / (BEETLE_PORTRAIT_HALF_BLOCKS * 2));
+      ctx.save();
+      ctx.translate(px, py);
+      drawBeetlePortrait(ctx, block);
+      ctx.restore();
+      return;
+    }
+
     if (id === 'firefly') {
       // A patch of night behind the glow: on the page's cream background the
       // additive glow (see drawFireflyShape) needs something dark to shine
@@ -1798,6 +1832,11 @@ export class HUD {
 
     if (item === 'gold') {
       drawSprite(GOLD_ICON_HALF_BLOCKS, (block) => drawGoldIcon(ctx, block));
+      return;
+    }
+
+    if (item === 'diamond') {
+      drawSprite(DIAMOND_ICON_HALF_BLOCKS, (block) => drawDiamondIcon(ctx, block));
       return;
     }
 

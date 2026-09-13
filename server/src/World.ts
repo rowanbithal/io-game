@@ -1,4 +1,4 @@
-import { MAP_SIZE, GRID_CELL, TREE_SPAN, ROCK_SPAN, WHEAT_SPAN, GOLD_SPAN, GOLD_TOP_BAND, DARK_FOREST_BAND, PLAYER_RADIUS, FOX_RADIUS, SOLID_COLLISION_RADIUS, ResourceType, LakeState, darkForestBandAt, seaCoastAt, seaSandStartAt } from '@io-game/shared';
+import { MAP_SIZE, GRID_CELL, TREE_SPAN, ROCK_SPAN, WHEAT_SPAN, GOLD_SPAN, GOLD_TOP_BAND, DARK_FOREST_BAND, DIAMOND_SPAN, DIAMOND_FAR_X, DIAMOND_MAX_Y, OASIS_X, OASIS_Y, OASIS_RADIUS, OASIS_SHORE_WIDTH, OASIS_VERTICAL_STRETCH, PLAYER_RADIUS, FOX_RADIUS, SOLID_COLLISION_RADIUS, ResourceType, LakeState, darkForestBandAt, seaCoastAt, seaSandStartAt, isInDesert } from '@io-game/shared';
 import { ServerResource } from './entities/Resource';
 
 // ── Lakes ─────────────────────────────────────────────────────────────────────
@@ -166,6 +166,15 @@ interface ClusterConfig {
   spreadRadius: number;
   /** Members must be orthogonally adjacent (one SPAN away) to an existing cluster member. */
   contiguous: boolean;
+  /**
+   * Confines placement to inside the desert (isInDesert) instead of the
+   * usual "everywhere outside it" every other config gets by default — see
+   * footprintFree, which rejects the opposite side depending on this flag.
+   * Desert diamonds are the one config that wants the inside.
+   */
+  desertOnly?: boolean;
+  /** With desertOnly, also requires world x to be at least this far east — the desert's own "far side" (see DIAMOND_FAR_X). */
+  desertMinX?: number;
 }
 
 const CLUSTER_CONFIG: ClusterConfig[] = [
@@ -266,6 +275,26 @@ const GOLD_CLUSTER: ClusterConfig = {
   contiguous: false,
 };
 
+// Diamond deposits: the same rock-like vein scatter as gold's cluster above,
+// confined instead to the desert's own top-right corner (see DIAMOND_FAR_X /
+// DIAMOND_MAX_Y — the row cap enforcing the latter is applied at the
+// runClusterConfig call site, same as goldBandRowsAt is for gold) — a small
+// count of genuinely rare veins tucked in the corner, so reaching them (and
+// having the gold pickaxe to actually mine them — see Game.ts's
+// DIAMOND_CAPABLE_TOOLS) is a deliberate trip rather than something you trip
+// over crossing the desert.
+const DIAMOND_CLUSTER: ClusterConfig = {
+  type: 'diamond',
+  span: DIAMOND_SPAN,
+  targetCount: 10,
+  minClusterSize: 2,
+  maxClusterSize: 3,
+  spreadRadius: 2,
+  contiguous: false,
+  desertOnly: true,
+  desertMinX: DIAMOND_FAR_X,
+};
+
 // ── World class ───────────────────────────────────────────────────────────────
 
 export class World {
@@ -288,7 +317,7 @@ export class World {
   // ── Generation ─────────────────────────────────────────────────────────────
 
   generate(): void {
-    const margin = Math.max(TREE_SPAN, GOLD_SPAN); // comfortably fits the largest footprint, a multiple of GRID_CELL
+    const margin = Math.max(TREE_SPAN, GOLD_SPAN, DIAMOND_SPAN); // comfortably fits the largest footprint, a multiple of GRID_CELL
 
     this.generateLakes(margin);
     this.generateClusters(margin);
@@ -312,6 +341,7 @@ export class World {
         const y = darkForestOnly
           ? margin + Math.random() * Math.max(1, darkForestBandAt(x) - margin)
           : margin + Math.random() * (MAP_SIZE - margin * 2);
+        if (isInDesert(x, y)) continue; // the desert replaces every other biome's scatter within its own column
         if (!darkForestOnly && y >= seaSandStartAt(x)) continue; // stay off the beach/sea
         if (this.isBlockedByLake(x, y)) continue;
         this.spawnAt(type, x, y);
@@ -333,6 +363,24 @@ export class World {
    * chance the way independent random placement would.
    */
   private generateLakes(margin: number): void {
+    // The desert's oasis — fixed dead-center in the biome rather than
+    // randomized, so there's always exactly one landmark lake out there (see
+    // OASIS_X/Y's own doc comment). The client tells it apart from an
+    // ordinary lake purely by position (isInDesert(lake.x, lake.y)) to draw
+    // its mud/green-growth shore instead of sand — see Renderer.ts's
+    // drawLakes. Pushed before the grid loop below (rather than after) so
+    // its own tooClose check treats the oasis as an existing lake too — an
+    // ordinary lake landing right on top of the desert's one landmark would
+    // defeat the point of it being one.
+    this.lakes.push({
+      id: `lake${this.lakes.length}`,
+      x: OASIS_X,
+      y: OASIS_Y,
+      radius: OASIS_RADIUS,
+      shoreWidth: OASIS_SHORE_WIDTH,
+      seed: Math.floor(Math.random() * 0xffffffff),
+    });
+
     const cellW = MAP_SIZE / LAKE_GRID_COLS;
     const cellH = MAP_SIZE / LAKE_GRID_ROWS;
 
@@ -346,9 +394,11 @@ export class World {
         const cellCy = row * cellH + cellH / 2;
 
         // A few retries with a fresh size/jitter if this particular draw
-        // happens to land too close to a neighbouring cell's lake — cells
-        // are generous enough relative to LAKE_SPACING that this essentially
-        // always succeeds on the first attempt.
+        // happens to land too close to a neighbouring cell's lake (or,
+        // thanks to the push above, the oasis itself) or inside the
+        // desert's own corner — cells are generous enough relative to
+        // LAKE_SPACING that a miss on either count essentially always
+        // still succeeds on a later attempt.
         for (let attempt = 0; attempt < 20; attempt++) {
           const radius = LAKE_MIN_RADIUS + Math.random() * (LAKE_MAX_RADIUS - LAKE_MIN_RADIUS);
           const shoreWidth = LAKE_MIN_SHORE + Math.random() * (LAKE_MAX_SHORE - LAKE_MIN_SHORE);
@@ -360,6 +410,8 @@ export class World {
           const jitterY = Math.max(0, cellH / 2 - footprint);
           const x = clampNum(cellCx + (Math.random() * 2 - 1) * jitterX, footprint, MAP_SIZE - footprint);
           const y = clampNum(cellCy + (Math.random() * 2 - 1) * jitterY, footprint, MAP_SIZE - footprint);
+
+          if (isInDesert(x, y)) continue; // the desert's only water is the oasis pushed above
 
           const tooClose = this.lakes.some((lake) => {
             const minDist = radius + shoreWidth + lake.radius + lake.shoreWidth + LAKE_SPACING;
@@ -381,6 +433,21 @@ export class World {
     }
   }
 
+  /**
+   * Distance from (x, y) to a lake's centre, in the same "circular" units
+   * every other lake check here compares against a plain radius — except
+   * for the oasis, whose render (see Renderer.ts's drawLakes) is stretched
+   * taller than it is wide (OASIS_VERTICAL_STRETCH). Shrinking the y
+   * component by that same factor before measuring is what makes a
+   * plain-radius comparison land on the oasis's actual (elliptical) edge
+   * instead of the circle it would otherwise be.
+   */
+  private lakeDist(lake: LakeState, x: number, y: number): number {
+    const dx = x - lake.x;
+    const dy = y - lake.y;
+    return isInDesert(lake.x, lake.y) ? Math.hypot(dx, dy / OASIS_VERTICAL_STRETCH) : Math.hypot(dx, dy);
+  }
+
   /** True if (x, y) falls within any lake's water or shore. */
   isBlockedByLake(x: number, y: number, extraMargin = 0): boolean {
     for (const lake of this.lakes) {
@@ -388,7 +455,7 @@ export class World {
       // radius (see Renderer.ts's lakeHarmonics) — this simple circular
       // check pads out a bit so resources stay clear of the biggest bulges.
       const clear = (lake.radius + lake.shoreWidth) * LAKE_LOBE_BUFFER + extraMargin;
-      if (Math.hypot(x - lake.x, y - lake.y) < clear) return true;
+      if (this.lakeDist(lake, x, y) < clear) return true;
     }
     return false;
   }
@@ -396,12 +463,18 @@ export class World {
   /** True if (x, y) falls within any lake's water specifically (not just its shore). */
   isInLakeWater(x: number, y: number): boolean {
     for (const lake of this.lakes) {
-      if (Math.hypot(x - lake.x, y - lake.y) < lake.radius * LAKE_LOBE_BUFFER) return true;
+      if (this.lakeDist(lake, x, y) < lake.radius * LAKE_LOBE_BUFFER) return true;
     }
     return false;
   }
 
-  /** True if (x, y) is out past the sea's coastline — mirrors isInLakeWater's gameplay role for the map's south coast. */
+  /**
+   * True if (x, y) is out past the sea's coastline — mirrors isInLakeWater's
+   * gameplay role for the map's south coast. The sea is the whole map's
+   * southern edge, not a biome the desert replaces the way it does the dark
+   * forest and the plains — the desert gets its own stretch of the same
+   * coastline (and beach — see isBlockedBySea) instead of being landlocked.
+   */
   isInSeaWater(x: number, y: number): boolean {
     return seaCoastAt(x) <= y;
   }
@@ -762,7 +835,13 @@ export class World {
     const key = (gx: number, gy: number): string => `${gx},${gy}`;
     const inBounds = (gx: number, gy: number): boolean => gx >= 0 && gy >= 0 && gx < fineCols && gy < fineRows;
 
-    const footprintFree = (gx: number, gy: number, spanCells: number): boolean => {
+    const footprintFree = (
+      gx: number,
+      gy: number,
+      spanCells: number,
+      desertOnly?: boolean,
+      desertMinX?: number,
+    ): boolean => {
       for (let dy = 0; dy < spanCells; dy++) {
         for (let dx = 0; dx < spanCells; dx++) {
           if (!inBounds(gx + dx, gy + dy) || occupied.has(key(gx + dx, gy + dy))) return false;
@@ -772,6 +851,18 @@ export class World {
       const centerX = margin + gx * GRID_CELL + span / 2;
       const centerY = margin + gy * GRID_CELL + span / 2;
       if (this.isBlockedByLake(centerX, centerY, span / 2)) return false;
+
+      // Every other biome's clusters stay out of the desert's own column
+      // entirely (it replaces them there — see isInDesert); the desert's own
+      // clusters (diamond) require the opposite, and diamond further
+      // requires the biome's far side (desertMinX — see DIAMOND_FAR_X).
+      const inDesert = isInDesert(centerX, centerY);
+      if (desertOnly) {
+        if (!inDesert) return false;
+        if (desertMinX !== undefined && centerX < desertMinX) return false;
+      } else if (inDesert) {
+        return false;
+      }
       return true;
     };
 
@@ -813,7 +904,7 @@ export class World {
         const seedGYMin = Math.max(0, Math.min(seedGYMinForX(seedGX), seedGYMax - spanCells));
         const seedGYRange = Math.max(1, seedGYMax - spanCells - seedGYMin);
         const seedGY = seedGYMin + Math.floor(Math.random() * seedGYRange);
-        if (!footprintFree(seedGX, seedGY, spanCells)) continue;
+        if (!footprintFree(seedGX, seedGY, spanCells, cfg.desertOnly, cfg.desertMinX)) continue;
 
         place(cfg.type, seedGX, seedGY, spanCells, cfg.span);
         placed++;
@@ -843,7 +934,7 @@ export class World {
             ny = seedGY + jitter();
           }
 
-          if (!footprintFree(nx, ny, spanCells)) continue;
+          if (!footprintFree(nx, ny, spanCells, cfg.desertOnly, cfg.desertMinX)) continue;
 
           place(cfg.type, nx, ny, spanCells, cfg.span);
           members.push([nx, ny]);
@@ -899,6 +990,14 @@ export class World {
     // "the top of the dark forest" is a fixed depth, not the border itself).
     const goldBandRowsAt = (): number => Math.max(1, Math.floor((GOLD_TOP_BAND - margin) / GRID_CELL));
     runClusterConfig(GOLD_CLUSTER, () => 0, goldBandRowsAt);
+
+    // Diamond veins, seeded only in the rows nearest the top of the desert
+    // (see DIAMOND_MAX_Y) — the same fixed-depth-cutoff idea goldBandRowsAt
+    // uses just above, pinning deposits to the desert's own top-right
+    // corner alongside footprintFree's desertOnly/desertMinX (the corner's
+    // other two bounds).
+    const diamondBandRowsAt = (): number => Math.max(1, Math.floor((DIAMOND_MAX_Y - margin) / GRID_CELL));
+    runClusterConfig(DIAMOND_CLUSTER, () => 0, diamondBandRowsAt);
   }
 
   private spawnAt(type: ResourceType, x: number, y: number): void {

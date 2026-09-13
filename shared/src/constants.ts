@@ -70,6 +70,34 @@ export const DAY_DURATION = 240; // Seconds for a full day/night cycle
 export const DAY_FRACTION = 0.55; // Fraction of the cycle the sun is above the horizon (see daycycle.ts)
 export const VIEW_DISTANCE = 950; // Units the client can see around the player
 
+// ── Beetles (desert predator) ───────────────────────────────────────────────
+// Tied to the desert biome the same way a fox is tied to the dark forest —
+// spawns and hunts inside it around the clock, sticky-aggro with a leash back
+// to its own biome (see Game.ts's updateBeetle/beetleTarget). Unlike a fox it
+// doesn't pathfind: the desert has nothing dense enough to route around, so a
+// beetle just steers straight at its target and bounces off anything solid,
+// the same simple approach a spider uses.
+export const BEETLE_RADIUS = 18; // Between a player (16) and a fox (20)
+export const BEETLE_SPEED = 130; // Faster than a fox (105) — the desert's own slowdown (see DESERT_SPEED_MULTIPLIER) is what makes this a real threat, not raw speed alone
+export const BEETLE_MAX_HP = 150; // 5 unarmed swings — squishier than a fox, but there are more of them at once
+export const BEETLE_DAMAGE = 9;
+export const BEETLE_ATTACK_RANGE = 32;
+export const BEETLE_ATTACK_COOLDOWN = 0.7;
+export const BEETLE_AGGRO_RANGE = 380;
+// Same hysteresis role as FOX_LOSE_INTEREST_RANGE — wider than the acquisition
+// range so a beetle doesn't flicker in and out of a chase at the edge of its senses.
+export const BEETLE_LOSE_INTEREST_RANGE = 420;
+export const BEETLE_MAX_COUNT = 16;
+export const BEETLE_SPAWN_INTERVAL = 4; // Seconds between map-wide (desert-confined) spawn attempts, day or night
+export const BEETLE_MIN_PLAYER_SPAWN_DIST = 280;
+export const BEETLE_FOOD_DROP = 1; // Raw meat yielded when a beetle is killed — cook it like a fox kill
+// How far past the desert's edge a beetle will chase before giving up — the
+// beetle's answer to FOX_FOREST_LEEWAY.
+export const BEETLE_DESERT_LEEWAY = 300;
+// Seconds a beetle can go with nobody to chase before it despawns outright —
+// the beetle's answer to FOX_IDLE_DESPAWN_TIME.
+export const BEETLE_IDLE_DESPAWN_TIME = 30;
+
 // ── Resources ────────────────────────────────────────────────────────────────
 export const HARVEST_RANGE = 65; // Max distance to harvest a resource
 export const HARVEST_ANGLE = (75 * Math.PI) / 180; // Aim cone width a resource must fall within to be harvestable
@@ -94,12 +122,18 @@ export const WHEAT_SPAN = 20;
 // A gold deposit — same boulder shape as a rock, just gold-coloured and
 // noticeably bigger (see World.ts's GOLD_CLUSTER / Renderer.ts's GOLD_PALETTE).
 export const GOLD_SPAN = 90;
+// A diamond deposit — same boulder shape again, confined to the far side of
+// the desert (see World.ts's DIAMOND_CLUSTER / Renderer.ts's DIAMOND_PALETTE).
+// Only a gold pickaxe can mine it (see Game.ts's DIAMOND_CAPABLE_TOOLS) — the
+// stone pickaxe unlocks gold, but diamond stays the gold pickaxe's own reward.
+export const DIAMOND_SPAN = 90;
 
 // Collision radii scaled to the larger footprints above (berries/mushrooms
 // keep using RESOURCE_RADIUS).
 export const TREE_COLLISION_RADIUS = 30;
 export const ROCK_COLLISION_RADIUS = 24;
 export const GOLD_COLLISION_RADIUS = 36;
+export const DIAMOND_COLLISION_RADIUS = 36;
 
 /**
  * Which resource types are solid, and how far their collision reaches. The
@@ -112,6 +146,7 @@ export const SOLID_COLLISION_RADIUS: Partial<Record<ResourceType, number>> = {
   tree: TREE_COLLISION_RADIUS,
   rock: ROCK_COLLISION_RADIUS,
   gold: GOLD_COLLISION_RADIUS,
+  diamond: DIAMOND_COLLISION_RADIUS,
 };
 
 export const MAX_SOLID_COLLISION_RADIUS = Math.max(
@@ -146,6 +181,7 @@ export const PLACEMENT_CLEARANCE: Record<ResourceType, number> = {
   tree: (TREE_SPAN / 2) * FOREST_TREE_SCALE,
   rock: (ROCK_SPAN / 2) * FOREST_ROCK_SCALE,
   gold: GOLD_SPAN / 2,
+  diamond: DIAMOND_SPAN / 2,
   berry: RESOURCE_RADIUS,
   mushroom: RESOURCE_RADIUS,
   purple_berry: RESOURCE_RADIUS,
@@ -396,6 +432,72 @@ export const SEA_BAND = (MAP_SIZE * 4) / 5;
 // World units the sandy beach spans immediately north of the coastline,
 // blending into the plains — the sea's answer to a lake's shoreWidth.
 export const SEA_SAND_WIDTH = 220;
+
+// ── Desert (top-right corner) ───────────────────────────────────────────────
+// A fixed, deterministic corner of the map — the east third of the dark
+// forest's own band, carved out of it rather than a biome of its own full
+// width or height. Two borders bound it: a vertical one to its west (the
+// same "wandering band" deal DARK_FOREST_BAND/SEA_BAND have, see
+// desertBandAt in biome.ts) and, to its south, the *same* darkForestBandAt
+// line the dark forest's own southern edge already uses — so the desert
+// simply stops exactly where the dark forest would otherwise give way to the
+// plains, sharing that seam pixel-for-pixel rather than defining a second,
+// independently-wandering one that could disagree with it. See isInDesert.
+//
+// Average world x the desert begins at — set two-thirds of the way across,
+// so the desert claims the eastern third of the dark forest's width.
+export const DESERT_BAND = (MAP_SIZE * 2) / 3;
+// World units the sand fringe spans past either of the desert's two borders
+// (west and south alike — see Renderer.ts's drawDesertGround) — the desert's
+// answer to DARK_FOREST_TRANSITION. A speckled fringe rather than a hard
+// line, same as that one, but kept fairly tight now that the desert itself
+// is a small corner rather than a quarter of the map — too wide a blend
+// here reads as the desert spreading into its neighbors rather than a crisp
+// corner with a soft edge.
+export const DESERT_TRANSITION = 150;
+// Player movement is scaled by this while standing in the desert (see
+// Game.ts's getSpeedMultiplier) — a mild, constant tax on crossing it, not a
+// hazard-tile slowdown like wading through water.
+export const DESERT_SPEED_MULTIPLIER = 0.8;
+// Thirst drains at THIRST_DECAY_RATE times this while in the desert (see
+// Game.ts's getThirstMultiplier and ServerPlayer.update) — the heat is what
+// makes the oasis worth the detour instead of just scenery.
+export const DESERT_THIRST_MULTIPLIER = 1.8;
+
+// The desert's single oasis: a lake placed dead center in the biome rather
+// than seeded by the ordinary lake grid (see World.ts's generateLakes, which
+// rejects any grid-placed lake landing inside the desert so this is the only
+// water out here). Fixed rather than randomized — "a single oasis in the
+// middle" is a deliberate landmark, not a scattered one. Centered on the
+// desert's own (much shorter, now that it's a corner rather than a
+// full-height column) north-south reach — see DARK_FOREST_BAND, the desert's
+// southern border — rather than the map's own vertical center.
+export const OASIS_X = DESERT_BAND + (MAP_SIZE - DESERT_BAND) / 2;
+export const OASIS_Y = DARK_FOREST_BAND / 2;
+export const OASIS_RADIUS = 150;
+// Wider than an ordinary lake's shore (LAKE_MAX_SHORE tops out at 50) — an
+// oasis's ring of mud and green growth is the whole point of it, not a thin
+// seam around the water.
+export const OASIS_SHORE_WIDTH = 75;
+// The oasis reads better as a longer pool than a perfect circle — this
+// scales its north-south reach relative to its east-west one. Shared (not
+// Renderer-local) because World.ts's water/shore gameplay checks apply the
+// exact same stretch to the oasis specifically, so what looks like water is
+// what actually behaves like water — see World.ts's isBlockedByLake/
+// isInLakeWater and Renderer.ts's drawLakes.
+export const OASIS_VERTICAL_STRETCH = 1.6;
+
+// World x a diamond deposit must land east of, and world y it must land
+// north of — together pinning deposits to the desert's own top-right
+// corner (deepest away from both the grass/sand seam and the plains
+// border), mirroring GOLD_TOP_BAND's "near the top of the dark forest" role
+// for gold. Diamonds require the top pickaxe tier to mine at all (see
+// Game.ts's DIAMOND_CAPABLE_TOOLS) on top of being the harder deposit to
+// reach.
+export const DIAMOND_FAR_X = DESERT_BAND + (MAP_SIZE - DESERT_BAND) * 0.65;
+// Kept north of OASIS_Y so deposits read as "past the oasis" rather than
+// scattered alongside it.
+export const DIAMOND_MAX_Y = DARK_FOREST_BAND * 0.4;
 
 // ── Chat ─────────────────────────────────────────────────────────────────────
 /** Longest message accepted. Enforced server-side too — the client's input

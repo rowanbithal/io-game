@@ -5,7 +5,7 @@ export interface Vec2 {
 }
 
 // ── Resources ────────────────────────────────────────────────────────────────
-export type ResourceType = 'tree' | 'rock' | 'berry' | 'mushroom' | 'wheat' | 'purple_berry' | 'gold';
+export type ResourceType = 'tree' | 'rock' | 'berry' | 'mushroom' | 'wheat' | 'purple_berry' | 'gold' | 'diamond';
 
 export interface ResourceState {
   id: string;
@@ -67,6 +67,20 @@ export interface SpiderState {
 // dark forest and hunt around it through both day and night. Same
 // server-driven, no-client-simulation deal as spiders.
 export interface FoxState {
+  id: string;
+  x: number;
+  y: number;
+  angle: number;
+  hp: number;
+  maxHp: number;
+}
+
+// ── Beetles ───────────────────────────────────────────────────────────────────
+// The desert's resident predator — tied to the biome the same way a fox is
+// tied to the dark forest (see FoxState's own doc comment), just confined to
+// the map's east quarter instead of its top third. Same server-driven,
+// no-client-simulation deal as spiders and foxes.
+export interface BeetleState {
   id: string;
   x: number;
   y: number;
@@ -205,6 +219,7 @@ export interface GameState {
   structures: StructureState[]; // Only nearby structures are included
   spiders: SpiderState[]; // Only nearby spiders are included
   foxes: FoxState[]; // Only nearby foxes are included
+  beetles: BeetleState[]; // Only nearby beetles are included
   /**
    * True when this socket is watching another player via "/spectate <name>"
    * instead of playing their own. When set, `isMe` in `players` marks the

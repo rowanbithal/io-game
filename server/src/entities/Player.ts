@@ -122,7 +122,14 @@ export class ServerPlayer {
     this.y = MAP_SIZE * (0.3 + Math.random() * 0.4);
   }
 
-  update(dt: number, isDay: boolean, speedMultiplier = 1, nearFire = false, inWater = false): void {
+  update(
+    dt: number,
+    isDay: boolean,
+    speedMultiplier = 1,
+    nearFire = false,
+    inWater = false,
+    thirstMultiplier = 1,
+  ): void {
     // ── Movement ────────────────────────────────────────────────────────────
     let dx = 0;
     let dy = 0;
@@ -152,7 +159,7 @@ export class ServerPlayer {
     if (inWater) {
       this.thirst = Math.min(MAX_THIRST, this.thirst + THIRST_REGEN_RATE_IN_WATER * dt);
     } else {
-      this.thirst = Math.max(0, this.thirst - THIRST_DECAY_RATE * dt);
+      this.thirst = Math.max(0, this.thirst - THIRST_DECAY_RATE * thirstMultiplier * dt);
     }
 
     // A campfire warms you faster than the night cools you, so sitting by one

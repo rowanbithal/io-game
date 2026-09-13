@@ -1,4 +1,4 @@
-import { GameState, PlayerState, SpiderState, FoxState, TICK_RATE } from '@io-game/shared';
+import { GameState, PlayerState, SpiderState, FoxState, BeetleState, TICK_RATE } from '@io-game/shared';
 
 const TICK_MS = 1000 / TICK_RATE;
 
@@ -80,10 +80,22 @@ export class StateManager<T extends GameState = GameState> {
       };
     });
 
+    const beetles: BeetleState[] = this.curr.beetles.map((curr) => {
+      const prev = this.prev!.beetles.find((b) => b.id === curr.id);
+      if (!prev) return curr;
+      return {
+        ...curr,
+        x: lerp(prev.x, curr.x, alpha),
+        y: lerp(prev.y, curr.y, alpha),
+        angle: lerpAngle(prev.angle, curr.angle, alpha),
+        hp: lerp(prev.hp, curr.hp, alpha),
+      };
+    });
+
     // T's extra fields (PreviewState's focus/lakes) pass straight through
     // via the spread untouched — only the interpolated arrays are
     // overridden — so this is safe despite the cast being unable to prove
     // it structurally on its own.
-    return { ...this.curr, players, spiders, foxes } as T;
+    return { ...this.curr, players, spiders, foxes, beetles } as T;
   }
 }

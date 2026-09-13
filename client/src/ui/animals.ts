@@ -38,6 +38,17 @@ export const ANIMALS: AnimalEntry[] = [
     ],
   },
   {
+    id: 'beetle',
+    name: 'Beetle',
+    tagline: 'Desert hunter',
+    paragraphs: [
+      'Beetles belong to the desert the way foxes belong to the dark forest — that quarter of the map, east of the plains, is where they spawn and where they stay. There’s nothing dense enough out there to route around, so a beetle doesn’t pathfind like a fox does — it just scuttles straight at you.',
+      'Once locked onto a scent it stays locked on until you put real distance between you, same sticky aggro a fox shows — but stray far enough past the desert’s edge and it breaks off and gives up rather than following you back into the plains.',
+      'The heat is the real threat, not just the bite: thirst drains faster out there, and the ground itself is a mild, constant drag on how fast you can move. A beetle catching you already slowed and dehydrating is a worse fight than the same beetle anywhere else.',
+      'A dead beetle drops meat, same as a fox — worth cooking over a campfire before it’s eaten.',
+    ],
+  },
+  {
     id: 'fish',
     name: 'Fish',
     tagline: 'Lake & sea catch',

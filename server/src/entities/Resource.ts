@@ -10,6 +10,7 @@ const RESOURCE_HP: Record<ResourceType, number> = {
   wheat: 15,
   purple_berry: 30,
   gold: 260, // Tougher than rock — bigger deposit, more work to crack open
+  diamond: 340, // Tougher still — the far side of the desert, and the top tool tier to even scratch it
 };
 
 const RESOURCE_RESPAWN: Record<ResourceType, number> = {
@@ -20,6 +21,7 @@ const RESOURCE_RESPAWN: Record<ResourceType, number> = {
   wheat: 18,
   purple_berry: 30,
   gold: 150, // Rare and confined to the top of the dark forest — respawns slowly
+  diamond: 200, // Rarer still — respawns even slower than gold
 };
 
 /**
@@ -39,6 +41,7 @@ export const RESOURCE_DROPS: Record<ResourceType, { type: string; count: number 
   wheat: [{ type: 'wheat', count: 2 }],
   purple_berry: [{ type: 'purple_berry', count: 1 }], // A dark-forest delicacy — richer than a plains berry bush
   gold: [{ type: 'gold', count: 2 }],
+  diamond: [{ type: 'diamond', count: 2 }],
 };
 
 /**

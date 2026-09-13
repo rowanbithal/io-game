@@ -1,4 +1,4 @@
-import { GameState, PlayerState, ResourceState, StructureState, SpiderState, FoxState, LakeState, FishingState, PLAYER_RADIUS, FOX_RADIUS, GRID_CELL, TREE_SPAN, ROCK_SPAN, WHEAT_SPAN, GOLD_SPAN, HARVEST_RANGE, HARVEST_ANGLE, HARVEST_COOLDOWN, STRUCTURE_SPAN, PLACE_RANGE, CAMPFIRE_LIGHT_RADIUS, CAMPFIRE_BURNOUT_FADE, SPIDER_RADIUS, CAST_RANGE, RECIPES_BY_ID, WOODEN_AXE_ID, WOODEN_PICKAXE_ID, WOODEN_SWORD_ID, STONE_AXE_ID, STONE_PICKAXE_ID, STONE_SWORD_ID, GOLD_AXE_ID, GOLD_PICKAXE_ID, GOLD_SWORD_ID, WOODEN_ARMOR_ID, STONE_ARMOR_ID, GOLD_ARMOR_ID, TORCH_LIGHT_RADIUS, CRAFTING_BENCH_ID, FISHING_ROD_ID, MAP_SIZE, DARK_FOREST_BAND, DARK_FOREST_TRANSITION, GOLD_TOP_BAND, FOREST_TREE_SCALE, FOREST_ROCK_SCALE, darkForestBandAt, DARK_FOREST_EDGE_AMPLITUDE, SEA_BAND, SEA_SAND_WIDTH, seaCoastAt, seaSandStartAt, SEA_EDGE_AMPLITUDE, dayPhase, hashCell, clamp01, smoothstep, forestFactor, isForestTree, isForestRock, resourceCell, RESOURCE_SEED_SALT } from '@io-game/shared';
+import { GameState, PlayerState, ResourceState, StructureState, SpiderState, FoxState, BeetleState, LakeState, FishingState, PLAYER_RADIUS, FOX_RADIUS, BEETLE_RADIUS, GRID_CELL, TREE_SPAN, ROCK_SPAN, WHEAT_SPAN, GOLD_SPAN, DIAMOND_SPAN, HARVEST_RANGE, HARVEST_ANGLE, HARVEST_COOLDOWN, STRUCTURE_SPAN, PLACE_RANGE, CAMPFIRE_LIGHT_RADIUS, CAMPFIRE_BURNOUT_FADE, SPIDER_RADIUS, CAST_RANGE, RECIPES_BY_ID, WOODEN_AXE_ID, WOODEN_PICKAXE_ID, WOODEN_SWORD_ID, STONE_AXE_ID, STONE_PICKAXE_ID, STONE_SWORD_ID, GOLD_AXE_ID, GOLD_PICKAXE_ID, GOLD_SWORD_ID, WOODEN_ARMOR_ID, STONE_ARMOR_ID, GOLD_ARMOR_ID, TORCH_LIGHT_RADIUS, CRAFTING_BENCH_ID, FISHING_ROD_ID, MAP_SIZE, DARK_FOREST_BAND, DARK_FOREST_TRANSITION, GOLD_TOP_BAND, FOREST_TREE_SCALE, FOREST_ROCK_SCALE, darkForestBandAt, DARK_FOREST_EDGE_AMPLITUDE, SEA_BAND, SEA_SAND_WIDTH, seaCoastAt, seaSandStartAt, SEA_EDGE_AMPLITUDE, DESERT_BAND, DESERT_TRANSITION, DESERT_EDGE_AMPLITUDE, desertBandAt, isInDesert, OASIS_VERTICAL_STRETCH, dayPhase, hashCell, clamp01, smoothstep, forestFactor, isForestTree, isForestRock, resourceCell, RESOURCE_SEED_SALT } from '@io-game/shared';
 import { Camera } from './Camera';
 
 import berryUrl from './assets/sprites/berry.png';
@@ -128,6 +128,57 @@ const P = {
   starfishLight: '#ff9d5c',
   starfish: '#e8763a',
   starfishDark: '#a84f22',
+
+  // Desert ground (see drawDesertGround) — warmer and more orange than the
+  // lake/sea's own sand, so the biome reads as a distinct hot expanse rather
+  // than a giant beach. The three tones double as dune striping: a dune's
+  // sunlit face samples Light, its lee side Dark, same convention every
+  // other 3-shade surface here uses.
+  desertSandLight: '#ecc978',
+  desertSand: '#d1a04a',
+  desertSandDark: '#a97a34',
+
+  // Cacti — a dusty, slightly blue-green so they read as tough desert flora
+  // rather than the plains' bright grass green.
+  cactusLight: '#8fbf6b',
+  cactus: '#5f9a4a',
+  cactusDark: '#3c6b2e',
+  // A cactus's spikes — dark brown, deliberately its own family rather than
+  // a shade of the body's green, so they read as woody thorns standing out
+  // against the pad rather than a darker patch of the same plant.
+  cactusSpineLight: '#6b4526',
+  cactusSpine: '#4a2f18',
+  cactusSpineDark: '#2e1c0e',
+  // Dead trees/shrubs — bare, sun-bleached wood, no foliage.
+  deadWoodLight: '#8a7a63',
+  deadWood: '#6b5a43',
+  deadWoodDark: '#453824',
+
+  // The oasis — the desert's one lake, rendered with its shore swapped from
+  // sand to mud and ringed with green growth (see drawLakes/drawOasisPlants)
+  // instead of the ordinary lake palette above.
+  mudLight: '#7c6a48',
+  mud: '#5c4c30',
+  mudDark: '#3a2f1c',
+  oasisPlantLight: '#8fd66a',
+  oasisPlant: '#4f9c3d',
+  oasisPlantDark: '#2c6b22',
+
+  // Diamond — same boulder shape as gold/rock (see diamondPatchCells), an
+  // icy blue-white so it reads as unmistakably rarer than gold's warm yellow.
+  diamondLight: '#eafcff',
+  diamond: '#8fe0f0',
+  diamondDark: '#4fa8c2',
+
+  // Beetle — a dark, glossy carapace (unlike the fox's warm fur or the
+  // spider's cool purple-grey) with a sandy underside, so it reads as an
+  // insect against the desert's own warm palette.
+  beetleShellLight: '#5a7a4a',
+  beetleShell: '#38512c',
+  beetleShellDark: '#20301a',
+  beetleLegLight: '#c9a86a',
+  beetleLeg: '#a3803f',
+  beetleEye: '#ff2d2d',
 
   // Campfire
   emberLight: '#ffd76b',
@@ -422,6 +473,7 @@ const BLOCK = 5; // World units per block — bump this up for chunkier sprites.
 const TREE_PIXELS = TREE_SPAN / BLOCK;
 const ROCK_PIXELS = ROCK_SPAN / BLOCK;
 const GOLD_PIXELS = GOLD_SPAN / BLOCK;
+const DIAMOND_PIXELS = DIAMOND_SPAN / BLOCK;
 // Wheat uses its own, finer pixel size — individual strands need to read as
 // distinct marks, which the main BLOCK is too coarse to show at wheat's
 // small clump footprint.
@@ -521,6 +573,40 @@ function seaEdgeWobble(gx: number, gy: number): number {
   const fine = blockRandom(gx, gy, 173) - 0.5;
   const wave = Math.sin((gx * BLOCK) / 48 + (gy * BLOCK) / 63) * 0.5;
   return (fine * 0.3 + wave * 0.7) * SEA_FINE_WOBBLE_RANGE;
+}
+
+/**
+ * Desert border's own fine wobble — same construction again, but perturbing
+ * the boundary's x rather than its y (the desert is a vertical band, so its
+ * edge wanders per world y instead of per world x — see desertBandAt).
+ */
+const DESERT_FINE_WOBBLE_RANGE = 100;
+
+function desertEdgeWobble(gx: number, gy: number): number {
+  const fine = blockRandom(gx, gy, 233) - 0.5;
+  const wave = Math.sin((gx * BLOCK) / 50 + (gy * BLOCK) / 65) * 0.5;
+  return (fine * 0.3 + wave * 0.7) * DESERT_FINE_WOBBLE_RANGE;
+}
+
+/** Densest the desert's blend fringe gets, right at the solid sand edge — see drawDesertGround. */
+const DESERT_BLEND_MAX = 0.55;
+
+/**
+ * Dune shade at a continuous value, dithered between neighboring tones
+ * rather than snapped at a hard threshold — the same per-block dithering
+ * trick pickRampIndex uses for the forest's grass ramp, applied to just
+ * three bands instead of five. `dune` runs roughly -0.7..0.7 (the sum of the
+ * two sine amplitudes in drawDesertGround); mid-crest and mid-trough read as
+ * solid dark/light, but each crossing between bands blurs into a speckled
+ * few blocks instead of a single hard edge, so the wave pattern reads as
+ * smoothly graded rather than a flat-color patchwork.
+ */
+function duneShade(dune: number, gx: number, gy: number): Shade {
+  const position = clamp01((dune + 0.7) / 1.4) * 2; // 0 = dark, 1 = base, 2 = light
+  const i0 = Math.min(1, Math.floor(position));
+  const frac = position - i0;
+  const idx = blockRandom(gx, gy, 618) < frac ? i0 + 1 : i0;
+  return idx <= 0 ? 'dark' : idx >= 2 ? 'light' : 'base';
 }
 
 /**
@@ -800,6 +886,11 @@ function goldPatchCells(seed: number): Cell[] {
   return boulderCells(seed, GOLD_PIXELS);
 }
 
+/** Same boulder shape again, at diamond's own (bigger) pixel size — see DIAMOND_PALETTE for the recolor. */
+function diamondPatchCells(seed: number): Cell[] {
+  return boulderCells(seed, DIAMOND_PIXELS);
+}
+
 /**
  * Small pebbles scattered loosely in a ring just outside any rock's own
  * footprint, plains or dark forest — purely decorative ground clutter, not a
@@ -1028,12 +1119,72 @@ function drawShoreShape(ctx: CanvasRenderingContext2D, cells: ShoreCell[], sand:
 
 const WATER_PALETTE: Palette3 = { light: P.waterLight, base: P.water, dark: P.waterDark };
 const SAND_PALETTE: Palette3 = { light: P.sandLight, base: P.sand, dark: P.sandDark };
+// The oasis's own shore palette — mud instead of sand (see drawLakes, which
+// picks this over SAND_PALETTE for the one lake sitting inside the desert).
+const MUD_PALETTE: Palette3 = { light: P.mudLight, base: P.mud, dark: P.mudDark };
+const OASIS_PLANT_PALETTE: Palette3 = { light: P.oasisPlantLight, base: P.oasisPlant, dark: P.oasisPlantDark };
+
+/**
+ * A small reed/rush clump: a few blades fanned from a shared root, the
+ * oasis's answer to a fallen leaf (see leafCells) — same construction, green
+ * instead of autumnal, and taller relative to its width so it reads as
+ * marsh growth rather than litter.
+ */
+function oasisPlantCells(rng: () => number): Cell[] {
+  const cells: Cell[] = [];
+  const bladeCount = 4 + Math.floor(rng() * 3);
+  for (let i = 0; i < bladeCount; i++) {
+    const lean = (rng() - 0.5) * 0.7 + (i - (bladeCount - 1) / 2) * 0.5;
+    const length = 3 + Math.floor(rng() * 3);
+    for (let j = 0; j < length; j++) {
+      const shade: Shade = j === 0 ? 'dark' : j === length - 1 ? 'light' : 'base';
+      cells.push({ gx: lean * (j + 1) * 0.4, gy: -j * 0.9, shade });
+    }
+  }
+  return cells;
+}
+
+/**
+ * A small palm-like tree: a leaning trunk (drawn in DEAD_WOOD_PALETTE — bark,
+ * not growth) topped with a burst of fronds (OASIS_PLANT_PALETTE) fanning
+ * out in every direction. The "big" plant mixed in among the oasis's smaller
+ * reed clumps (see drawOasisPlants) — two separate cell sets since the two
+ * halves draw in different palettes.
+ */
+function palmCells(rng: () => number): { trunk: Cell[]; fronds: Cell[] } {
+  const height = 3 + Math.floor(rng() * 3);
+  const lean = (rng() - 0.5) * 0.6;
+  const trunk: Cell[] = [];
+  for (let i = 0; i < height; i++) {
+    trunk.push({ gx: lean * (i / height), gy: -i, shade: i === 0 ? 'dark' : 'base' });
+  }
+
+  const topX = lean;
+  const topY = -height + 0.4;
+  const frondCount = 9 + Math.floor(rng() * 4);
+  const fronds: Cell[] = [];
+  for (let f = 0; f < frondCount; f++) {
+    const angle = (f / frondCount) * Math.PI * 2 + rng() * 0.4;
+    const droop = 0.35 + rng() * 0.25; // fronds arc outward and slightly down, not straight out
+    const len = 2 + Math.floor(rng() * 2);
+    for (let j = 1; j <= len; j++) {
+      const shade: Shade = j === 1 ? 'dark' : j === len ? 'light' : 'base';
+      fronds.push({
+        gx: topX + Math.cos(angle) * j * 0.9,
+        gy: topY - Math.sin(angle) * j * 0.9 + j * j * droop * 0.18,
+        shade,
+      });
+    }
+  }
+  return { trunk, fronds };
+}
 
 // Shapes only depend on the deterministic per-cell seed, so cache them
 // instead of re-walking the pixel grid every frame for every resource.
 const crownCache = new Map<number, Cell[]>();
 const rockCache = new Map<number, Cell[]>();
 const goldCache = new Map<number, Cell[]>();
+const diamondCache = new Map<number, Cell[]>();
 const wheatCache = new Map<number, Cell[]>();
 const rockPebbleCache = new Map<number, Pebble[]>();
 const treeLeafLitterCache = new Map<number, LeafLitterCluster[]>();
@@ -1053,6 +1204,12 @@ function getRockPatch(seed: number): Cell[] {
 function getGoldPatch(seed: number): Cell[] {
   let cells = goldCache.get(seed);
   if (!cells) { cells = goldPatchCells(seed); goldCache.set(seed, cells); }
+  return cells;
+}
+
+function getDiamondPatch(seed: number): Cell[] {
+  let cells = diamondCache.get(seed);
+  if (!cells) { cells = diamondPatchCells(seed); diamondCache.set(seed, cells); }
   return cells;
 }
 
@@ -1080,6 +1237,7 @@ const FOREST_TREE_PALETTE: Palette3 = { light: P.forestCanopyLight, base: P.fore
 const ROCK_PALETTE: Palette3 = { light: P.rockHighlight, base: P.rock, dark: P.rockShadow };
 /** Dark forest rocks render this much larger than plains ones (see isForestRock) — same color, just bigger. */
 const GOLD_PALETTE: Palette3 = { light: P.goldHighlight, base: P.gold, dark: P.goldShadow };
+const DIAMOND_PALETTE: Palette3 = { light: P.diamondLight, base: P.diamond, dark: P.diamondDark };
 const PEBBLE_PALETTE: Palette3 = { light: P.pebbleLight, base: P.pebble, dark: P.pebbleDark };
 const LEAF_PALETTE: Palette3 = { light: P.leafLight, base: P.leaf, dark: P.leafDark };
 /** Fallen leaves under a dark forest tree — same shape, much darker. See drawTreeLeafLitter. */
@@ -1274,8 +1432,174 @@ function getBeachClutterPiece(gx: number, gy: number): ClutterPiece | null {
   return piece;
 }
 
+// ── Desert ground clutter ───────────────────────────────────────────────────
+// Cacti and dead trees/shrubs scattered over the sand — purely decorative,
+// same deal as a beach's shells: no server data, no collision, no harvest
+// interaction, just a stable per-cell hash deciding whether a roll site gets
+// one (see getDesertClutterPiece and drawDesertClutter). Sparser and drawn
+// at a coarser grid than flowers/shells so each one reads as its own little
+// landmark rather than carpet texture.
+
+const DESERT_CLUTTER_CELL = 100;
+// Base pixel size — individual pieces scale off this (see DesertClutterPiece.scale)
+// rather than drawing everything at one fixed size, since a cactus reads as
+// small-tree-sized while a dead shrub can be anywhere from a tuft to a
+// tree-sized skeleton.
+const DESERT_CLUTTER_BLOCK = BLOCK;
+const DESERT_CLUTTER_SALT = 619;
+/** Fraction of desert roll sites that get a cactus or dead tree/shrub at all. */
+const DESERT_CLUTTER_DENSITY = 0.36;
+/** Of those, the fraction that come up dead flora rather than a cactus — weighted toward dead, so the wide small-to-large size range actually reads as common. */
+const DESERT_CLUTTER_DEAD_SHARE = 0.6;
+
+const CACTUS_PALETTE: Palette3 = { light: P.cactusLight, base: P.cactus, dark: P.cactusDark };
+const CACTUS_SPINE_PALETTE: Palette3 = { light: P.cactusSpineLight, base: P.cactusSpine, dark: P.cactusSpineDark };
+const DEAD_WOOD_PALETTE: Palette3 = { light: P.deadWoodLight, base: P.deadWood, dark: P.deadWoodDark };
+/** The desert's own ground tones — shared by drawDesertGround and the wind-blown sand particles (see drawSandParticles), so a drifting clump reads as a piece of the ground it came from. */
+const DESERT_SAND_PALETTE: Palette3 = { light: P.desertSandLight, base: P.desertSand, dark: P.desertSandDark };
+
+/**
+ * A desert clutter piece also carries its own render scale (see
+ * DESERT_CLUTTER_BLOCK) and, optionally, a second finer-pixel detail layer
+ * drawn right after the main cells, in its own palette — a cactus's spikes,
+ * fine enough to read as detail against its own solid body rather than
+ * chunky blocks the same size as the body itself. `fineCells` are stored in
+ * the same body-scale units as `cells`; `fineScale` is how much smaller a
+ * pixel they draw at (a fraction of the body's own block size).
+ */
+interface DesertClutterPiece extends ClutterPiece {
+  scale: number;
+  fineCells?: Cell[];
+  fineScale?: number;
+  finePalette?: Palette3;
+}
+
+/**
+ * A round cactus pad — solid-filled, same top-down convention (and the same
+ * kind of jittered-circle fill) as a tree crown (see treeCrownCells), so the
+ * body reads as solid scenery rather than a sparse outline. Spikes radiate
+ * out past its edge at a much finer pixel size than the body — see
+ * DesertClutterPiece.fineCells — which is what actually reads as "spiky"
+ * rather than just a few stray blocks stuck on the silhouette.
+ */
+function cactusCells(rng: () => number): { cells: Cell[]; fineCells: Cell[]; fineScale: number; scale: number } {
+  const radius = 3.4 + rng() * 1.8;
+  const cells: Cell[] = [];
+  const reach = Math.ceil(radius) + 1;
+  for (let gy = -reach; gy <= reach; gy++) {
+    for (let gx = -reach; gx <= reach; gx++) {
+      const d = Math.hypot(gx, gy);
+      const jitter = (rng() - 0.5) * 0.9; // small — keeps the pad reading as solid, not perforated
+      if (d > radius + jitter) continue;
+      const shade: Shade = d < radius * 0.4 ? 'light' : d > radius * 0.78 ? 'dark' : 'base';
+      cells.push({ gx, gy, shade });
+    }
+  }
+
+  // Spikes stored in the same body-radius units as `cells` above, but meant
+  // to be drawn at fineScale × the body's own block size — dividing by
+  // fineScale here is what keeps them landing at the same physical radius
+  // once drawBlockShape multiplies by that smaller block (see
+  // drawDesertClutter): a fineScale-sized pixel at coordinate v/fineScale
+  // covers the same world position a body-sized pixel at v would.
+  const fineScale = 0.65;
+  const spikeCount = 8 + Math.floor(rng() * 7);
+  const fineCells: Cell[] = [];
+  for (let s = 0; s < spikeCount; s++) {
+    const angle = (s / spikeCount) * Math.PI * 2 + rng() * 0.4;
+    const len = 1 + Math.floor(rng() * 2); // short — a thorn, not a second arm
+    const cos = Math.cos(angle);
+    const sin = Math.sin(angle);
+    // Starts a bit inside the body's own edge (rather than right at it) so
+    // the spike visibly overlaps the pad instead of floating a gap away —
+    // the body's own edge jitters per-cell, so starting flush with the
+    // nominal radius left a visible seam wherever that jitter pulled the
+    // silhouette in.
+    const base = radius - fineScale;
+    for (let j = 0; j < len; j++) {
+      const shade: Shade = j === len - 1 ? 'light' : 'dark';
+      const r = base + j * fineScale * 1.4;
+      fineCells.push({ gx: (cos * r) / fineScale, gy: (sin * r) / fineScale, shade });
+    }
+  }
+
+  return { cells, fineCells, fineScale, scale: 0.95 + rng() * 0.35 };
+}
+
+/**
+ * A bare, branching dead tree/shrub: a trunk with angled, leafless limbs,
+ * themselves sprouting smaller twigs on the bigger tiers — so a large dead
+ * tree reads as an actual gnarled skeleton, not just a trunk with a couple
+ * of straight sticks. Spans a deliberately wide size range in one generator
+ * — a small dried-out tuft at one end, a full tree-sized skeleton at the
+ * other — so the desert's dead flora reads as varied rather than one shape
+ * copy-pasted at a single scale.
+ */
+function deadTreeCells(rng: () => number): { cells: Cell[]; scale: number } {
+  const sizeRoll = rng();
+  // small shrub / medium bush / large dead tree, weighted toward the small
+  // and medium tiers so the big skeletons stay a landmark rather than the norm.
+  const tier = sizeRoll < 0.35 ? 0 : sizeRoll < 0.7 ? 1 : 2;
+  const height = [1 + Math.floor(rng() * 2), 3 + Math.floor(rng() * 3), 7 + Math.floor(rng() * 6)][tier];
+  const branchCount = [1 + Math.floor(rng() * 2), 3 + Math.floor(rng() * 3), 5 + Math.floor(rng() * 4)][tier];
+  const SCALE_RANGES: [number, number][] = [[0.4, 0.65], [0.7, 1.0], [1.05, 1.45]];
+  const scaleRange = SCALE_RANGES[tier];
+
+  const cells: Cell[] = [];
+  for (let i = 0; i < height; i++) cells.push({ gx: 0, gy: -i, shade: i === 0 ? 'dark' : 'base' });
+
+  for (let b = 0; b < branchCount; b++) {
+    const at = Math.max(0, Math.floor(rng() * height));
+    const side = rng() < 0.5 ? -1 : 1;
+    const len = 1 + Math.floor(rng() * (tier + 2));
+    let bx = 0;
+    let by = -at;
+    for (let j = 1; j <= len; j++) {
+      bx = side * j * 0.8;
+      by = -at - j * 0.5;
+      cells.push({ gx: bx, gy: by, shade: j === len ? 'light' : 'dark' });
+    }
+    // The medium/large tiers sprout a shorter twig off the end of each main
+    // branch — the extra fork is what reads as a gnarled skeleton instead
+    // of a handful of straight lines radiating from one trunk.
+    if (tier > 0 && rng() < 0.7) {
+      const twigSide = rng() < 0.5 ? -1 : 1;
+      const twigLen = 1 + Math.floor(rng() * tier);
+      for (let j = 1; j <= twigLen; j++) {
+        cells.push({ gx: bx + twigSide * j * 0.7, gy: by - j * 0.6, shade: j === twigLen ? 'light' : 'dark' });
+      }
+    }
+  }
+  const scale = scaleRange[0] + rng() * (scaleRange[1] - scaleRange[0]);
+  return { cells, scale };
+}
+
+const desertClutterCache = new Map<number, DesertClutterPiece | null>();
+
+/** Deterministic per-cell roll for desert clutter — same caching/hashing deal as getClutterPiece/getBeachClutterPiece, own salt of its own. */
+function getDesertClutterPiece(gx: number, gy: number): DesertClutterPiece | null {
+  const seed = hashCell(gx, gy, DESERT_CLUTTER_SALT);
+  const cached = desertClutterCache.get(seed);
+  if (cached !== undefined) return cached;
+
+  const rng = mulberry32(seed);
+  let piece: DesertClutterPiece | null = null;
+  if (rng() < DESERT_CLUTTER_DENSITY) {
+    if (rng() < DESERT_CLUTTER_DEAD_SHARE) {
+      const { cells, scale } = deadTreeCells(rng);
+      piece = { cells, palette: DEAD_WOOD_PALETTE, scale };
+    } else {
+      const { cells, fineCells, fineScale, scale } = cactusCells(rng);
+      piece = { cells, palette: CACTUS_PALETTE, scale, fineCells, fineScale, finePalette: CACTUS_SPINE_PALETTE };
+    }
+  }
+
+  desertClutterCache.set(seed, piece);
+  return piece;
+}
+
 /** Which grid-placed resource types use the procedural block-shape pipeline (as opposed to baked images). */
-type GridResourceType = 'tree' | 'rock' | 'wheat' | 'gold';
+type GridResourceType = 'tree' | 'rock' | 'wheat' | 'gold' | 'diamond';
 interface GridResourceDef {
   span: number;
   block: number; // pixel size for this type — wheat uses a finer one than trees/rocks
@@ -1292,6 +1616,7 @@ const GRID_RESOURCE_DEFS: Record<GridResourceType, GridResourceDef> = {
   rock: { span: ROCK_SPAN, block: BLOCK, seedSalt: RESOURCE_SEED_SALT.rock, getCells: getRockPatch, palette: ROCK_PALETTE },
   wheat: { span: WHEAT_SPAN, block: WHEAT_BLOCK, seedSalt: RESOURCE_SEED_SALT.wheat, getCells: getWheatClump, palette: WHEAT_PALETTE },
   gold: { span: GOLD_SPAN, block: BLOCK, seedSalt: RESOURCE_SEED_SALT.gold, getCells: getGoldPatch, palette: GOLD_PALETTE },
+  diamond: { span: DIAMOND_SPAN, block: BLOCK, seedSalt: RESOURCE_SEED_SALT.diamond, getCells: getDiamondPatch, palette: DIAMOND_PALETTE },
 };
 
 /**
@@ -1383,13 +1708,14 @@ const BRANCH_THICK = BLOCK * 2;
 // low, so tall things (trees) get dramatically longer shadows than squat
 // ones (mushrooms) even where their footprints are similar in size.
 interface ShadowProfile { width: number; length: number }
-const SHADOW_PROFILE: Record<ResourceState['type'] | 'player' | 'campfire' | 'wall' | 'spider' | 'fox', ShadowProfile> = {
+const SHADOW_PROFILE: Record<ResourceState['type'] | 'player' | 'campfire' | 'wall' | 'spider' | 'fox' | 'beetle', ShadowProfile> = {
   campfire: { width: 30, length: 10 },
   wall: { width: 56, length: 20 }, // squat but wide — same footprint class as a tree, without a tree's height
 
   tree: { width: 64, length: 58 },
   rock: { width: 38, length: 18 },
   gold: { width: 52, length: 24 }, // scaled up with the bigger boulder (see GOLD_SPAN)
+  diamond: { width: 52, length: 24 }, // same boulder size as gold
   berry: { width: 18, length: 10 },
   purple_berry: { width: 18, length: 10 },
   mushroom: { width: 14, length: 8 },
@@ -1397,6 +1723,7 @@ const SHADOW_PROFILE: Record<ResourceState['type'] | 'player' | 'campfire' | 'wa
   player: { width: 18, length: 20 },
   spider: { width: 34, length: 14 }, // wide and low-slung
   fox: { width: 30, length: 12 }, // long-bodied quadruped, close to the ground
+  beetle: { width: 26, length: 12 }, // small and low-slung, like the spider but tighter
 };
 
 // Cell rects sharing a color are batched into one Path2D + one fill() call —
@@ -1820,6 +2147,12 @@ export function drawGoldIcon(ctx: CanvasRenderingContext2D, block: number = BLOC
 }
 export const GOLD_ICON_HALF_BLOCKS = STONE_ICON_HALF_BLOCKS;
 
+// Same nugget shape again, icy blue-white — reads as "that boulder, but diamond".
+export function drawDiamondIcon(ctx: CanvasRenderingContext2D, block: number = BLOCK): void {
+  drawBlockShape(ctx, STONE_ICON_CELLS, DIAMOND_PALETTE, block);
+}
+export const DIAMOND_ICON_HALF_BLOCKS = STONE_ICON_HALF_BLOCKS;
+
 export function drawWheatIcon(ctx: CanvasRenderingContext2D, block: number = BLOCK): void {
   drawBlockShape(ctx, WHEAT_ICON_CELLS, WHEAT_PALETTE, block);
 }
@@ -2033,6 +2366,64 @@ export function drawFoxPortrait(ctx: CanvasRenderingContext2D, block: number = B
 
 /** Half-width of the fox portrait (tail to snout), in blocks — used to size HUD icons. */
 export const FOX_PORTRAIT_HALF_BLOCKS = 8;
+
+// ── Beetle ───────────────────────────────────────────────────────────────────
+// A small, round-bodied insect seen from above — glossy shell, a distinct
+// head segment, a pair of antennae, and three pairs of splayed legs that
+// scuttle the same way a spider's do. Like the spider (its closest cousin in
+// build) it rotates to face its heading rather than staying screen-aligned.
+
+const BEETLE_PALETTE: Palette3 = { light: P.beetleShellLight, base: P.beetleShell, dark: P.beetleShellDark };
+
+// +x is forward (the direction it's facing), +y is its right side.
+const BEETLE_SHELL = blockCircle(2.6, 1.1).map((c) => ({ ...c, gx: c.gx - 0.4 }));
+const BEETLE_HEAD = blockCircle(1.1).map((c) => ({ ...c, gx: c.gx + 2.7 }));
+
+/** Two thin antennae, splayed forward from the head. */
+const BEETLE_ANTENNAE: Cell[] = [-1, 1].flatMap((side) => [
+  { gx: 3.6, gy: side * 0.5, shade: 'dark' as Shade },
+  { gx: 4.3, gy: side * 0.9, shade: 'dark' as Shade },
+]);
+
+/** Leg roots and reach, mirrored to both sides — fewer, shorter pairs than a spider's eight. */
+const BEETLE_LEG_ANGLES = [-0.6, 0, 0.6];
+const BEETLE_LEG_LENGTH = BLOCK * 3.4;
+const BEETLE_LEG_THICKNESS = BLOCK * 0.5;
+const BEETLE_LEG_SWING = 0.24;
+const BEETLE_SCUTTLE_SPEED = 0.24;
+
+/**
+ * A static, front-facing beetle — same shell/head/legs as the real scuttling
+ * sprite (see drawBeetle), held at rest with no gait or heading rotation.
+ * Exported for the animal compendium, same reasoning as drawSpiderPortrait.
+ */
+export function drawBeetlePortrait(ctx: CanvasRenderingContext2D, block: number = BLOCK): void {
+  ctx.fillStyle = P.beetleLeg;
+  BEETLE_LEG_ANGLES.forEach((base) => {
+    for (const side of [-1, 1]) {
+      const a = side * (Math.PI / 2) + base * side;
+      ctx.save();
+      ctx.rotate(a);
+      ctx.fillRect(0, -BEETLE_LEG_THICKNESS / 2, BEETLE_LEG_LENGTH, BEETLE_LEG_THICKNESS);
+      ctx.restore();
+    }
+  });
+
+  ctx.fillStyle = P.beetleShellDark;
+  for (const a of BEETLE_ANTENNAE) {
+    ctx.fillRect(a.gx * block - block * 0.2, a.gy * block - block * 0.2, block * 0.4, block * 0.4);
+  }
+
+  drawBlockShape(ctx, BEETLE_SHELL, BEETLE_PALETTE, block);
+  drawBlockShape(ctx, BEETLE_HEAD, BEETLE_PALETTE, block);
+
+  ctx.fillStyle = P.beetleEye;
+  ctx.fillRect(block * 3.1, -block * 0.55, block * 0.5, block * 0.5);
+  ctx.fillRect(block * 3.1, block * 0.05, block * 0.5, block * 0.5);
+}
+
+/** Half-width of the beetle portrait (legs included), in blocks — used to size HUD icons. */
+export const BEETLE_PORTRAIT_HALF_BLOCKS = 5.5;
 
 // Warm light cast by a campfire, drawn as concentric blocky bands rather than
 // a smooth radial gradient so the glow stays as pixelated as everything else.
@@ -2266,6 +2657,53 @@ export function drawFireflyShape(ctx: CanvasRenderingContext2D, brightness: numb
 /** Half-extent of the firefly's outer glow layer, in blocks — used to size HUD portraits. */
 export const FIREFLY_PORTRAIT_HALF_BLOCKS = FIREFLY_GLOW_LAYERS[0][0];
 
+// ── Sand particles ──────────────────────────────────────────────────────────
+// Desert ambiance, the same purely-decorative deal as the fireflies above —
+// client-simulated only, nothing to collide with or interact with. Unlike a
+// firefly's local wander, each clump travels a straight line along a fixed
+// wind direction and loops back upwind once it's drifted SAND_PARTICLE_RANGE
+// past its anchor, fading out just before the loop and back in just after —
+// so it reads as an endless procession of sand streaming across the dunes
+// rather than a fixed swarm milling in place.
+
+interface SandParticle {
+  ax: number; // anchor the particle travels through, world coords
+  ay: number;
+  travel: number; // distance travelled along the wind direction, world units — wraps every SAND_PARTICLE_RANGE
+  speed: number; // world units/sec along the wind
+  wobblePhase: number;
+  wobbleAmount: number; // how far it drifts side to side, perpendicular to the wind
+  scale: number; // clump size variance, relative to SAND_PARTICLE_BLOCK
+  cells: Cell[]; // this clump's own fixed shape, picked once at spawn
+}
+
+// Blows toward the lower-right — the same general direction the dune bands
+// in drawDesertGround run, so the drifting sand reads as being kicked up off
+// the ground it's crossing rather than moving on its own unrelated heading.
+const SAND_WIND_ANGLE = 0.5;
+const SAND_WIND_DX = Math.cos(SAND_WIND_ANGLE);
+const SAND_WIND_DY = Math.sin(SAND_WIND_ANGLE);
+/** World units a clump travels before looping back to the upwind end of its run. */
+const SAND_PARTICLE_RANGE = 260;
+/** How much of the run, at each end, is spent fading in/out rather than fully opaque. */
+const SAND_PARTICLE_FADE_ZONE = SAND_PARTICLE_RANGE * 0.22;
+const SAND_PARTICLE_TARGET_COUNT = 70;
+const SAND_PARTICLE_BLOCK = BLOCK * 0.55; // finer than the ground grid — a wisp, not a boulder
+const SAND_PARTICLE_MAX_ALPHA = 0.55;
+
+/** A loose scatter of 3-5 blocks around a centre, the same "core plus jittered points" shape flowerCells/starfishCells use — a tumbling clump rather than a neat square. */
+function sandClumpCells(rng: () => number): Cell[] {
+  const cells: Cell[] = [];
+  const count = 3 + Math.floor(rng() * 3);
+  for (let i = 0; i < count; i++) {
+    const angle = rng() * Math.PI * 2;
+    const r = rng() * 1.3;
+    const shade: Shade = rng() < 0.25 ? 'dark' : rng() < 0.7 ? 'base' : 'light';
+    cells.push({ gx: Math.cos(angle) * r, gy: Math.sin(angle) * r, shade });
+  }
+  return cells;
+}
+
 /**
  * A ripple ring built from BLOCK cells at roughly `radius` from the local
  * origin — unlike the fish, a ring looks the same at any rotation, so this
@@ -2395,6 +2833,9 @@ export class Renderer {
   /** Per-fox trot state, pruned as foxes die or leave view. */
   private readonly foxAnim = new Map<string, GaitAnim>();
 
+  /** Per-beetle scuttle state, pruned as beetles die or leave view. */
+  private readonly beetleAnim = new Map<string, GaitAnim>();
+
   /** Per-resource harvest recoil, pruned as resources leave view. */
   private readonly resourceRecoil = new Map<string, ResourceRecoil>();
 
@@ -2423,6 +2864,10 @@ export class Renderer {
   // come from MAP_SIZE alone, so they can be seeded up front in the
   // constructor rather than waiting on anything from the network.
   private readonly fireflies: Firefly[] = [];
+
+  // Desert sand particles — same deal as the fireflies just above, purely
+  // decorative local ambiance seeded once up front from MAP_SIZE alone.
+  private readonly sandParticles: SandParticle[] = [];
 
   // Item type the local player currently has selected on their hotbar —
   // purely cosmetic (server doesn't know or care), drives the tool color.
@@ -2457,6 +2902,7 @@ export class Renderer {
     this.ctx.imageSmoothingEnabled = false;
     this.buildGroundPattern();
     this.spawnFireflies();
+    this.spawnSandParticles();
   }
 
   /**
@@ -2476,6 +2922,7 @@ export class Renderer {
       attempts++;
       const ax = rng() * MAP_SIZE;
       const ay = rng() * maxY;
+      if (isInDesert(ax, ay)) continue; // the desert's own top corner belongs to the biome that replaced the forest there
       if (rng() > forestFactor(ax, ay)) continue;
 
       this.fireflies.push({
@@ -2488,6 +2935,37 @@ export class Renderer {
         drift: 26 + rng() * 46,
         pulse: rng(),
         pulseSpeed: 0.25 + rng() * 0.5,
+      });
+    }
+  }
+
+  /**
+   * Scatters sand-particle anchors across the desert by rejection sampling
+   * against isInDesert — same trick spawnFireflies uses for the forest,
+   * just against a hard boolean instead of a graded factor, since the
+   * desert's own border is already a hard line (see isInDesert).
+   */
+  private spawnSandParticles(): void {
+    const rng = mulberry32(4021);
+    const minX = DESERT_BAND - DESERT_EDGE_AMPLITUDE;
+    const maxY = DARK_FOREST_BAND + DARK_FOREST_EDGE_AMPLITUDE + DESERT_TRANSITION;
+    let attempts = 0;
+
+    while (this.sandParticles.length < SAND_PARTICLE_TARGET_COUNT && attempts < SAND_PARTICLE_TARGET_COUNT * 40) {
+      attempts++;
+      const ax = minX + rng() * (MAP_SIZE - minX);
+      const ay = rng() * maxY;
+      if (!isInDesert(ax, ay)) continue;
+
+      this.sandParticles.push({
+        ax,
+        ay,
+        travel: rng() * SAND_PARTICLE_RANGE,
+        speed: 14 + rng() * 18,
+        wobblePhase: rng() * Math.PI * 2,
+        wobbleAmount: 6 + rng() * 14,
+        scale: 0.7 + rng() * 0.9,
+        cells: sandClumpCells(rng),
       });
     }
   }
@@ -2670,6 +3148,51 @@ export class Renderer {
 
     ctx.globalAlpha = 1;
     ctx.restore();
+  }
+
+  /** Advances every sand particle's travel along the wind and its perpendicular wobble phase. */
+  private updateSandParticles(dt: number): void {
+    if (dt <= 0) return;
+    for (const p of this.sandParticles) {
+      p.travel += p.speed * dt;
+    }
+  }
+
+  /**
+   * Draws each sand clump at its current point along its wind run, faded in
+   * and out at the two ends of that run (see SAND_PARTICLE_FADE_ZONE) so it
+   * reads as endlessly streaming rather than popping in and out. Drawn in
+   * world space, before the night tint, so — unlike the fireflies — the
+   * blowing sand dims after dark like the ground it's crossing rather than
+   * glowing through the night.
+   */
+  private drawSandParticles(viewW: number, viewH: number): void {
+    const { ctx, camera } = this;
+    const margin = 60;
+
+    for (const p of this.sandParticles) {
+      const cyclePos = ((p.travel % SAND_PARTICLE_RANGE) + SAND_PARTICLE_RANGE) % SAND_PARTICLE_RANGE;
+      const alongWind = cyclePos - SAND_PARTICLE_RANGE / 2;
+
+      const distFromEnd = SAND_PARTICLE_RANGE / 2 - Math.abs(alongWind);
+      const fade = distFromEnd >= SAND_PARTICLE_FADE_ZONE ? 1 : clamp01(distFromEnd / SAND_PARTICLE_FADE_ZONE);
+      if (fade <= 0.02) continue;
+
+      const wobble = Math.sin(p.travel * 0.02 + p.wobblePhase) * p.wobbleAmount;
+      const x = p.ax + SAND_WIND_DX * alongWind - SAND_WIND_DY * wobble;
+      const y = p.ay + SAND_WIND_DY * alongWind + SAND_WIND_DX * wobble;
+
+      if (x < camera.x - margin || x > camera.x + viewW + margin) continue;
+      if (y < camera.y - margin || y > camera.y + viewH + margin) continue;
+
+      const { sx, sy } = camera.toScreen(x, y);
+      ctx.save();
+      ctx.translate(sx, sy);
+      ctx.globalAlpha = fade * SAND_PARTICLE_MAX_ALPHA;
+      drawBlockShape(ctx, p.cells, DESERT_SAND_PALETTE, SAND_PARTICLE_BLOCK * p.scale);
+      ctx.restore();
+    }
+    ctx.globalAlpha = 1;
   }
 
   private spawnRipple(lakeId: string, x: number, y: number, maxRadius: number, maxAge: number): void {
@@ -3314,6 +3837,7 @@ export class Renderer {
     this.prunePlayerAnim(state.players);
     this.pruneSpiderAnim(state.spiders);
     this.pruneFoxAnim(state.foxes);
+    this.pruneBeetleAnim(state.beetles);
 
     // Fish are simulated in real time (not server-driven), so they need an
     // actual frame delta rather than the distance-based approach used for
@@ -3324,6 +3848,7 @@ export class Renderer {
     this.updateFish(dt);
     this.updateSeaFish(dt);
     this.updateFireflies(dt);
+    this.updateSandParticles(dt);
     this.updateFishSplashes(state.players, now);
     this.updateResourceRecoil(state.resources, state.players, dt);
   }
@@ -3354,6 +3879,8 @@ export class Renderer {
     this.drawGridLines(W / zoom, H / zoom);
     this.drawSea(W / zoom, H / zoom);
     this.drawBeachClutter(W / zoom, H / zoom);
+    this.drawDesertGround(W / zoom, H / zoom);
+    this.drawDesertClutter(W / zoom, H / zoom);
     this.drawLakes();
     // Ripples and fish are both skipped in the overview inset (see
     // simplifyOverview) — individually animated small-scale motion that
@@ -3379,6 +3906,8 @@ export class Renderer {
     for (const s of state.spiders) this.drawSpider(s);
 
     for (const f of state.foxes) this.drawFox(f);
+
+    for (const b of state.beetles) this.drawBeetle(b);
 
     const me = state.players.find((p) => p.isMe);
     if (this.simplifyOverview) {
@@ -3407,6 +3936,7 @@ export class Renderer {
 
       for (const p of state.players) this.drawFishingLine(p, now);
       this.drawFishSplashes(now);
+      this.drawSandParticles(W / zoom, H / zoom);
     }
 
     ctx.restore();
@@ -3552,6 +4082,24 @@ export class Renderer {
         const bandY = darkForestBandAt(wx);
         const wobbledY = wy + forestEdgeWobble(gx, gy);
 
+        // South of the forest's own border, this would normally bleed a
+        // speckled dirt fringe (and a wider grass-darkening tint) a little
+        // further south as its own blend — but within the desert's
+        // horizontal reach, that same strip is the desert's south border
+        // instead (see drawDesertGround, which draws its own sand blend
+        // there over plain grass). Left unsuppressed, the two independent
+        // speckle patterns overlaid on the same patch of ground meant dark
+        // forest dirt showed through wherever the desert's own fringe
+        // happened to roll a gap. Only checked when we're actually south of
+        // the border (there's nothing to suppress north of it — that's
+        // genuine forest floor, correctly fully overpainted by the desert's
+        // own solid fill wherever the desert's west border also reaches
+        // this far — see isInDesert).
+        if (wobbledY > bandY) {
+          const wobbledX = wx + desertEdgeWobble(gx, gy);
+          if (wobbledX - desertBandAt(wy) >= -DESERT_TRANSITION) continue;
+        }
+
         const depth = forestFloorDepth(bandY + DARK_FOREST_TRANSITION, wobbledY);
         const darkening = forestGrassDarkening(bandY, wobbledY);
         if (depth <= 0 && darkening <= 0.01) continue;
@@ -3598,6 +4146,10 @@ export class Renderer {
   private drawForestFog(viewW: number, viewH: number): void {
     const { ctx, camera } = this;
     if (camera.y > FOG_MAX_Y) return; // camera is south of the biome entirely
+    // The desert replaces the dark forest within its own column (see
+    // DESERT_BAND) — a camera out there shouldn't see the forest's night
+    // vignette just because it happens to share a y with the real forest.
+    if (isInDesert(camera.x + viewW / 2, camera.y + viewH / 2)) return;
 
     // Night, and depth into the biome, both scale the vignette (rather than
     // switching at some threshold) so it gathers through dusk and burns off
@@ -3793,6 +4345,146 @@ export class Renderer {
     }
   }
 
+  // ── Desert ─────────────────────────────────────────────────────────────────
+  // The dark forest's own east third (see DESERT_BAND) — a corner bounded by
+  // two wavy borders, a vertical one to its west (wandering per world y, the
+  // same way the sea's horizontal one wanders per world x — see drawSea just
+  // above) and, to its south, the exact same darkForestBandAt line
+  // drawForestFloor already uses for the forest's own edge. Drawn after the
+  // forest ground layer (and before the lakes, so the oasis's own shore
+  // paints over this) rather than gating that layer out of the desert's
+  // corner — simpler, and the result is identical either way since this
+  // simply paints over whatever it drew there.
+
+  private drawDesertGround(W: number, H: number): void {
+    const { ctx, camera } = this;
+
+    const rightWorldX = camera.x + W + BLOCK;
+    // Worst-case (furthest west) the west border, and every fringe around
+    // it, could possibly reach — nothing to do east of the camera's view if
+    // even that falls short of it.
+    const minReachX = DESERT_BAND - DESERT_EDGE_AMPLITUDE - DESERT_TRANSITION - DESERT_FINE_WOBBLE_RANGE;
+    if (rightWorldX < minReachX) return;
+
+    // Same idea for the south border (the same darkForestBandAt line the
+    // dark forest's own floor uses) — nothing to do once the camera is
+    // entirely south of it, fringe included.
+    const maxReachY = DARK_FOREST_BAND + DARK_FOREST_EDGE_AMPLITUDE + DESERT_TRANSITION + FOREST_FINE_WOBBLE_RANGE;
+    if (camera.y > maxReachY) return;
+
+    const leftWorldX = Math.max(Math.floor(camera.x / BLOCK) * BLOCK, Math.floor(minReachX / BLOCK) * BLOCK);
+    const topWorldY = Math.floor(camera.y / BLOCK) * BLOCK;
+    const bottomWorldY = Math.min(camera.y + H + BLOCK, Math.ceil(maxReachY / BLOCK) * BLOCK);
+
+    const sandPaths: Record<Shade, Path2D> = { light: new Path2D(), base: new Path2D(), dark: new Path2D() };
+
+    for (let wy = topWorldY; wy < bottomWorldY; wy += BLOCK) {
+      const gy = Math.round(wy / BLOCK);
+      const py = wy - camera.y;
+      const bandX = desertBandAt(wy);
+
+      for (let wx = leftWorldX; wx < rightWorldX; wx += BLOCK) {
+        const gx = Math.round(wx / BLOCK);
+
+        // Two borders bound the corner: west of its own wandering vertical
+        // line, and north of the dark forest's own southern line (the
+        // *same* one drawForestFloor uses for the forest's own edge, so the
+        // two biomes' renders never disagree about where that seam runs).
+        // Each distance is positive when this block sits inside on that
+        // axis; how deep inside the corner as a whole is whichever axis
+        // it's closest to falling outside of.
+        const wobbledX = wx + desertEdgeWobble(gx, gy);
+        const distX = wobbledX - bandX;
+        if (distX < -DESERT_TRANSITION) continue; // cheap early-out west of even the fringe, before bothering with the y border
+
+        const wobbledY = wy + forestEdgeWobble(gx, gy);
+        const distY = darkForestBandAt(wx) - wobbledY;
+        const inside = Math.min(distX, distY);
+        if (inside < -DESERT_TRANSITION) continue;
+
+        const px = wx - camera.x;
+
+        // Sand dunes: a couple of summed sine waves running diagonally
+        // across the ground, snapped to the same three flat tones every
+        // other surface here uses — the "shade" is the dune's sunlit crest
+        // (light) vs. its shadowed lee (dark), not a literal height map. A
+        // pure function of world position (not of how deep into the desert
+        // this block is), so the same streak keeps running unbroken straight
+        // through either border into its fringe rather than the dunes
+        // stopping dead at the line and the fringe going flat.
+        const dune = Math.sin(wx / 70 + wy / 130) * 0.5 + Math.sin(wx / 27 - wy / 45) * 0.2;
+        const shade = duneShade(dune, gx, gy);
+
+        if (inside < 0) {
+          // Past whichever border is nearer, but still inside its
+          // transition: the same dune shading above, just thinned into
+          // sparse speckle with distance — the same fade a lake's shore or
+          // the sea's own beach uses to blend into whatever's beyond it,
+          // denser right at the border and thinning to nothing
+          // DESERT_TRANSITION past it.
+          const t = -inside / DESERT_TRANSITION;
+          if (blockRandom(gx, gy, 617) >= (1 - t) * DESERT_BLEND_MAX) continue;
+          sandPaths[shade].rect(px, py, BLOCK, BLOCK);
+          continue;
+        }
+
+        // Solid desert.
+        sandPaths[shade].rect(px, py, BLOCK, BLOCK);
+      }
+    }
+
+    for (const shade of ['dark', 'base', 'light'] as const) {
+      ctx.fillStyle = DESERT_SAND_PALETTE[shade];
+      ctx.fill(sandPaths[shade]);
+    }
+  }
+
+  /**
+   * Cacti and dead trees/shrubs scattered over the desert sand — same
+   * viewport-culled per-cell roll drawBeachClutter uses for shells, gated to
+   * inside the desert's wavy border instead of the sand band. Drawn after
+   * drawDesertGround (so it sits on the sand, not the grass beneath it) and
+   * before drawLakes (so anything that happens to land inside the oasis's
+   * footprint is painted over by its shore, same as everywhere else here).
+   */
+  private drawDesertClutter(W: number, H: number): void {
+    const { ctx, camera } = this;
+
+    const rightWorldX = camera.x + W + DESERT_CLUTTER_CELL;
+    const minReachX = DESERT_BAND - DESERT_EDGE_AMPLITUDE;
+    if (rightWorldX < minReachX) return;
+
+    const maxReachY = DARK_FOREST_BAND + DARK_FOREST_EDGE_AMPLITUDE;
+    if (camera.y > maxReachY) return;
+
+    const leftWorldX = Math.max(Math.floor(camera.x / DESERT_CLUTTER_CELL) * DESERT_CLUTTER_CELL, Math.floor(minReachX / DESERT_CLUTTER_CELL) * DESERT_CLUTTER_CELL);
+    const topWorldY = Math.floor(camera.y / DESERT_CLUTTER_CELL) * DESERT_CLUTTER_CELL;
+    const bottomWorldY = Math.min(camera.y + H + DESERT_CLUTTER_CELL, Math.ceil(maxReachY / DESERT_CLUTTER_CELL) * DESERT_CLUTTER_CELL);
+
+    for (let wx = leftWorldX; wx < rightWorldX; wx += DESERT_CLUTTER_CELL) {
+      const gx = Math.round(wx / DESERT_CLUTTER_CELL);
+
+      for (let wy = topWorldY; wy < bottomWorldY; wy += DESERT_CLUTTER_CELL) {
+        if (!isInDesert(wx, wy)) continue;
+
+        const gy = Math.round(wy / DESERT_CLUTTER_CELL);
+        const piece = getDesertClutterPiece(gx, gy);
+        if (!piece) continue;
+
+        const jx = (blockRandom(gx, gy, DESERT_CLUTTER_SALT + 3) - 0.5) * DESERT_CLUTTER_CELL * 0.7;
+        const jy = (blockRandom(gx, gy, DESERT_CLUTTER_SALT + 4) - 0.5) * DESERT_CLUTTER_CELL * 0.7;
+        const { sx, sy } = camera.toScreen(wx + jx, wy + jy);
+
+        const block = DESERT_CLUTTER_BLOCK * piece.scale;
+        ctx.save();
+        ctx.translate(sx, sy);
+        drawBlockShape(ctx, piece.cells, piece.palette, block);
+        if (piece.fineCells) drawBlockShape(ctx, piece.fineCells, piece.finePalette ?? piece.palette, block * (piece.fineScale ?? 1));
+        ctx.restore();
+      }
+    }
+  }
+
   private drawMapBorder(mapSize: number): void {
     const { ctx, camera } = this;
     const { sx, sy } = camera.toScreen(0, 0);
@@ -3816,13 +4508,79 @@ export class Renderer {
       const shapes = this.lakeShapes.get(lake.id);
       if (!shapes) continue;
 
+      // The desert's one lake — told apart from an ordinary one purely by
+      // position (see World.ts's generateLakes, which places it explicitly
+      // rather than through the ordinary lake grid) — gets mud instead of
+      // sand and a ring of green growth instead of nothing.
+      const oasis = isInDesert(lake.x, lake.y);
+
       const { sx, sy } = camera.toScreen(lake.x, lake.y);
       ctx.save();
       ctx.translate(sx, sy);
+      if (oasis) {
+        // The oasis reads better as a longer pool than a perfect circle —
+        // stretched taller than it is wide (see OASIS_VERTICAL_STRETCH).
+        // World.ts's water/shore gameplay checks apply the identical
+        // stretch to this one lake, so what looks like the water's edge is
+        // where it actually behaves like one.
+        ctx.scale(1, OASIS_VERTICAL_STRETCH);
+      }
       // Shore drawn first (full disc), water on top — only the outer ring
       // of sand/pebbles stays visible, same layering as the player's hair.
-      drawShoreShape(ctx, shapes.shore, SAND_PALETTE, P.pebble, BLOCK);
+      drawShoreShape(ctx, shapes.shore, oasis ? MUD_PALETTE : SAND_PALETTE, oasis ? P.mudDark : P.pebble, BLOCK);
+      if (oasis) this.drawOasisPlants(lake);
       drawBlockShape(ctx, shapes.water, WATER_PALETTE, BLOCK);
+      ctx.restore();
+    }
+  }
+
+  /**
+   * A lush ring of growth scattered across the oasis's mud shore — mostly
+   * small reed clumps, with a scattering of much bigger palm-like plants
+   * mixed in, so the shore reads as genuinely overgrown rather than a thin
+   * fringe. Drawn between the shore and the water (same layering drawLakes
+   * uses for everything else) so the water's edge still sits on top of
+   * anything that lands right at the waterline. Called from inside the same
+   * ctx.scale(1, OASIS_VERTICAL_STRETCH) transform drawLakes wraps the rest
+   * of the oasis in, so positions here are plain circular polar coordinates
+   * — the vertical stretch is already handled by the caller.
+   */
+  private drawOasisPlants(lake: LakeState): void {
+    const { ctx } = this;
+    const rng = mulberry32(lake.seed + 9000);
+    const waterRadiusBlocks = lake.radius / BLOCK;
+    const shoreWidthBlocks = lake.shoreWidth / BLOCK;
+    const count = 95 + Math.floor(rng() * 45);
+
+    for (let i = 0; i < count; i++) {
+      const clumpRng = mulberry32(lake.seed + 9100 + i * 7);
+      const big = clumpRng() < 0.14;
+
+      const angle = clumpRng() * Math.PI * 2;
+      // Big plants sit further out on the shore (room to spread without
+      // crowding the water); small ones scatter across the whole band and
+      // spill a little past its outer edge, so the growth reads as
+      // overflowing the shore rather than stopping in a clean ring.
+      const r = big
+        ? waterRadiusBlocks + shoreWidthBlocks * (0.5 + clumpRng() * 0.6)
+        : waterRadiusBlocks + shoreWidthBlocks * (0.08 + clumpRng() * 1.05);
+      const cx = Math.cos(angle) * r * BLOCK;
+      const cy = Math.sin(angle) * r * BLOCK;
+
+      ctx.save();
+      ctx.translate(cx, cy);
+      if (big) {
+        // Still visibly the largest growth on the shore, but at a finer
+        // pixel grain than before — more, smaller blocks read as texture
+        // rather than a few big flat tiles.
+        const { trunk, fronds } = palmCells(clumpRng);
+        const scale = BLOCK * (0.85 + clumpRng() * 0.5);
+        drawBlockShape(ctx, trunk, DEAD_WOOD_PALETTE, scale);
+        drawBlockShape(ctx, fronds, OASIS_PLANT_PALETTE, scale);
+      } else {
+        const scale = BLOCK * (0.32 + clumpRng() * 0.28);
+        drawBlockShape(ctx, oasisPlantCells(clumpRng), OASIS_PLANT_PALETTE, scale);
+      }
       ctx.restore();
     }
   }
@@ -4019,7 +4777,7 @@ export class Renderer {
 
   private drawResource(r: ResourceState): void {
     const { ox, oy } = this.recoilOffset(r.id);
-    if (r.type === 'tree' || r.type === 'rock' || r.type === 'wheat' || r.type === 'gold') {
+    if (r.type === 'tree' || r.type === 'rock' || r.type === 'wheat' || r.type === 'gold' || r.type === 'diamond') {
       this.drawGridResource(r, r.type, ox, oy);
       return;
     }
@@ -4575,6 +5333,93 @@ export class Renderer {
     }
   }
 
+  // ── Beetles ────────────────────────────────────────────────────────────────
+
+  /** Advances a beetle's scuttle phase from distance moved, same as the spider's. */
+  private updateBeetleAnim(b: BeetleState): GaitAnim {
+    let anim = this.beetleAnim.get(b.id);
+    if (!anim) {
+      anim = { lastX: b.x, lastY: b.y, phase: 0, amp: 0 };
+      this.beetleAnim.set(b.id, anim);
+    }
+
+    const dist = Math.hypot(b.x - anim.lastX, b.y - anim.lastY);
+    anim.lastX = b.x;
+    anim.lastY = b.y;
+
+    const moving = dist > 0.05;
+    anim.amp += ((moving ? 1 : 0) - anim.amp) * WALK_EASE;
+    if (moving) anim.phase += dist * BEETLE_SCUTTLE_SPEED;
+    return anim;
+  }
+
+  /** Drops scuttle state for beetles no longer in the snapshot (killed or out of view). */
+  private pruneBeetleAnim(beetles: BeetleState[]): void {
+    const liveIds = new Set(beetles.map((b) => b.id));
+    for (const id of this.beetleAnim.keys()) {
+      if (!liveIds.has(id)) this.beetleAnim.delete(id);
+    }
+  }
+
+  private drawBeetle(b: BeetleState): void {
+    const { ctx, camera } = this;
+    const { sx, sy } = camera.toScreen(b.x, b.y);
+    const anim = this.updateBeetleAnim(b);
+
+    ctx.save();
+    ctx.translate(sx, sy);
+    this.drawShadow(ctx, SHADOW_PROFILE.beetle.width, SHADOW_PROFILE.beetle.length);
+
+    ctx.save();
+    ctx.rotate(b.angle);
+
+    // Legs first, so the shell sits on top of where they meet it.
+    ctx.fillStyle = P.beetleLeg;
+    BEETLE_LEG_ANGLES.forEach((base, i) => {
+      const swing = Math.sin(anim.phase + i * 0.9) * anim.amp * BEETLE_LEG_SWING;
+      for (const side of [-1, 1]) {
+        const a = side * (Math.PI / 2) + base * side + swing * side;
+        ctx.save();
+        ctx.rotate(a);
+        ctx.fillRect(0, -BEETLE_LEG_THICKNESS / 2, BEETLE_LEG_LENGTH, BEETLE_LEG_THICKNESS);
+        ctx.restore();
+      }
+    });
+
+    // Antennae behind the head, so the head overlaps where they meet it.
+    ctx.fillStyle = P.beetleShellDark;
+    for (const a of BEETLE_ANTENNAE) {
+      ctx.fillRect(a.gx * BLOCK - BLOCK * 0.2, a.gy * BLOCK - BLOCK * 0.2, BLOCK * 0.4, BLOCK * 0.4);
+    }
+
+    drawBlockShape(ctx, BEETLE_SHELL, BEETLE_PALETTE, BLOCK);
+    drawBlockShape(ctx, BEETLE_HEAD, BEETLE_PALETTE, BLOCK);
+
+    // A pair of eyes on the head — the only warm colour on it, so you can
+    // tell at a glance which way it's coming at you.
+    ctx.fillStyle = P.beetleEye;
+    ctx.fillRect(BLOCK * 3.1, -BLOCK * 0.55, BLOCK * 0.5, BLOCK * 0.5);
+    ctx.fillRect(BLOCK * 3.1, BLOCK * 0.05, BLOCK * 0.5, BLOCK * 0.5);
+
+    ctx.restore();
+    ctx.restore();
+
+    // HP bar, only once it's been hurt — same rule as the spider's/fox's.
+    if (b.hp < b.maxHp) {
+      const barW = 26;
+      const barH = 4;
+      const bx = sx - barW / 2;
+      const by = sy - BEETLE_RADIUS - 14;
+
+      ctx.fillStyle = 'rgba(0,0,0,0.4)';
+      ctx.fillRect(bx - 1, by - 1, barW + 2, barH + 2);
+      ctx.fillStyle = '#5c1f1f';
+      ctx.fillRect(bx, by, barW, barH);
+      ctx.fillStyle = '#c0392b';
+      ctx.fillRect(bx, by, barW * Math.max(0, b.hp / b.maxHp), barH);
+    }
+  }
+
   // ── Players ────────────────────────────────────────────────────────────────
 
   /** Outlines every ground-grid cell within the local player's aim cone and harvest reach. */
@@ -5041,4 +5886,6 @@ export const MAP_COLORS = {
   forest: [P.dirtDark, P.dirt, P.dirtLight],
   water: [P.waterDark, P.water, P.waterLight],
   sand: [P.sandDark, P.sand, P.sandLight],
+  desertSand: [P.desertSandDark, P.desertSand, P.desertSandLight],
+  mud: [P.mudDark, P.mud, P.mudLight],
 } as const;

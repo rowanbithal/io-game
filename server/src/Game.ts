@@ -41,6 +41,7 @@ import {
   ROCK_SPAN,
   WHEAT_SPAN,
   GOLD_SPAN,
+  DIAMOND_SPAN,
   PLACE_RANGE,
   STRUCTURE_COLLISION_RADIUS,
   CAMPFIRE_WARMTH_RADIUS,
@@ -107,6 +108,26 @@ import {
   FOX_IDLE_DESPAWN_TIME,
   FOX_REPATH_INTERVAL,
   FOX_WAYPOINT_REACHED_DIST,
+  BEETLE_RADIUS,
+  BEETLE_SPEED,
+  BEETLE_DAMAGE,
+  BEETLE_ATTACK_RANGE,
+  BEETLE_ATTACK_COOLDOWN,
+  BEETLE_AGGRO_RANGE,
+  BEETLE_LOSE_INTEREST_RANGE,
+  BEETLE_MAX_COUNT,
+  BEETLE_SPAWN_INTERVAL,
+  BEETLE_MIN_PLAYER_SPAWN_DIST,
+  BEETLE_FOOD_DROP,
+  BEETLE_DESERT_LEEWAY,
+  BEETLE_IDLE_DESPAWN_TIME,
+  DESERT_SPEED_MULTIPLIER,
+  DESERT_THIRST_MULTIPLIER,
+  DESERT_BAND,
+  DESERT_EDGE_AMPLITUDE,
+  DARK_FOREST_EDGE_AMPLITUDE,
+  desertBandAt,
+  isInDesert,
   BOT_SEARCH_RADIUS,
   BOT_ENGAGE_RANGE,
   BOT_STRING_HUNT_RANGE,
@@ -135,6 +156,7 @@ import {
   BOT_FLEE_DIST,
   BOT_EDGE_MARGIN,
   GOLD_TOP_BAND,
+  DARK_FOREST_BAND,
   HEALTH_REGEN_MIN_HUNGER,
   HEALTH_REGEN_MIN_THIRST,
   darkForestBandAt,
@@ -151,6 +173,7 @@ import { ServerResource } from './entities/Resource';
 import { ServerStructure } from './entities/Structure';
 import { ServerSpider } from './entities/Spider';
 import { ServerFox } from './entities/Fox';
+import { ServerBeetle } from './entities/Beetle';
 import { ServerBot, BOT_NAMES, ALWAYS_ANGLER_NAME } from './entities/Bot';
 import { World } from './World';
 
@@ -191,6 +214,11 @@ const TOOL_BONUS: Record<string, Record<string, number>> = {
 // never lock a player out of a resource their strictly better tool obviously
 // ought to handle. See canMineGold in processHarvest.
 const GOLD_CAPABLE_TOOLS = new Set<string>([STONE_PICKAXE_ID, GOLD_PICKAXE_ID]);
+
+// Diamond is gated even harder than gold: only the top pickaxe tier scratches
+// it, full stop — there's no lower tier that "still works, just worse" the
+// way a wooden axe still chops wood. See canMineDiamond in processHarvest.
+const DIAMOND_CAPABLE_TOOLS = new Set<string>([GOLD_PICKAXE_ID]);
 
 /** Gold-capable pickaxes, weakest first — the tier list bots pick their best from. */
 const BOT_GOLD_PICKAXE_TIERS = [STONE_PICKAXE_ID, GOLD_PICKAXE_ID];
@@ -233,6 +261,7 @@ const INTERACT_RADIUS: Record<ResourceType, number> = {
   wheat: WHEAT_SPAN / 2,
   purple_berry: RESOURCE_RADIUS,
   gold: GOLD_SPAN / 2,
+  diamond: DIAMOND_SPAN / 2,
 };
 const MAX_INTERACT_RADIUS = Math.max(...Object.values(INTERACT_RADIUS));
 
@@ -309,20 +338,23 @@ const BOT_STONE_TOOLS = [STONE_AXE_ID, STONE_PICKAXE_ID, STONE_SWORD_ID];
  * outright; distance only breaks ties between equal priorities. Trees score
  * above zero even on the food pass because they drop a berry alongside wood.
  */
+// Diamond is left at 0 on both tables — the desert isn't part of a bot's
+// world today (no bot AI routes there or checks DIAMOND_CAPABLE_TOOLS), so a
+// nonzero priority would just be a want a bot can never act on.
 const BOT_MATERIAL_PRIORITY: Record<ResourceType, number> = {
-  gold: 4, tree: 3, rock: 3, wheat: 1, berry: 1, purple_berry: 1, mushroom: 1,
+  gold: 4, tree: 3, rock: 3, wheat: 1, berry: 1, purple_berry: 1, mushroom: 1, diamond: 0,
 };
 const BOT_FOOD_PRIORITY: Record<ResourceType, number> = {
-  berry: 4, purple_berry: 4, mushroom: 3, tree: 2, wheat: 1, rock: 0, gold: 0,
+  berry: 4, purple_berry: 4, mushroom: 3, tree: 2, wheat: 1, rock: 0, gold: 0, diamond: 0,
 };
 
-/** A hostile the bot AI is considering, flattened so spiders and foxes look alike. */
+/** A hostile the bot AI is considering, flattened so spiders, foxes, and beetles look alike. */
 interface BotThreat {
   id: string;
   x: number;
   y: number;
   radius: number;
-  kind: 'spider' | 'fox';
+  kind: 'spider' | 'fox' | 'beetle';
 }
 
 /**
@@ -354,6 +386,7 @@ export class Game {
   private readonly structures: ServerStructure[] = [];
   private readonly spiders = new Map<string, ServerSpider>();
   private readonly foxes = new Map<string, ServerFox>();
+  private readonly beetles = new Map<string, ServerBeetle>();
   /**
    * Server-simulated players. Each one's `player` also lives in `players`
    * above, so from every other system's point of view — collision, mobs,
@@ -387,6 +420,10 @@ export class Game {
   // clock — they spawn and hunt through both day and night, so there's no
   // day-edge clearing for them and this timer just runs continuously.
   private foxSpawnTimer = 0;
+
+  // Beetles are the desert's own fox — tied to their biome, not the clock,
+  // same continuously-running timer.
+  private beetleSpawnTimer = 0;
 
   constructor(private readonly io: Server) {
     this.world = new World();
@@ -847,7 +884,8 @@ export class Game {
     // Update each player
     for (const player of this.players.values()) {
       const speedMultiplier = this.getSpeedMultiplier(player);
-      player.update(dt, isDay, speedMultiplier, this.isNearFire(player), this.world.isInWater(player.x, player.y));
+      const thirstMultiplier = this.getThirstMultiplier(player);
+      player.update(dt, isDay, speedMultiplier, this.isNearFire(player), this.world.isInWater(player.x, player.y), thirstMultiplier);
       const pushed = this.pushOutOfResources(player.x, player.y, PLAYER_RADIUS);
       const structPushed = this.pushOutOfStructures(pushed.x, pushed.y, PLAYER_RADIUS);
       player.x = structPushed.x;
@@ -862,6 +900,7 @@ export class Game {
 
     this.updateSpiders(dt, isDay);
     this.updateFoxes(dt, isDay);
+    this.updateBeetles(dt);
 
     // Broadcast state to each player
     this.broadcast(isDay);
@@ -880,7 +919,18 @@ export class Game {
       const dy = player.y - r.y;
       if (dx * dx + dy * dy <= SLOW_RADIUS * SLOW_RADIUS) return SLOW_MULTIPLIER;
     }
+
+    // The desert's own tax — a mild, constant slowdown rather than a
+    // hazard-tile one, checked last since water/berries already answered the
+    // question for anyone standing in the (rare) desert water or scatter.
+    if (isInDesert(player.x, player.y)) return DESERT_SPEED_MULTIPLIER;
+
     return 1;
+  }
+
+  /** Thirst drains faster in the desert's heat — see DESERT_THIRST_MULTIPLIER. */
+  private getThirstMultiplier(player: ServerPlayer): number {
+    return isInDesert(player.x, player.y) ? DESERT_THIRST_MULTIPLIER : 1;
   }
 
   /**
@@ -1016,6 +1066,15 @@ export class Game {
     return targets;
   }
 
+  /** Every beetle within swing range. */
+  private findBeetleTargets(player: ServerPlayer): ServerBeetle[] {
+    const targets: ServerBeetle[] = [];
+    for (const beetle of this.beetles.values()) {
+      if (this.inSwingRange(player, beetle.x, beetle.y, BEETLE_RADIUS)) targets.push(beetle);
+    }
+    return targets;
+  }
+
   /** Every other player within swing range — PvP uses the same swing as everything else. */
   private findPlayerTargets(attacker: ServerPlayer): ServerPlayer[] {
     const targets: ServerPlayer[] = [];
@@ -1083,11 +1142,13 @@ export class Game {
     const targets = this.findHarvestTargets(player);
     const spiderTargets = this.findSpiderTargets(player);
     const foxTargets = this.findFoxTargets(player);
+    const beetleTargets = this.findBeetleTargets(player);
     const playerTargets = this.findPlayerTargets(player);
     if (
       targets.length === 0 &&
       spiderTargets.length === 0 &&
       foxTargets.length === 0 &&
+      beetleTargets.length === 0 &&
       playerTargets.length === 0
     ) {
       return;
@@ -1104,6 +1165,7 @@ export class Game {
     // decides, not just the client's claimed `held`.
     const held = player.input.held;
     const canMineGold = held !== null && GOLD_CAPABLE_TOOLS.has(held) && (inv.get(held) ?? 0) >= 1;
+    const canMineDiamond = held !== null && DIAMOND_CAPABLE_TOOLS.has(held) && (inv.get(held) ?? 0) >= 1;
 
     for (const spider of spiderTargets) {
       spider.hp = Math.max(0, spider.hp - combatDamage);
@@ -1126,6 +1188,16 @@ export class Game {
       }
     }
 
+    for (const beetle of beetleTargets) {
+      beetle.hp = Math.max(0, beetle.hp - combatDamage);
+      if (beetle.hp === 0) {
+        this.beetles.delete(beetle.id);
+        // Same raw-meat drop as a fox kill — has to be cooked before it's edible.
+        inv.set(RAW_MEAT_ID, (inv.get(RAW_MEAT_ID) ?? 0) + BEETLE_FOOD_DROP);
+        allDrops.push({ type: RAW_MEAT_ID, count: BEETLE_FOOD_DROP });
+      }
+    }
+
     for (const victim of playerTargets) {
       const victimInv = this.inventories.get(victim.id);
       const reduction = victimInv ? this.armorReduction(victim, victimInv) : 0;
@@ -1139,6 +1211,7 @@ export class Game {
 
     for (const resource of targets) {
       if (resource.type === 'gold' && !canMineGold) continue; // wrong (or no) tool — the swing lands but does nothing
+      if (resource.type === 'diamond' && !canMineDiamond) continue; // only a gold pickaxe cracks a diamond deposit
       const { drops, destroyed } = resource.damage(HARVEST_DAMAGE, yieldMultiplier);
       // Just died this swing — open up the ground it was occupying so fox
       // pathfinding (and bot player steering) can route through it instead
@@ -1529,6 +1602,7 @@ export class Game {
       const bandY = darkForestBandAt(x);
       if (bandY <= margin) continue; // no forest to speak of at this x
       const y = margin + Math.random() * (bandY - margin);
+      if (isInDesert(x, y)) continue; // the desert's own column belongs to beetles, not foxes
       if (this.world.isBlockedByLake(x, y)) continue;
       // Start on ground a fox can actually stand on, rather than inside a
       // trunk it would spend its first ticks being shoved back out of.
@@ -1581,7 +1655,7 @@ export class Game {
       // despawns it too, so one that never finds anyone — or loses its
       // target without ever leaving the forest — doesn't just sit there
       // holding one of FOX_MAX_COUNT's slots forever.
-      const strandedOutsideForest = fox.y > darkForestBandAt(fox.x) + FOX_FOREST_LEEWAY;
+      const strandedOutsideForest = !this.withinFoxLeash(fox.x, fox.y);
       if (strandedOutsideForest || fox.idleTimer >= FOX_IDLE_DESPAWN_TIME) this.foxes.delete(fox.id);
       return;
     }
@@ -1642,8 +1716,20 @@ export class Game {
    * to clean up a fox that wandered out and lost interest, just checked here
    * too so it also applies mid-chase, not only once idle.
    */
+  /**
+   * True within FOX_FOREST_LEEWAY of the dark forest's own band AND not
+   * standing inside the desert corner — a fox belongs to the dark forest
+   * specifically, and the desert has its own resident predator (see
+   * withinBeetleLeash), so straying into it (even though it's technically
+   * still "north of the band," since the desert is carved out of the
+   * forest's own territory) counts as leaving home too.
+   */
+  private withinFoxLeash(x: number, y: number): boolean {
+    return y <= darkForestBandAt(x) + FOX_FOREST_LEEWAY && !isInDesert(x, y);
+  }
+
   private foxTarget(fox: ServerFox): ServerPlayer | null {
-    const withinForestLeash = fox.y <= darkForestBandAt(fox.x) + FOX_FOREST_LEEWAY;
+    const withinForestLeash = this.withinFoxLeash(fox.x, fox.y);
     if (!withinForestLeash) {
       // Too far out to be chasing anyone, current quarry or a new one alike.
       fox.targetId = null;
@@ -1719,6 +1805,174 @@ export class Game {
     }
 
     return fox.path.length > 0 ? fox.path[0] : null;
+  }
+
+  // ── Beetles ────────────────────────────────────────────────────────────────
+
+  /**
+   * Beetle lifecycle for this tick — the desert's answer to updateFoxes.
+   * Same continuously-running (day and night alike) spawn timer as foxes;
+   * unlike foxes, a beetle never pathfinds (see updateBeetle), so there's no
+   * per-beetle repath bookkeeping to run here either.
+   */
+  private updateBeetles(dt: number): void {
+    this.beetleSpawnTimer -= dt;
+    if (this.beetleSpawnTimer <= 0) {
+      this.beetleSpawnTimer = BEETLE_SPAWN_INTERVAL;
+      this.trySpawnBeetle();
+    }
+
+    for (const beetle of this.beetles.values()) {
+      this.updateBeetle(beetle, dt);
+    }
+  }
+
+  /**
+   * Picks a spot inside the desert, clear of players and water; skips this
+   * cycle if nothing turns up. The band's x varies with y (the border
+   * meanders — see desertBandAt), so the cutoff is recomputed per candidate y
+   * rather than being one flat line.
+   */
+  private trySpawnBeetle(): void {
+    if (this.beetles.size >= BEETLE_MAX_COUNT) return;
+
+    const margin = TREE_SPAN;
+    const players = Array.from(this.players.values());
+
+    // The desert is a small corner now (the dark forest's own east third),
+    // not a full-height column — rather than solving for its bounds
+    // directly (it's carved out by two independently-wandering borders),
+    // sample uniformly inside a bounding box that comfortably contains the
+    // corner and reject anything isInDesert says missed it, the same
+    // rejection-sampling approach trySpawnSpider already uses for its own,
+    // simpler region.
+    const xLo = Math.max(margin, DESERT_BAND - DESERT_EDGE_AMPLITUDE);
+    const yHi = Math.min(MAP_SIZE - margin, DARK_FOREST_BAND + DARK_FOREST_EDGE_AMPLITUDE);
+
+    for (let attempt = 0; attempt < 30; attempt++) {
+      const x = xLo + Math.random() * (MAP_SIZE - margin - xLo);
+      const y = margin + Math.random() * Math.max(1, yHi - margin);
+      if (!isInDesert(x, y)) continue;
+      if (this.world.isBlockedByLake(x, y)) continue;
+      if (players.some((p) => Math.hypot(p.x - x, p.y - y) < BEETLE_MIN_PLAYER_SPAWN_DIST)) continue;
+
+      const beetle = new ServerBeetle(x, y);
+      this.beetles.set(beetle.id, beetle);
+      return;
+    }
+  }
+
+  /** Beetles wade through the oasis slower, same as spiders/foxes/players. */
+  private beetleSpeedMultiplier(beetle: ServerBeetle): number {
+    return this.world.isInWater(beetle.x, beetle.y) ? LAKE_SLOW_MULTIPLIER : 1;
+  }
+
+  /**
+   * Simple seek-and-bite AI, same shape as a spider's: no pathfinding — the
+   * desert has nothing dense enough to route around the way the dark
+   * forest's trees do, so a beetle just steers straight at its target and
+   * relies on pushOutOfResources to bounce off anything solid (the odd
+   * player-built wall). What it does borrow from the fox is sticky aggro
+   * with a lose-interest hysteresis and a leash back to its own biome — see
+   * beetleTarget — since like a fox, a beetle belongs to a specific patch of
+   * the map rather than roaming the whole one the way a spider does.
+   */
+  private updateBeetle(beetle: ServerBeetle, dt: number): void {
+    if (beetle.attackCooldown > 0) beetle.attackCooldown -= dt;
+
+    const nearest = this.beetleTarget(beetle);
+    const nearestDist = nearest ? Math.hypot(nearest.x - beetle.x, nearest.y - beetle.y) : Infinity;
+
+    if (nearest) {
+      beetle.idleTimer = 0; // aggro'd — the despawn clock only runs while idle
+    } else {
+      beetle.idleTimer += dt;
+      // Lost the scent. If that happened well outside its own biome, or it's
+      // been idle long enough with nobody to chase, it gives up and
+      // disappears — same reasoning as a fox's FOX_FOREST_LEEWAY/
+      // FOX_IDLE_DESPAWN_TIME, just for the desert.
+      const strandedOutsideDesert = !this.withinBeetleLeash(beetle.x, beetle.y);
+      if (strandedOutsideDesert || beetle.idleTimer >= BEETLE_IDLE_DESPAWN_TIME) this.beetles.delete(beetle.id);
+      return;
+    }
+
+    // Close enough to bite: stop closing and just work the cooldown.
+    if (nearestDist <= BEETLE_ATTACK_RANGE) {
+      beetle.angle = Math.atan2(nearest.y - beetle.y, nearest.x - beetle.x);
+      if (beetle.attackCooldown <= 0) {
+        const victimInv = this.inventories.get(nearest.id);
+        const reduction = victimInv ? this.armorReduction(nearest, victimInv) : 0;
+        nearest.health = Math.max(0, nearest.health - BEETLE_DAMAGE * (1 - reduction));
+        beetle.attackCooldown = BEETLE_ATTACK_COOLDOWN;
+      }
+      return;
+    }
+
+    const dx = nearest.x - beetle.x;
+    const dy = nearest.y - beetle.y;
+    const dist = Math.hypot(dx, dy) || 0.001;
+    beetle.angle = Math.atan2(dy, dx);
+
+    const speed = BEETLE_SPEED * this.beetleSpeedMultiplier(beetle);
+    beetle.x = clamp(beetle.x + (dx / dist) * speed * dt, BEETLE_RADIUS, MAP_SIZE - BEETLE_RADIUS);
+    beetle.y = clamp(beetle.y + (dy / dist) * speed * dt, BEETLE_RADIUS, MAP_SIZE - BEETLE_RADIUS);
+
+    const pushed = this.pushOutOfResources(beetle.x, beetle.y, BEETLE_RADIUS);
+    const structPushed = this.pushOutOfStructures(pushed.x, pushed.y, BEETLE_RADIUS);
+    beetle.x = structPushed.x;
+    beetle.y = structPushed.y;
+  }
+
+  /**
+   * True within BEETLE_DESERT_LEEWAY of the desert corner — east of its own
+   * wandering west border AND still north of the dark forest's own south
+   * border (the desert's south edge, now that it's a corner rather than a
+   * full-height column — see isInDesert). Both borders get the same leeway,
+   * so a beetle can be lured a little past either edge before the leash
+   * (see updateBeetle/beetleTarget) actually kicks in.
+   */
+  private withinBeetleLeash(x: number, y: number): boolean {
+    return x >= desertBandAt(y) - BEETLE_DESERT_LEEWAY && y <= darkForestBandAt(x) + BEETLE_DESERT_LEEWAY;
+  }
+
+  /**
+   * The player a beetle is hunting this tick, or null if nothing has its
+   * attention — the beetle's answer to foxTarget, same sticky-aggro-with-
+   * hysteresis-and-leash shape, just keyed to the desert's boundary instead
+   * of the dark forest's.
+   */
+  private beetleTarget(beetle: ServerBeetle): ServerPlayer | null {
+    if (!this.withinBeetleLeash(beetle.x, beetle.y)) {
+      beetle.targetId = null;
+      return null;
+    }
+
+    let current: ServerPlayer | null = null;
+    let currentDist = Infinity;
+    if (beetle.targetId) {
+      const quarry = this.players.get(beetle.targetId);
+      const d = quarry ? Math.hypot(quarry.x - beetle.x, quarry.y - beetle.y) : Infinity;
+      if (quarry && d <= BEETLE_LOSE_INTEREST_RANGE) {
+        current = quarry;
+        currentDist = d;
+      } else {
+        beetle.targetId = null;
+      }
+    }
+
+    let nearest = current;
+    let nearestDist = Math.min(currentDist, BEETLE_AGGRO_RANGE);
+    for (const player of this.players.values()) {
+      if (player === current) continue;
+      const d = Math.hypot(player.x - beetle.x, player.y - beetle.y);
+      if (d < nearestDist) {
+        nearest = player;
+        nearestDist = d;
+      }
+    }
+
+    beetle.targetId = nearest?.id ?? null;
+    return nearest;
   }
 
   // ── Bots ───────────────────────────────────────────────────────────────────
@@ -2502,6 +2756,13 @@ export class Game {
         best = { id: f.id, x: f.x, y: f.y, radius: FOX_RADIUS, kind: 'fox' };
       }
     }
+    for (const b of this.beetles.values()) {
+      const d = Math.hypot(b.x - p.x, b.y - p.y);
+      if (d < bestDist) {
+        bestDist = d;
+        best = { id: b.id, x: b.x, y: b.y, radius: BEETLE_RADIUS, kind: 'beetle' };
+      }
+    }
 
     return best;
   }
@@ -2594,6 +2855,8 @@ export class Game {
     if (spider) return { id, x: spider.x, y: spider.y, radius: SPIDER_RADIUS, kind: 'spider' };
     const fox = this.foxes.get(id);
     if (fox) return { id, x: fox.x, y: fox.y, radius: FOX_RADIUS, kind: 'fox' };
+    const beetle = this.beetles.get(id);
+    if (beetle) return { id, x: beetle.x, y: beetle.y, radius: BEETLE_RADIUS, kind: 'beetle' };
     return null;
   }
 
@@ -3027,6 +3290,9 @@ export class Game {
         foxes: Array.from(this.foxes.values())
           .filter(f => Math.hypot(f.x - anchor.x, f.y - anchor.y) <= viewDistance)
           .map(f => f.toState()),
+        beetles: Array.from(this.beetles.values())
+          .filter(b => Math.hypot(b.x - anchor.x, b.y - anchor.y) <= viewDistance)
+          .map(b => b.toState()),
         spectating: anchor.id !== player.id,
         cameraMode: isCameraViewer,
         cameraResources,
@@ -3068,6 +3334,9 @@ export class Game {
       foxes: Array.from(this.foxes.values())
         .filter(f => Math.hypot(f.x - x, f.y - y) <= VIEW_DISTANCE)
         .map(f => f.toState()),
+      beetles: Array.from(this.beetles.values())
+        .filter(b => Math.hypot(b.x - x, b.y - y) <= VIEW_DISTANCE)
+        .map(b => b.toState()),
       focus: this.previewBot.id,
       lakes: this.world.lakes,
     };
