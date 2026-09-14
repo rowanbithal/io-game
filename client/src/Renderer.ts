@@ -240,6 +240,13 @@ const P = {
   meatCooked: '#8a5636',
   meatCookedDark: '#4a2e1c',
 
+  // Leather — a fox's tanned hide, and the backpack sewn from it (see
+  // LEATHER_ID/BACKPACK_ID). A warmer, more saturated tan than the meat
+  // above so raw hide and raw meat don't read as the same drop at a glance.
+  leatherLight: '#c99a63',
+  leather: '#a06f3c',
+  leatherDark: '#6b4423',
+
   // Fireflies (dark forest ambiance)
   fireflyGlow: '#e8ff7a',
 
@@ -2195,6 +2202,47 @@ export function drawCookedMeatIcon(ctx: CanvasRenderingContext2D, block: number 
 }
 export const MEAT_ICON_HALF_BLOCKS = 3.1;
 
+// A stretched hide — a rounded body with four small corner tabs, evoking a
+// pelt pegged out flat rather than a plain blob (same "circle plus a couple
+// of accent cells" trick STRING_ICON_CELLS/MEAT_ICON_CELLS use).
+const LEATHER_ICON_CELLS: Cell[] = [
+  ...blockCircle(1.5, 1.2),
+  { gx: -2.1, gy: -1.5, shade: 'dark' },
+  { gx: 2.1, gy: -1.5, shade: 'dark' },
+  { gx: -2.1, gy: 1.5, shade: 'dark' },
+  { gx: 2.1, gy: 1.5, shade: 'dark' },
+];
+const LEATHER_PALETTE: Palette3 = { light: P.leatherLight, base: P.leather, dark: P.leatherDark };
+
+export function drawLeatherIcon(ctx: CanvasRenderingContext2D, block: number = BLOCK): void {
+  drawBlockShape(ctx, LEATHER_ICON_CELLS, LEATHER_PALETTE, block);
+}
+export const LEATHER_ICON_HALF_BLOCKS = 2.8;
+
+// A sewn pack: a boxy body, a flap along the top, and two shoulder straps —
+// reuses the same tanned-leather palette as the raw hide above, so the
+// finished pack visibly matches the material it was sewn from.
+const BACKPACK_ICON_CELLS: Cell[] = [
+  { gx: -1, gy: -2, shade: 'light' },
+  { gx: 0, gy: -2, shade: 'light' },
+  { gx: 1, gy: -2, shade: 'light' },
+  { gx: -1, gy: -1, shade: 'base' },
+  { gx: 0, gy: -1, shade: 'base' },
+  { gx: 1, gy: -1, shade: 'base' },
+  { gx: -1, gy: 0, shade: 'base' },
+  { gx: 0, gy: 0, shade: 'dark' },
+  { gx: 1, gy: 0, shade: 'base' },
+  { gx: -1, gy: 1, shade: 'dark' },
+  { gx: 0, gy: 1, shade: 'base' },
+  { gx: 1, gy: 1, shade: 'dark' },
+  { gx: -1.7, gy: -1.6, shade: 'dark' },
+  { gx: 1.7, gy: -1.6, shade: 'dark' },
+];
+export function drawBackpackIcon(ctx: CanvasRenderingContext2D, block: number = BLOCK): void {
+  drawBlockShape(ctx, BACKPACK_ICON_CELLS, LEATHER_PALETTE, block);
+}
+export const BACKPACK_ICON_HALF_BLOCKS = 2.6;
+
 // ── Berry / mushroom / purple-berry hotbar icons ────────────────────────────
 // Unlike every icon above, these don't come from cell data — they reuse the
 // actual pixel-art sprites these resources are drawn with out in the world
@@ -3876,7 +3924,6 @@ export class Renderer {
     this.drawGround(W / zoom, H / zoom);
     this.drawGroundClutter(W / zoom, H / zoom);
     this.drawForestFloor(W / zoom, H / zoom);
-    this.drawGridLines(W / zoom, H / zoom);
     this.drawSea(W / zoom, H / zoom);
     this.drawBeachClutter(W / zoom, H / zoom);
     this.drawDesertGround(W / zoom, H / zoom);
@@ -4132,7 +4179,6 @@ export class Renderer {
     ctx.restore();
   }
 
-  /** Thin lines at every GRID_CELL boundary — the grid trees/rocks are placed on. */
   /**
    * Pixelated black vignette radiating out from the center of the screen
    * over the dark forest, heaviest up around the gold — leaves a circular
@@ -4203,25 +4249,6 @@ export class Renderer {
       ctx.fill(steps[i]);
     }
     ctx.restore();
-  }
-
-  private drawGridLines(viewW: number, viewH: number): void {
-    const { ctx, camera } = this;
-    const startX = Math.floor(camera.x / GRID_CELL) * GRID_CELL;
-    const startY = Math.floor(camera.y / GRID_CELL) * GRID_CELL;
-    const endX = camera.x + viewW;
-    const endY = camera.y + viewH;
-    const lineW = 1;
-
-    ctx.fillStyle = 'rgba(10,30,10,0.28)';
-    for (let x = startX; x <= endX; x += GRID_CELL) {
-      const { sx } = camera.toScreen(x, 0);
-      ctx.fillRect(sx - lineW / 2, 0, lineW, viewH);
-    }
-    for (let y = startY; y <= endY; y += GRID_CELL) {
-      const { sy } = camera.toScreen(0, y);
-      ctx.fillRect(0, sy - lineW / 2, viewW, lineW);
-    }
   }
 
   // ── Sea ────────────────────────────────────────────────────────────────────

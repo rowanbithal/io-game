@@ -167,6 +167,15 @@ interface ClusterConfig {
   /** Members must be orthogonally adjacent (one SPAN away) to an existing cluster member. */
   contiguous: boolean;
   /**
+   * Hard cap on the size of the connected patch a placement is allowed to
+   * join — checked against every orthogonally-touching resource of the same
+   * type, not just this config's own cluster. Needed because footprintFree
+   * only rejects overlap: two independently-seeded clusters can still land
+   * edge-to-edge and visually merge into one patch bigger than either
+   * cluster's own minClusterSize/maxClusterSize would suggest.
+   */
+  maxGroupSize?: number;
+  /**
    * Confines placement to inside the desert (isInDesert) instead of the
    * usual "everywhere outside it" every other config gets by default — see
    * footprintFree, which rejects the opposite side depending on this flag.
@@ -192,21 +201,26 @@ const CLUSTER_CONFIG: ClusterConfig[] = [
 //
 // targetCount bumped again (180 -> 200 -> 235) for a noticeably fuller
 // plains.
+//
+// maxGroupSize caps the visually-connected patch at 4 trees regardless of
+// how many independent clusters end up touching — see ClusterConfig's
+// maxGroupSize doc.
 const PLAINS_TREE_CONFIG: ClusterConfig = {
   type: 'tree',
   span: TREE_SPAN,
   targetCount: 235,
-  minClusterSize: 2,
-  maxClusterSize: 4,
+  minClusterSize: 1,
+  maxClusterSize: 3,
   spreadRadius: 1,
   contiguous: true,
+  maxGroupSize: 4,
 };
 
 // Confined to the dark forest band (see forestBandRowsAt in
 // generateClusters) — this is what makes the biome read as a noticeably
 // denser forest rather than just a darker-colored version of the normal one.
 //
-// Clusters stay smaller than the plains' (which run up to 4): the forest's
+// Clusters stay smaller than the plains' (which run up to 3): the forest's
 // trees render oversized, so a long contiguous run of them merges into one
 // shapeless mass of canopy. Singles and pairs keep the same tree count while
 // leaving gaps that read as individual trunks.
@@ -866,6 +880,52 @@ export class World {
       return true;
     };
 
+    // Union-find over every placed tree's footprint anchor, tracking the
+    // size of the connected (orthogonally-touching) patch it belongs to —
+    // shared across both tree passes (plains + dark forest) so a config
+    // whose maxGroupSize caps its patch size sees the true merged size even
+    // when the neighbor came from the other pass.
+    const treeGroupParent = new Map<string, string>();
+    const treeGroupSize = new Map<string, number>();
+    const findTreeGroup = (k: string): string => {
+      const p = treeGroupParent.get(k)!;
+      if (p === k) return k;
+      const root = findTreeGroup(p);
+      treeGroupParent.set(k, root);
+      return root;
+    };
+    const unionTreeGroups = (a: string, b: string): void => {
+      const ra = findTreeGroup(a);
+      const rb = findTreeGroup(b);
+      if (ra === rb) return;
+      const merged = (treeGroupSize.get(ra) ?? 1) + (treeGroupSize.get(rb) ?? 1);
+      treeGroupParent.set(ra, rb);
+      treeGroupSize.set(rb, merged);
+    };
+    const treeNeighborAnchors = (gx: number, gy: number, spanCells: number): [number, number][] => [
+      [gx + spanCells, gy], [gx - spanCells, gy], [gx, gy + spanCells], [gx, gy - spanCells],
+    ];
+    /** Size the connected tree patch would grow to if a new tree were placed at (gx, gy). */
+    const treeGroupSizeIfPlaced = (gx: number, gy: number, spanCells: number): number => {
+      const roots = new Set<string>();
+      for (const [nx, ny] of treeNeighborAnchors(gx, gy, spanCells)) {
+        const k = key(nx, ny);
+        if (treeGroupParent.has(k)) roots.add(findTreeGroup(k));
+      }
+      let total = 1;
+      for (const r of roots) total += treeGroupSize.get(r) ?? 1;
+      return total;
+    };
+    const registerTreeGroup = (gx: number, gy: number, spanCells: number): void => {
+      const k = key(gx, gy);
+      treeGroupParent.set(k, k);
+      treeGroupSize.set(k, 1);
+      for (const [nx, ny] of treeNeighborAnchors(gx, gy, spanCells)) {
+        const nk = key(nx, ny);
+        if (treeGroupParent.has(nk)) unionTreeGroups(k, nk);
+      }
+    };
+
     const place = (type: ResourceType, gx: number, gy: number, spanCells: number, span: number): void => {
       const x = margin + gx * GRID_CELL + span / 2;
       const y = margin + gy * GRID_CELL + span / 2;
@@ -905,8 +965,11 @@ export class World {
         const seedGYRange = Math.max(1, seedGYMax - spanCells - seedGYMin);
         const seedGY = seedGYMin + Math.floor(Math.random() * seedGYRange);
         if (!footprintFree(seedGX, seedGY, spanCells, cfg.desertOnly, cfg.desertMinX)) continue;
+        if (cfg.type === 'tree' && cfg.maxGroupSize !== undefined
+          && treeGroupSizeIfPlaced(seedGX, seedGY, spanCells) > cfg.maxGroupSize) continue;
 
         place(cfg.type, seedGX, seedGY, spanCells, cfg.span);
+        if (cfg.type === 'tree') registerTreeGroup(seedGX, seedGY, spanCells);
         placed++;
 
         const clusterSize = cfg.minClusterSize + Math.floor(Math.random() * (cfg.maxClusterSize - cfg.minClusterSize + 1));
@@ -935,8 +998,11 @@ export class World {
           }
 
           if (!footprintFree(nx, ny, spanCells, cfg.desertOnly, cfg.desertMinX)) continue;
+          if (cfg.type === 'tree' && cfg.maxGroupSize !== undefined
+            && treeGroupSizeIfPlaced(nx, ny, spanCells) > cfg.maxGroupSize) continue;
 
           place(cfg.type, nx, ny, spanCells, cfg.span);
+          if (cfg.type === 'tree') registerTreeGroup(nx, ny, spanCells);
           members.push([nx, ny]);
           memberCount++;
           placed++;
