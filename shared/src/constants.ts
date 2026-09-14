@@ -508,10 +508,12 @@ export const DIAMOND_MAX_Y = DARK_FOREST_BAND * 0.4;
 // How many distinct item types a player's inventory can hold at once — every
 // distinct type gets its own hotbar slot (see client HUD's hotbarOrder), so
 // this is the hotbar's size. A backpack (see shared/crafting.ts's
-// BACKPACK_ID) raises the cap to HOTBAR_BACKPACK_SLOTS once crafted; owning
-// one is enough; it doesn't need to be worn. Bots are exempt (see Game.ts's
-// isBot) — they aren't shown a hotbar, and their gathering AI routinely
-// tracks more distinct materials/tools at once than this cap would allow.
+// BACKPACK_ID) raises the cap to HOTBAR_BACKPACK_SLOTS while worn — same
+// toggled equip slot as armor (see PlayerState.backpack), so crafting one
+// alone isn't enough; it has to actually be on. Bots are exempt (see
+// Game.ts's isBot) — they aren't shown a hotbar, and their gathering AI
+// routinely tracks more distinct materials/tools at once than this cap
+// would allow.
 export const HOTBAR_BASE_SLOTS = 10;
 export const HOTBAR_BACKPACK_SLOTS = 14;
 

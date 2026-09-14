@@ -75,8 +75,8 @@ export const LEATHER_ID = 'leather';
 // The backpack: the hotbar's only capacity upgrade (see HOTBAR_BACKPACK_SLOTS
 // in shared/constants.ts and Game.ts's hotbarCapacity). Sewn from a fox's
 // leather and a spider's string — one predator for the hide, the other for
-// the thread. Simply owning one raises the cap; unlike armor/the torch it
-// doesn't need to be worn.
+// the thread. Worn the same toggled way as armor (see PlayerState.backpack)
+// rather than simply owned — it has to actually be on to raise the cap.
 export const BACKPACK_ID = 'backpack';
 
 /** Wood yield multiplier while an axe is the held item. */

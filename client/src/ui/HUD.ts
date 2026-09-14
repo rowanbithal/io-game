@@ -71,7 +71,6 @@ import {
   drawLeatherIcon,
   LEATHER_ICON_HALF_BLOCKS,
   drawBackpackIcon,
-  BACKPACK_ICON_HALF_BLOCKS,
   drawFishIcon,
   FISH_ICON_HALF_BLOCKS,
   drawBerryIcon,
@@ -111,8 +110,11 @@ const ARMOR_ITEM_IDS = new Set([WOODEN_ARMOR_ID, STONE_ARMOR_ID, GOLD_ARMOR_ID])
 /** The torch — same worn-via-toggle shape as armor, just a separate equip slot (see PlayerState.torch). */
 const TORCH_ITEM_IDS = new Set([TORCH_ID]);
 
-/** Every item that's worn/toggled rather than held — armor and the torch alike (see selectSlot and friends below). */
-const EQUIP_ITEM_IDS = new Set([...ARMOR_ITEM_IDS, ...TORCH_ITEM_IDS]);
+/** The backpack — same worn-via-toggle shape as armor/the torch, a separate equip slot (see PlayerState.backpack). */
+const BACKPACK_ITEM_IDS = new Set([BACKPACK_ID]);
+
+/** Every item that's worn/toggled rather than held — armor, the torch, and the backpack alike (see selectSlot and friends below). */
+const EQUIP_ITEM_IDS = new Set([...ARMOR_ITEM_IDS, ...TORCH_ITEM_IDS, ...BACKPACK_ITEM_IDS]);
 
 /** What clicking/selecting a hotbar slot should do, when it isn't a plain tool selection. */
 interface HotbarSlotAction {
@@ -541,7 +543,7 @@ export class HUD {
     if (state.spectating) this.drawSpectateBanner(me, W);
 
     this.drawStatBars(me, W, H);
-    this.drawHotbar(state.spectating ? me?.held ?? null : undefined, me?.armor ?? null, me?.torch ?? null);
+    this.drawHotbar(state.spectating ? me?.held ?? null : undefined, me?.armor ?? null, me?.torch ?? null, me?.backpack ?? null);
     this.drawCrafting(H);
     this.drawBookTile(W);
     this.drawBestiaryTile(W);
@@ -648,7 +650,7 @@ export class HUD {
    * normal" — deliberately distinct from `null`, which means "spectating,
    * and they're holding nothing" (still an override, just to no slot).
    */
-  private drawHotbar(spectatingHeld?: string | null, equippedArmor: string | null = null, equippedTorch: string | null = null): void {
+  private drawHotbar(spectatingHeld?: string | null, equippedArmor: string | null = null, equippedTorch: string | null = null, equippedBackpack: string | null = null): void {
     const slots = this.hotbarOrder;
     if (slots.length === 0) return;
 
@@ -665,7 +667,7 @@ export class HUD {
           ? item === spectatingHeld
           : i === this.selectedIndex && !FOOD_ITEMS.has(item) && !EQUIP_ITEM_IDS.has(item);
       const isDragging = i === this.draggingIndex;
-      const isWorn = item === equippedArmor || item === equippedTorch;
+      const isWorn = item === equippedArmor || item === equippedTorch || item === equippedBackpack;
       const count = this.inventory[item] ?? 0;
 
       ctx.fillStyle = isDragging ? 'rgba(255,255,255,0.4)' : isSelected || isWorn ? 'rgba(255,255,255,0.25)' : 'rgba(0,0,0,0.45)';
@@ -1871,11 +1873,6 @@ export class HUD {
       return;
     }
 
-    if (item === BACKPACK_ID) {
-      drawSprite(BACKPACK_ICON_HALF_BLOCKS, (block) => drawBackpackIcon(ctx, block));
-      return;
-    }
-
     if (TOOL_ITEM_IDS.has(item)) {
       drawSprite(toolIconHalfBlocks(item), (block) => drawToolIcon(ctx, item, block));
       return;
@@ -1894,6 +1891,14 @@ export class HUD {
     const fishSpecies = FISH_SPECIES_BY_ID[item];
     if (fishSpecies) {
       drawSprite(FISH_ICON_HALF_BLOCKS, (block) => drawFishIcon(ctx, fishSpecies.color, block));
+      return;
+    }
+
+    if (item === BACKPACK_ID) {
+      ctx.save();
+      ctx.translate(Math.round(cx), Math.round(cy));
+      drawBackpackIcon(ctx, size);
+      ctx.restore();
       return;
     }
 

@@ -58,6 +58,12 @@ export class ServerPlayer {
   torch: string | null = null;
   torchRemaining = 0;
 
+  // Backpack worn on the back, or null — a fourth slot alongside armor/torch
+  // above, toggled the same way (see Game.handleEquip). Unlike armor/torch
+  // it has no gameplay effect of its own here; Game.hotbarCapacity reads it
+  // to decide whether the hotbar's slot cap is currently raised.
+  backpack: string | null = null;
+
   input: PlayerInput = {
     up: false,
     down: false,
@@ -118,6 +124,7 @@ export class ServerPlayer {
     this.armor = null;
     this.torch = null;
     this.torchRemaining = 0;
+    this.backpack = null;
     this.x = MAP_SIZE * (0.3 + Math.random() * 0.4);
     this.y = MAP_SIZE * (0.3 + Math.random() * 0.4);
   }
@@ -212,16 +219,17 @@ export class ServerPlayer {
   }
 
   /**
-   * `held`, `armor`, and `torch` are passed in rather than read straight off
-   * this entity: the inventory is the authority on what a player actually
-   * owns, and this entity doesn't own it. See Game.heldItemOf / Game.armorOf
-   * / Game.torchOf.
+   * `held`, `armor`, `torch`, and `backpack` are passed in rather than read
+   * straight off this entity: the inventory is the authority on what a
+   * player actually owns, and this entity doesn't own it. See
+   * Game.heldItemOf / Game.armorOf / Game.torchOf / Game.backpackOf.
    */
   toState(
     isMe = false,
     held: string | null = null,
     armor: string | null = null,
     torch: string | null = null,
+    backpack: string | null = null,
   ): PlayerState {
     return {
       id: this.id,
@@ -244,6 +252,7 @@ export class ServerPlayer {
       held,
       armor,
       torch,
+      backpack,
       chat: this.chat,
       isMe,
     };

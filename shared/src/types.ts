@@ -130,6 +130,11 @@ export interface PlayerState {
   // tool and wearing armor at the same time. Set via EquipRequest and, like
   // `armor`, already filtered against inventory server-side (see Game.torchOf).
   torch: string | null;
+  // Backpack worn on the back, if any — a fourth independent slot alongside
+  // `held`/`armor`/`torch`, worn the same toggled way as armor (see
+  // EquipRequest and Game.backpackOf) rather than simply owned: raising the
+  // hotbar's capacity (see HOTBAR_BACKPACK_SLOTS) requires it actually be on.
+  backpack: string | null;
   // What this player last said, or null. Lives on the snapshot rather than
   // being tracked client-side off the chat event so that a player who walks
   // into view mid-message still shows their bubble, and so the server owns

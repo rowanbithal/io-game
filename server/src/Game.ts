@@ -250,6 +250,12 @@ const ARMOR_IDS = new Set(Object.keys(ARMOR_DAMAGE_REDUCTION));
 // same shape as armor's.
 const TORCH_IDS = new Set([TORCH_ID]);
 
+// Valid ids for the backpack equip slot — same one-item-set shape as
+// TORCH_IDS, worn the same toggled way (see handleEquip) even though it has
+// no combat/warmth effect of its own: the hotbar's slot cap (see
+// hotbarCapacity) is what actually reads whether one is on.
+const BACKPACK_IDS = new Set([BACKPACK_ID]);
+
 // How often a "/camera" viewer's full-map resource list is recomputed —
 // twice a second is plenty fresh for an overview (harvest/respawn popping
 // in half a second late is imperceptible there) and cuts the per-tick cost
@@ -521,7 +527,7 @@ export class Game {
       return;
     }
     if (!canAfford(recipe, Object.fromEntries(inv))) return;
-    if (!inv.has(recipe.id) && !this.hasHotbarRoom(id, inv, recipe.cost)) {
+    if (!inv.has(recipe.id) && !this.hasHotbarRoom(player, inv, recipe.cost)) {
       this.sendInventory(player, 'Hotbar full — craft a backpack for more room');
       return;
     }
@@ -646,12 +652,13 @@ export class Game {
   }
 
   /**
-   * Puts on (or, if it's already worn, takes back off) a suit of armor or a
-   * torch — two independent equip slots (see ServerPlayer.armor/torch) that
-   * share this one handler since both toggle the same way. Ownership is
-   * re-checked at broadcast time regardless (see armorOf/torchOf), so this
-   * just records the player's choice — same toggle-by-resending-the-same-id
-   * shape as EquipRequest documents.
+   * Puts on (or, if it's already worn, takes back off) a suit of armor, a
+   * torch, or a backpack — three independent equip slots (see
+   * ServerPlayer.armor/torch/backpack) that share this one handler since all
+   * three toggle the same way. Ownership is re-checked at broadcast time
+   * regardless (see armorOf/torchOf/backpackOf), so this just records the
+   * player's choice — same toggle-by-resending-the-same-id shape as
+   * EquipRequest documents.
    */
   handleEquip(id: string, { itemId }: EquipRequest): void {
     if (this.spectators.has(id)) return;
@@ -669,6 +676,9 @@ export class Game {
       // and Game.tickTorch, which counts it back down to 0 while worn.
       player.torchRemaining = player.torch ? TORCH_LIFETIME : 0;
       this.sendInventory(player, player.torch ? `${RECIPES_BY_ID[itemId].name} equipped` : `${RECIPES_BY_ID[itemId].name} unequipped`);
+    } else if (BACKPACK_IDS.has(itemId)) {
+      player.backpack = player.backpack === itemId ? null : itemId;
+      this.sendInventory(player, player.backpack ? `${RECIPES_BY_ID[itemId].name} equipped` : `${RECIPES_BY_ID[itemId].name} unequipped`);
     }
   }
 
@@ -1174,7 +1184,7 @@ export class Game {
     // rather than once per blocked drop.
     let hotbarFull = false;
     const gain = (type: string, amount: number): void => {
-      const gained = this.gainItem(player.id, inv, type, amount);
+      const gained = this.gainItem(player, inv, type, amount);
       if (gained > 0) allDrops.push({ type, count: gained });
       else hotbarFull = true;
     };
@@ -1360,7 +1370,7 @@ export class Game {
 
     player.crafting = null;
     const inv = this.inventories.get(player.id)!;
-    const gained = this.gainItem(player.id, inv, craft.recipe.id, 1);
+    const gained = this.gainItem(player, inv, craft.recipe.id, 1);
     this.sendInventory(player, gained > 0 ? `+1 ${craft.recipe.name}` : 'Hotbar full');
   }
 
@@ -1387,7 +1397,7 @@ export class Game {
 
     player.fishing = null;
     const caught = pickRandomFish();
-    const gained = this.gainItem(player.id, inv, caught.id, 1);
+    const gained = this.gainItem(player, inv, caught.id, 1);
     if (gained > 0) {
       const rarityTag = caught.rarity === 'common' ? '' : ` (${caught.rarity})`;
       this.sendInventory(player, `Caught a ${caught.name}${rarityTag}!`);
@@ -1402,12 +1412,14 @@ export class Game {
   }
 
   /**
-   * How many distinct item types `inv` may hold at once — the hotbar's size
-   * (see HOTBAR_BASE_SLOTS's own comment). Raised once a backpack has been
-   * crafted; owning one is enough; it doesn't need to be worn.
+   * How many distinct item types `player`'s inventory may hold at once — the
+   * hotbar's size (see HOTBAR_BASE_SLOTS's own comment). Raised while a
+   * backpack is actually worn (same ownership-checked equip slot as armor —
+   * see backpackOf), not just owned; crafting one and leaving it in the
+   * hotbar isn't enough.
    */
-  private hotbarCapacity(inv: Map<string, number>): number {
-    return (inv.get(BACKPACK_ID) ?? 0) >= 1 ? HOTBAR_BACKPACK_SLOTS : HOTBAR_BASE_SLOTS;
+  private hotbarCapacity(player: ServerPlayer): number {
+    return this.backpackOf(player) ? HOTBAR_BACKPACK_SLOTS : HOTBAR_BASE_SLOTS;
   }
 
   /**
@@ -1417,29 +1429,29 @@ export class Game {
    * it commits the deduction (ingredients are spent up front — see its own
    * comment). Bots are exempt, same as gainItem below.
    */
-  private hasHotbarRoom(playerId: string, inv: Map<string, number>, cost: Record<string, number> = {}): boolean {
-    if (this.isBot(playerId)) return true;
+  private hasHotbarRoom(player: ServerPlayer, inv: Map<string, number>, cost: Record<string, number> = {}): boolean {
+    if (this.isBot(player.id)) return true;
     const projectedTypes = new Set(inv.keys());
     for (const [item, need] of Object.entries(cost)) {
       if ((inv.get(item) ?? 0) - need <= 0) projectedTypes.delete(item);
     }
-    return projectedTypes.size < this.hotbarCapacity(inv);
+    return projectedTypes.size < this.hotbarCapacity(player);
   }
 
   /**
    * Adds `amount` of `type` to `inv`, enforcing the hotbar's slot cap: a
    * player already holding a full hotbar of distinct item types can still
    * add to a type they already carry, but can't pick up an all-new type
-   * until something frees a slot (or they craft a backpack — see
+   * until something frees a slot (or they wear a backpack — see
    * hotbarCapacity). Bots are exempt — they aren't shown a hotbar, and
    * capping them would stall gathering AI that routinely tracks more
    * distinct materials/tools than a human ever needs to juggle at once (see
    * HOTBAR_BASE_SLOTS's own comment). Returns how much actually fit: either
    * `amount` or, when a brand-new type is blocked by the cap, 0.
    */
-  private gainItem(playerId: string, inv: Map<string, number>, type: string, amount: number): number {
+  private gainItem(player: ServerPlayer, inv: Map<string, number>, type: string, amount: number): number {
     const has = inv.get(type) ?? 0;
-    if (has === 0 && !this.isBot(playerId) && inv.size >= this.hotbarCapacity(inv)) return 0;
+    if (has === 0 && !this.isBot(player.id) && inv.size >= this.hotbarCapacity(player)) return 0;
     inv.set(type, has + amount);
     return amount;
   }
@@ -3301,6 +3313,13 @@ export class Game {
     return (this.inventories.get(player.id)?.get(torch) ?? 0) >= 1 ? torch : null;
   }
 
+  /** Same ownership check as armorOf, for the backpack equip slot. */
+  private backpackOf(player: ServerPlayer): string | null {
+    const backpack = player.backpack;
+    if (!backpack) return null;
+    return (this.inventories.get(player.id)?.get(backpack) ?? 0) >= 1 ? backpack : null;
+  }
+
   private broadcast(isDay: boolean): void {
     const allPlayers = Array.from(this.players.values());
 
@@ -3353,7 +3372,7 @@ export class Game {
         dayTime: this.dayTime,
         isDay,
         // All players visible regardless of distance (small player counts)
-        players: allPlayers.map(p => p.toState(p.id === anchor.id, this.heldItemOf(p), this.armorOf(p), this.torchOf(p))),
+        players: allPlayers.map(p => p.toState(p.id === anchor.id, this.heldItemOf(p), this.armorOf(p), this.torchOf(p), this.backpackOf(p))),
         // Only send resources within the client's view frustum
         resources: this.world.getNearby(anchor.x, anchor.y, VIEW_DISTANCE).map(r => r.toState()),
         structures: this.structures
@@ -3398,7 +3417,7 @@ export class Game {
       tick: this.tick,
       dayTime: this.dayTime,
       isDay,
-      players: allPlayers.map(p => p.toState(false, this.heldItemOf(p), this.armorOf(p), this.torchOf(p))),
+      players: allPlayers.map(p => p.toState(false, this.heldItemOf(p), this.armorOf(p), this.torchOf(p), this.backpackOf(p))),
       resources: nearbyResources.map(r => r.toState()),
       structures: this.structures
         .filter(s => Math.hypot(s.x - x, s.y - y) <= VIEW_DISTANCE)
