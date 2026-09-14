@@ -293,6 +293,11 @@ export const FOX_SPAWN_INTERVAL = 6; // Seconds between spawn attempts by day
 export const FOX_SPAWN_INTERVAL_NIGHT = 2.5;
 export const FOX_MIN_PLAYER_SPAWN_DIST = 300; // Don't spawn right on top of someone
 export const FOX_FOOD_DROP = 2; // Food yielded when a fox is killed
+// Leather yielded when a fox is killed, alongside the raw meat above — the
+// backpack's other ingredient (see shared/crafting.ts's backpack recipe),
+// spiders providing the string for it the same way they already do for a
+// fishing rod.
+export const FOX_LEATHER_DROP = 2;
 // How far past the forest's edge a fox will linger once it has lost its
 // target before giving up and despawning (see Game.ts's updateFox). Without
 // this, foxes lured out onto the plains would sit there forever, permanently
@@ -498,6 +503,17 @@ export const DIAMOND_FAR_X = DESERT_BAND + (MAP_SIZE - DESERT_BAND) * 0.65;
 // Kept north of OASIS_Y so deposits read as "past the oasis" rather than
 // scattered alongside it.
 export const DIAMOND_MAX_Y = DARK_FOREST_BAND * 0.4;
+
+// ── Hotbar / inventory capacity ─────────────────────────────────────────────
+// How many distinct item types a player's inventory can hold at once — every
+// distinct type gets its own hotbar slot (see client HUD's hotbarOrder), so
+// this is the hotbar's size. A backpack (see shared/crafting.ts's
+// BACKPACK_ID) raises the cap to HOTBAR_BACKPACK_SLOTS once crafted; owning
+// one is enough; it doesn't need to be worn. Bots are exempt (see Game.ts's
+// isBot) — they aren't shown a hotbar, and their gathering AI routinely
+// tracks more distinct materials/tools at once than this cap would allow.
+export const HOTBAR_BASE_SLOTS = 10;
+export const HOTBAR_BACKPACK_SLOTS = 14;
 
 // ── Chat ─────────────────────────────────────────────────────────────────────
 /** Longest message accepted. Enforced server-side too — the client's input

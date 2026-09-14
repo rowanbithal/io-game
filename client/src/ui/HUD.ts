@@ -29,6 +29,8 @@ import {
   FOOD_ITEMS,
   RAW_MEAT_ID,
   COOKED_MEAT_ID,
+  LEATHER_ID,
+  BACKPACK_ID,
   LakeState,
   DARK_FOREST_TRANSITION,
   darkForestBandAt,
@@ -66,6 +68,10 @@ import {
   drawMeatIcon,
   drawCookedMeatIcon,
   MEAT_ICON_HALF_BLOCKS,
+  drawLeatherIcon,
+  LEATHER_ICON_HALF_BLOCKS,
+  drawBackpackIcon,
+  BACKPACK_ICON_HALF_BLOCKS,
   drawFishIcon,
   FISH_ICON_HALF_BLOCKS,
   drawBerryIcon,
@@ -1857,6 +1863,16 @@ export class HUD {
 
     if (item === COOKED_MEAT_ID) {
       drawSprite(MEAT_ICON_HALF_BLOCKS, (block) => drawCookedMeatIcon(ctx, block));
+      return;
+    }
+
+    if (item === LEATHER_ID) {
+      drawSprite(LEATHER_ICON_HALF_BLOCKS, (block) => drawLeatherIcon(ctx, block));
+      return;
+    }
+
+    if (item === BACKPACK_ID) {
+      drawSprite(BACKPACK_ICON_HALF_BLOCKS, (block) => drawBackpackIcon(ctx, block));
       return;
     }
 

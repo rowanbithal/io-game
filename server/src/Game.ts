@@ -166,6 +166,11 @@ import {
   FISH_WAIT_MAX,
   FISH_BITE_WINDOW,
   pickRandomFish,
+  LEATHER_ID,
+  FOX_LEATHER_DROP,
+  BACKPACK_ID,
+  HOTBAR_BASE_SLOTS,
+  HOTBAR_BACKPACK_SLOTS,
 } from '@io-game/shared';
 
 import { ServerPlayer } from './entities/Player';
@@ -393,6 +398,10 @@ export class Game {
    * broadcast, the leaderboard — a bot simply is a player.
    */
   private readonly bots: ServerBot[] = [];
+  // Mirrors `bots` above as a set of player ids, for the O(1) "is this
+  // player a bot" check the hotbar cap needs (see isBot) — bots are never
+  // removed once added (see addBots), so this only ever grows alongside them.
+  private readonly botIds = new Set<string>();
   // The very first bot ever added — Tomas, per BOT_NAMES's fixed order (see
   // addBots). Featured in the pre-join menu backdrop (see buildPreviewState)
   // so a first-time visitor sees something alive happening before they've
@@ -512,6 +521,10 @@ export class Game {
       return;
     }
     if (!canAfford(recipe, Object.fromEntries(inv))) return;
+    if (!inv.has(recipe.id) && !this.hasHotbarRoom(id, inv, recipe.cost)) {
+      this.sendInventory(player, 'Hotbar full — craft a backpack for more room');
+      return;
+    }
 
     for (const [item, need] of Object.entries(recipe.cost)) {
       const left = (inv.get(item) ?? 0) - need;
@@ -1156,6 +1169,15 @@ export class Game {
 
     const inv = this.inventories.get(player.id)!;
     const allDrops: { type: string; count: number }[] = [];
+    // Set whenever gainItem below refuses a brand-new item type because the
+    // hotbar's already full — reported once at the end as a single toast
+    // rather than once per blocked drop.
+    let hotbarFull = false;
+    const gain = (type: string, amount: number): void => {
+      const gained = this.gainItem(player.id, inv, type, amount);
+      if (gained > 0) allDrops.push({ type, count: gained });
+      else hotbarFull = true;
+    };
 
     // Resolved once per swing, before anything is collected — otherwise
     // gathering mid-swing could change whether the bonus applies.
@@ -1171,8 +1193,7 @@ export class Game {
       spider.hp = Math.max(0, spider.hp - combatDamage);
       if (spider.hp === 0) {
         this.spiders.delete(spider.id);
-        inv.set('string', (inv.get('string') ?? 0) + SPIDER_STRING_DROP);
-        allDrops.push({ type: 'string', count: SPIDER_STRING_DROP });
+        gain('string', SPIDER_STRING_DROP);
       }
     }
 
@@ -1183,8 +1204,10 @@ export class Game {
         // Raw, same as any other harvest drop — has to be cooked at a
         // campfire (see the cooked_meat recipe, requiresCampfire, and
         // handleCraft) before FOOD_ITEMS/handleEat will let it be eaten.
-        inv.set(RAW_MEAT_ID, (inv.get(RAW_MEAT_ID) ?? 0) + FOX_FOOD_DROP);
-        allDrops.push({ type: RAW_MEAT_ID, count: FOX_FOOD_DROP });
+        gain(RAW_MEAT_ID, FOX_FOOD_DROP);
+        // Leather alongside the meat — the backpack's other ingredient,
+        // string being the spider's (see BACKPACK_ID's recipe).
+        gain(LEATHER_ID, FOX_LEATHER_DROP);
       }
     }
 
@@ -1193,8 +1216,7 @@ export class Game {
       if (beetle.hp === 0) {
         this.beetles.delete(beetle.id);
         // Same raw-meat drop as a fox kill — has to be cooked before it's edible.
-        inv.set(RAW_MEAT_ID, (inv.get(RAW_MEAT_ID) ?? 0) + BEETLE_FOOD_DROP);
-        allDrops.push({ type: RAW_MEAT_ID, count: BEETLE_FOOD_DROP });
+        gain(RAW_MEAT_ID, BEETLE_FOOD_DROP);
       }
     }
 
@@ -1223,11 +1245,11 @@ export class Game {
       for (const drop of drops) {
         // Food items go to the inventory like anything else now — eating is
         // a deliberate action (see handleEat), not automatic on pickup.
-        inv.set(drop.type, (inv.get(drop.type) ?? 0) + drop.count);
-        allDrops.push(drop);
+        gain(drop.type, drop.count);
       }
     }
 
+    if (hotbarFull) this.sendInventory(player, 'Hotbar full — craft a backpack for more room');
     if (allDrops.length === 0) return; // No resource drops this swing, no payload to report
 
     const socket = this.io.sockets.sockets.get(player.id);
@@ -1338,8 +1360,8 @@ export class Game {
 
     player.crafting = null;
     const inv = this.inventories.get(player.id)!;
-    inv.set(craft.recipe.id, (inv.get(craft.recipe.id) ?? 0) + 1);
-    this.sendInventory(player, `+1 ${craft.recipe.name}`);
+    const gained = this.gainItem(player.id, inv, craft.recipe.id, 1);
+    this.sendInventory(player, gained > 0 ? `+1 ${craft.recipe.name}` : 'Hotbar full');
   }
 
   /**
@@ -1365,9 +1387,61 @@ export class Game {
 
     player.fishing = null;
     const caught = pickRandomFish();
-    inv.set(caught.id, (inv.get(caught.id) ?? 0) + 1);
-    const rarityTag = caught.rarity === 'common' ? '' : ` (${caught.rarity})`;
-    this.sendInventory(player, `Caught a ${caught.name}${rarityTag}!`);
+    const gained = this.gainItem(player.id, inv, caught.id, 1);
+    if (gained > 0) {
+      const rarityTag = caught.rarity === 'common' ? '' : ` (${caught.rarity})`;
+      this.sendInventory(player, `Caught a ${caught.name}${rarityTag}!`);
+    } else {
+      this.sendInventory(player, 'Hotbar full — the fish got away');
+    }
+  }
+
+  /** True if `id` belongs to a server-simulated bot rather than a real client. */
+  private isBot(id: string): boolean {
+    return this.botIds.has(id);
+  }
+
+  /**
+   * How many distinct item types `inv` may hold at once — the hotbar's size
+   * (see HOTBAR_BASE_SLOTS's own comment). Raised once a backpack has been
+   * crafted; owning one is enough; it doesn't need to be worn.
+   */
+  private hotbarCapacity(inv: Map<string, number>): number {
+    return (inv.get(BACKPACK_ID) ?? 0) >= 1 ? HOTBAR_BACKPACK_SLOTS : HOTBAR_BASE_SLOTS;
+  }
+
+  /**
+   * True if `inv` has room for one more distinct item type, after `cost` (if
+   * given) is deducted from it — the state a craft's result will actually
+   * land in, not the current one, since handleCraft has to know this before
+   * it commits the deduction (ingredients are spent up front — see its own
+   * comment). Bots are exempt, same as gainItem below.
+   */
+  private hasHotbarRoom(playerId: string, inv: Map<string, number>, cost: Record<string, number> = {}): boolean {
+    if (this.isBot(playerId)) return true;
+    const projectedTypes = new Set(inv.keys());
+    for (const [item, need] of Object.entries(cost)) {
+      if ((inv.get(item) ?? 0) - need <= 0) projectedTypes.delete(item);
+    }
+    return projectedTypes.size < this.hotbarCapacity(inv);
+  }
+
+  /**
+   * Adds `amount` of `type` to `inv`, enforcing the hotbar's slot cap: a
+   * player already holding a full hotbar of distinct item types can still
+   * add to a type they already carry, but can't pick up an all-new type
+   * until something frees a slot (or they craft a backpack — see
+   * hotbarCapacity). Bots are exempt — they aren't shown a hotbar, and
+   * capping them would stall gathering AI that routinely tracks more
+   * distinct materials/tools than a human ever needs to juggle at once (see
+   * HOTBAR_BASE_SLOTS's own comment). Returns how much actually fit: either
+   * `amount` or, when a brand-new type is blocked by the cap, 0.
+   */
+  private gainItem(playerId: string, inv: Map<string, number>, type: string, amount: number): number {
+    const has = inv.get(type) ?? 0;
+    if (has === 0 && !this.isBot(playerId) && inv.size >= this.hotbarCapacity(inv)) return 0;
+    inv.set(type, has + amount);
+    return amount;
   }
 
   /**
@@ -1996,6 +2070,7 @@ export class Game {
       if (this.bots.length === 0) this.previewBot = bot; // the first bot ever, always Tomas
 
       this.bots.push(bot);
+      this.botIds.add(bot.id);
       this.players.set(bot.id, bot.player);
       this.inventories.set(bot.id, new Map());
       console.log(`[Game] + ${bot.player.name} (bot ${bot.id})`);

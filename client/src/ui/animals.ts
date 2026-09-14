@@ -23,7 +23,7 @@ export const ANIMALS: AnimalEntry[] = [
       'Foxes belong to the dark forest — that’s where they spawn, and they know every trunk in it. Given a clear run they’ll sprint straight at you, but the moment something solid is in the way they path around it, so weaving between trees rarely shakes one off the way it does simpler threats.',
       'Their nose goes cold fast outside their own woods, though: chase or be chased too far past the treeline and a fox breaks off outright rather than following you onto the open plains. Stay lost long enough with nobody to hunt and it gives up and disappears entirely.',
       'Once locked onto a scent it stays locked on until you put real distance between you — a closer target can still steal its attention, but a fox won’t drop a chase just because you’re momentarily out of sight. They hunt day and night, just far more of them prowl after dark.',
-      'A dead fox drops meat, not string — worth cooking over a campfire before it’s eaten.',
+      'A dead fox drops meat, not string — worth cooking over a campfire before it’s eaten — plus a hide of leather, already tanned and ready to sew into a backpack alongside a spider’s string.',
     ],
   },
   {
@@ -34,7 +34,7 @@ export const ANIMALS: AnimalEntry[] = [
       'Spiders are creatures of the dark, full stop — the instant day breaks, every spider on the map vanishes outright. There’s no such thing as a daytime spider; wait out the night in one spot and the threat clears itself.',
       'They spawn map-wide once the sun goes down, but the dark forest breeds them fastest of all — a second, quicker timer rolls just for spots inside the treeline, so the woods get thick with them well before the open plains do.',
       'Eight legs, a wide low body, and a nasty bite. Slower than a player on foot, so a straight sprint always outruns one in the open — but tougher and harder-hitting than a fox if it catches you standing still.',
-      'Killing one drops string — useful for a fishing rod, among other things.',
+      'Killing one drops string — useful for a fishing rod, and for a backpack alongside a fox’s leather.',
     ],
   },
   {

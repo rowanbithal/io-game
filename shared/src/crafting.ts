@@ -66,6 +66,19 @@ export const TORCH_ID = 'torch';
 export const RAW_MEAT_ID = 'meat';
 export const COOKED_MEAT_ID = 'cooked_meat';
 
+// Leather: a fox kill's other drop alongside raw meat (see FOX_LEATHER_DROP
+// in shared/constants.ts and Game.ts's processHarvest) — already tanned,
+// unlike the meat, so it needs no campfire before it's usable in the
+// backpack recipe below.
+export const LEATHER_ID = 'leather';
+
+// The backpack: the hotbar's only capacity upgrade (see HOTBAR_BACKPACK_SLOTS
+// in shared/constants.ts and Game.ts's hotbarCapacity). Sewn from a fox's
+// leather and a spider's string — one predator for the hide, the other for
+// the thread. Simply owning one raises the cap; unlike armor/the torch it
+// doesn't need to be worn.
+export const BACKPACK_ID = 'backpack';
+
 /** Wood yield multiplier while an axe is the held item. */
 export const AXE_WOOD_MULTIPLIER = 1.5;
 export const STONE_AXE_WOOD_MULTIPLIER = 2;
@@ -257,6 +270,13 @@ export const RECIPES: Recipe[] = [
     cost: { [RAW_MEAT_ID]: 1 },
     craftTime: 3,
     requiresCampfire: true,
+  },
+  {
+    id: BACKPACK_ID,
+    name: 'Backpack',
+    icon: '🎒',
+    cost: { [LEATHER_ID]: 6, string: 4 },
+    craftTime: 10,
   },
 ];
 
