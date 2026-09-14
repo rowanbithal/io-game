@@ -5,6 +5,7 @@ import {
   MAX_HUNGER,
   MAX_THIRST,
   RECIPES,
+  RECIPES_BY_ID,
   Recipe,
   canAfford,
   CRAFTING_BENCH_ID,
@@ -91,9 +92,6 @@ import {
 } from '../Renderer';
 import {
   WOOD,
-  woodPanel,
-  woodDivider,
-  woodSlot,
   woodTile,
   drawCarvedBook,
   drawCarvedPaw,
@@ -103,6 +101,7 @@ import {
   drawLeatherTab,
 } from './wood';
 import { ANIMALS } from './animals';
+import { RECIPE_BOOK_CATEGORIES, itemDisplayName, noteFor } from './recipeBook';
 
 /** Armor items — worn via a toggle (see EquipRequest) rather than held like a tool. */
 const ARMOR_ITEM_IDS = new Set([WOODEN_ARMOR_ID, STONE_ARMOR_ID, GOLD_ARMOR_ID]);
@@ -310,11 +309,6 @@ const ICON_STATION = 22; // the bench/campfire requirement mark
 const LEADERBOARD_W = 180;
 const BOOK_TILE = 42;
 
-// Recipe book panel.
-const BOOK_PAD = 18;
-const BOOK_GAP = 10;
-const BOOK_TITLE_H = 40;
-
 function rectHas(r: Rect, x: number, y: number): boolean {
   return x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h;
 }
@@ -358,8 +352,10 @@ export class HUD {
   private lakes: LakeState[] = [];
   private terrain: HTMLCanvasElement | null = null;
 
-  // Whether the full recipe catalogue is open over the game.
+  // Whether the full recipe catalogue is open over the game, and which of
+  // RECIPE_BOOK_CATEGORIES its current spread shows.
   private bookOpen = false;
+  private recipeCategoryIndex = 0;
   // Whether the animal compendium is open over the game, and which of
   // ANIMALS its current page shows.
   private bestiaryOpen = false;
@@ -929,162 +925,241 @@ export class HUD {
   }
 
   /**
-   * The book's outer panel plus the derived grid metrics, all in one place so
-   * the renderer and the hit-tests agree. Two columns normally, three on a
-   * wide window; entry height shrinks to fit a short one.
+   * The book's outer panel plus its two-page spread and nav tabs, all in one
+   * place so the renderer and the click hit-tests agree (same reasoning as
+   * bestiaryLayout, whose leather chrome this mirrors). One category from
+   * RECIPE_BOOK_CATEGORIES is shown per spread: its items are listed top-to-
+   * bottom on the left page, then continuing onto the right — a recipe's
+   * cost strip if it has one, a field note (see noteFor) if it doesn't.
    */
-  private bookLayout(W: number, H: number): {
+  private recipeBookLayout(W: number, H: number): {
     panel: Rect;
     close: Rect;
-    entries: (Rect & { recipe: Recipe })[];
+    prev: Rect;
+    next: Rect;
+    left: Rect;
+    right: Rect;
+    entries: (Rect & { itemId: string; recipe: Recipe | null })[];
   } {
-    const cols = W >= 1180 ? 3 : 2;
-    const entryW = Math.min(320, Math.floor((W - BOOK_PAD * 2 - 40 - (cols - 1) * BOOK_GAP) / cols));
-    const gridRows = Math.ceil(RECIPES.length / cols);
-    const panelW = BOOK_PAD * 2 + cols * entryW + (cols - 1) * BOOK_GAP;
-
-    const maxGridH = H - 40 - BOOK_TITLE_H - BOOK_PAD * 2;
-    const entryH = Math.max(
-      52,
-      Math.min(68, Math.floor((maxGridH - (gridRows - 1) * BOOK_GAP) / gridRows)),
-    );
-    const panelH = BOOK_TITLE_H + BOOK_PAD * 2 + gridRows * entryH + (gridRows - 1) * BOOK_GAP;
-
+    const panelW = Math.min(860, W - 80);
+    const panelH = Math.min(600, H - 80);
     const px = Math.round((W - panelW) / 2);
     const py = Math.round((H - panelH) / 2);
 
-    const gridX = px + BOOK_PAD;
-    const gridY = py + BOOK_TITLE_H + BOOK_PAD;
+    const pad = 22;
+    const gutter = 14;
+    const titleH = 26;
+    const categoryH = 34;
+    const navH = 30;
+    const pageW = (panelW - pad * 2 - gutter) / 2;
+    const pageH = panelH - pad * 2 - titleH - categoryH - navH;
+
+    const left: Rect = { x: px + pad, y: py + pad + titleH + categoryH, w: pageW, h: pageH };
+    const right: Rect = { x: left.x + pageW + gutter, y: left.y, w: pageW, h: pageH };
+    const navY = py + panelH - pad - 22;
+
+    const category = RECIPE_BOOK_CATEGORIES[this.recipeCategoryIndex];
+    const leftCount = Math.ceil(category.items.length / 2);
+    const rowGap = 6;
+    const entryH = Math.max(
+      46,
+      Math.min(78, Math.floor((pageH - (leftCount - 1) * rowGap) / Math.max(1, leftCount))),
+    );
+
+    const entries = category.items.map((itemId, i) => {
+      const inLeft = i < leftCount;
+      const page = inLeft ? left : right;
+      const row = inLeft ? i : i - leftCount;
+      return {
+        itemId,
+        recipe: RECIPES_BY_ID[itemId] ?? null,
+        x: page.x,
+        y: page.y + row * (entryH + rowGap),
+        w: page.w,
+        h: entryH,
+      };
+    });
 
     return {
       panel: { x: px, y: py, w: panelW, h: panelH },
-      close: { x: px + panelW - BOOK_PAD - 22, y: py + Math.round((BOOK_TITLE_H - 22) / 2), w: 22, h: 22 },
-      entries: RECIPES.map((recipe, i) => ({
-        recipe,
-        x: gridX + (i % cols) * (entryW + BOOK_GAP),
-        y: gridY + Math.floor(i / cols) * (entryH + BOOK_GAP),
-        w: entryW,
-        h: entryH,
-      })),
+      close: { x: px + panelW - pad - 22, y: py + 10, w: 22, h: 22 },
+      prev: { x: px + panelW / 2 - 66, y: navY, w: 34, h: 22 },
+      next: { x: px + panelW / 2 + 32, y: navY, w: 34, h: 22 },
+      left,
+      right,
+      entries,
     };
   }
 
   private drawRecipeBook(W: number, H: number): void {
     if (!this.bookOpen) return;
     const { ctx } = this;
-    const { panel, close, entries } = this.bookLayout(W, H);
+    const { panel, close, prev, next, left, right, entries } = this.recipeBookLayout(W, H);
+    const category = RECIPE_BOOK_CATEGORIES[this.recipeCategoryIndex];
 
-    // Dim the world behind the book so the boards read as the front layer.
-    ctx.fillStyle = 'rgba(0,0,0,0.5)';
+    ctx.fillStyle = 'rgba(0,0,0,0.55)';
     ctx.fillRect(0, 0, W, H);
 
-    woodPanel(ctx, panel.x, panel.y, panel.w, panel.h, { plankH: 16, border: 4, seed: 5, nails: true });
+    drawLeatherCover(ctx, panel.x, panel.y, panel.w, panel.h, { seed: 71 });
 
-    // Title on a dark recessed plaque — parchment lettering on bare boards is
-    // brown-on-brown and reads as barely there.
-    const plaqueH = BOOK_TITLE_H - 16;
-    const plaqueY = panel.y + 8;
-    woodSlot(ctx, panel.x + BOOK_PAD, plaqueY, panel.w - BOOK_PAD * 2 - 30, plaqueH);
-
-    const titleY = plaqueY + plaqueH / 2 + 1;
-    ctx.font = 'bold 14px "Courier New"';
-    ctx.textAlign = 'left';
-    ctx.textBaseline = 'middle';
-    ctx.fillStyle = WOOD.ink;
-    ctx.fillText('RECIPE BOOK', panel.x + BOOK_PAD + 10, titleY);
-
-    woodDivider(ctx, panel.x + BOOK_PAD, panel.y + BOOK_TITLE_H - 4, panel.w - BOOK_PAD * 2);
-
-    const hoverClose = this.pointerInside(close.x, close.y, close.w, close.h);
-    woodTile(ctx, close.x, close.y, close.w, close.h, { radius: 4, plankH: 8, seed: 31, hover: hoverClose });
-    ctx.font = 'bold 11px "Courier New"';
+    // Outer title, plus the current category as a plaque underneath it — both
+    // sit on the bare cover, so they use the leather's light stitch-thread
+    // tones rather than the page tones the entries below read in.
     ctx.textAlign = 'center';
-    ctx.fillStyle = hoverClose ? WOOD.ember : WOOD.ink;
-    ctx.fillText('✕', close.x + close.w / 2, close.y + close.h / 2 + 1);
+    ctx.textBaseline = 'middle';
+    ctx.font = 'bold 13px "Courier New"';
+    ctx.fillStyle = LEATHER.stitchDark;
+    ctx.fillText('RECIPE BOOK', panel.x + panel.w / 2, panel.y + 16);
 
-    for (const { recipe, x, y, w, h } of entries) {
-      const affordable = canAfford(recipe, this.inventory);
-      const locked = this.isLocationLocked(recipe);
-      const craftable = affordable && !locked && this.craftingId === null;
+    ctx.font = 'bold 17px "Courier New"';
+    ctx.fillStyle = LEATHER.stitch;
+    ctx.fillText(category.name.toUpperCase(), panel.x + panel.w / 2, panel.y + 38);
+
+    ctx.font = 'italic 11px "Courier New"';
+    ctx.fillStyle = LEATHER.stitchDark;
+    ctx.fillText(category.tagline, panel.x + panel.w / 2, panel.y + 56);
+
+    drawPageSheet(ctx, left.x, left.y, left.w, left.h, 3 + this.recipeCategoryIndex);
+    drawPageSheet(ctx, right.x, right.y, right.w, right.h, 4 + this.recipeCategoryIndex);
+
+    // Shadow pooling into both pages at the fold between them.
+    ctx.globalAlpha = 0.3;
+    ctx.fillStyle = LEATHER.spine;
+    ctx.fillRect(left.x + left.w - 5, left.y, 5, left.h);
+    ctx.fillRect(right.x, right.y, 5, right.h);
+    ctx.globalAlpha = 1;
+
+    for (const { itemId, recipe, x, y, w, h } of entries) {
+      const affordable = !!recipe && canAfford(recipe, this.inventory);
+      const locked = !!recipe && this.isLocationLocked(recipe);
+      const craftable = !!recipe && affordable && !locked && this.craftingId === null;
+      const isCrafting = !!recipe && this.craftingId === recipe.id;
       const hovered = this.pointerInside(x, y, w, h);
 
-      // Each entry is a dark recess cut into the boards. Item sprites are
-      // browns and greys, so on bare timber they all but disappear — against
-      // near-black they read cleanly, and so does the lettering.
-      woodSlot(ctx, x, y, w, h);
+      // A faint card of shade under each entry so it reads as separate from
+      // the page underneath it, brighter under the pointer.
+      ctx.globalAlpha = hovered && recipe ? 0.22 : 0.1;
+      ctx.fillStyle = LEATHER.pageShade;
+      ctx.fillRect(x + 2, y + 1, w - 4, h - 3);
+      ctx.globalAlpha = 1;
 
-      // Craftable entries get a warm face and an ember edge, so the book
-      // shows at a glance which of these you could start right now.
-      if (craftable) {
-        ctx.globalAlpha = hovered ? 0.2 : 0.1;
-        ctx.fillStyle = WOOD.ember;
-        ctx.fillRect(x + 1, y + 1, w - 2, h - 2);
-        ctx.globalAlpha = hovered ? 0.9 : 0.5;
-        ctx.fillStyle = WOOD.ember;
-        ctx.fillRect(x + 1, y + 1, w - 2, 1);
-        ctx.fillRect(x + 1, y + h - 2, w - 2, 1);
-        ctx.fillRect(x + 1, y + 1, 1, h - 2);
-        ctx.fillRect(x + w - 2, y + 1, 1, h - 2);
-        ctx.globalAlpha = 1;
+      // Progress fills the row left-to-right while this recipe is crafting.
+      if (isCrafting) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(x + 2, y + 1, w - 4, h - 3);
+        ctx.clip();
+        ctx.fillStyle = 'rgba(241,196,15,0.35)';
+        ctx.fillRect(x, y, w * clamp01(this.craftingProgress), h);
+        ctx.restore();
       }
 
-      // Result icon at exactly the hotbar's size, so an item looks the same
-      // here as it does in the slot you'll find it in afterwards.
-      this.drawItemIcon(recipe.id, x + 10 + ICON_RESULT / 2, y + h / 2, ICON_RESULT, recipe.icon);
+      // A stitch-colored edge on entries you could craft right now, so the
+      // book shows at a glance which of these are lit — same role the wooden
+      // book's ember edge used to play.
+      if (craftable || isCrafting) {
+        ctx.strokeStyle = isCrafting ? '#f1c40f' : LEATHER.stitch;
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(x + 2.5, y + 1.5, w - 5, h - 4);
+      }
 
-      const textX = x + ICON_RESULT + 22;
+      const iconSize = Math.min(ICON_RESULT, h - 14);
+      const dim = !!recipe && !affordable && !isCrafting;
+      ctx.globalAlpha = dim ? 0.5 : 1;
+      this.drawItemIcon(itemId, x + 12 + iconSize / 2, y + h / 2, iconSize, recipe?.icon);
+      ctx.globalAlpha = 1;
+
+      const textX = x + 12 + iconSize + 14;
+      const name = itemDisplayName(itemId);
       ctx.textAlign = 'left';
       ctx.textBaseline = 'middle';
       ctx.font = 'bold 12px "Courier New"';
-      ctx.fillStyle = affordable ? WOOD.ink : WOOD.inkDim;
-      ctx.fillText(recipe.name, textX, y + 17);
+      ctx.fillStyle = recipe && !affordable ? LEATHER.inkDim : LEATHER.ink;
+      ctx.fillText(name, textX, y + 16);
 
-      // Craft time trails the name, leaving the whole bottom line for the
-      // ingredient icons.
-      const nameW = ctx.measureText(recipe.name).width;
-      ctx.font = '10px "Courier New"';
-      ctx.fillStyle = WOOD.inkDim;
-      ctx.fillText(`${recipe.craftTime}s`, textX + nameW + 8, y + 18);
+      if (recipe) {
+        // Craft time trails the name, leaving the whole bottom line for the
+        // ingredient icons.
+        const nameW = ctx.measureText(name).width;
+        ctx.font = '10px "Courier New"';
+        ctx.fillStyle = LEATHER.inkDim;
+        ctx.fillText(`${recipe.craftTime}s`, textX + nameW + 8, y + 17);
 
-      this.drawCostStrip(recipe, textX, y + h - 20);
+        this.drawCostStrip(recipe, textX, y + h - 18);
 
-      // Station requirement: the actual bench/campfire sprite plus a label,
-      // rather than an emoji that renders in whatever the OS feels like.
-      const station = recipe.requiresBench
-        ? { item: CRAFTING_BENCH_ID, label: 'BENCH' }
-        : recipe.requiresCampfire
-          ? { item: 'campfire', label: 'FIRE' }
-          : null;
-      if (station) {
-        ctx.textAlign = 'right';
-        ctx.font = 'bold 12px "Courier New"';
-        ctx.fillStyle = locked ? WOOD.short : WOOD.have;
-        ctx.fillText(station.label, x + w - 10, y + 17);
-        const labelW = ctx.measureText(station.label).width;
-        this.drawItemIcon(
-          station.item,
-          x + w - 10 - labelW - 6 - ICON_STATION / 2,
-          y + 17,
-          ICON_STATION,
-        );
+        // Station requirement: the actual bench/campfire sprite plus a
+        // label, rather than an emoji that renders in whatever the OS feels
+        // like.
+        const station = recipe.requiresBench
+          ? { item: CRAFTING_BENCH_ID, label: 'BENCH' }
+          : recipe.requiresCampfire
+            ? { item: 'campfire', label: 'FIRE' }
+            : null;
+        if (station) {
+          ctx.textAlign = 'right';
+          ctx.font = 'bold 11px "Courier New"';
+          ctx.fillStyle = locked ? WOOD.short : WOOD.have;
+          ctx.fillText(station.label, x + w - 10, y + 16);
+          const labelW = ctx.measureText(station.label).width;
+          this.drawItemIcon(station.item, x + w - 10 - labelW - 6 - ICON_STATION / 2, y + 16, ICON_STATION);
+        }
+      } else {
+        // No recipe — a field note on how it's actually obtained, instead of
+        // a cost strip.
+        ctx.font = 'italic 10px "Courier New"';
+        ctx.fillStyle = LEATHER.inkDim;
+        const noteW = w - (textX - x) - 10;
+        let ny = y + h / 2 + 4;
+        for (const line of wrapText(ctx, noteFor(itemId), noteW).slice(0, 2)) {
+          ctx.fillText(line, textX, ny);
+          ny += 12;
+        }
       }
     }
 
-    ctx.font = '9px "Courier New"';
+    // Prev/next/close tabs, plus a page counter sitting in the gap between
+    // prev and next — same layout as the bestiary's.
+    const hoverClose = this.pointerInside(close.x, close.y, close.w, close.h);
+    drawLeatherTab(ctx, close.x, close.y, close.w, close.h, { hover: hoverClose });
+    ctx.font = 'bold 11px "Courier New"';
     ctx.textAlign = 'center';
-    ctx.fillStyle = WOOD.inkDim;
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = hoverClose ? LEATHER.page : LEATHER.stitch;
+    ctx.fillText('✕', close.x + close.w / 2, close.y + close.h / 2 + 1);
+
+    const hoverPrev = this.pointerInside(prev.x, prev.y, prev.w, prev.h);
+    drawLeatherTab(ctx, prev.x, prev.y, prev.w, prev.h, { hover: hoverPrev });
+    ctx.fillStyle = hoverPrev ? LEATHER.page : LEATHER.stitch;
+    ctx.fillText('‹', prev.x + prev.w / 2, prev.y + prev.h / 2 + 1);
+
+    const hoverNext = this.pointerInside(next.x, next.y, next.w, next.h);
+    drawLeatherTab(ctx, next.x, next.y, next.w, next.h, { hover: hoverNext });
+    ctx.fillStyle = hoverNext ? LEATHER.page : LEATHER.stitch;
+    ctx.fillText('›', next.x + next.w / 2, next.y + next.h / 2 + 1);
+
+    ctx.font = '10px "Courier New"';
+    ctx.fillStyle = LEATHER.stitch;
     ctx.fillText(
-      'click a lit recipe to craft it  ·  R or Esc to close',
+      `${this.recipeCategoryIndex + 1} / ${RECIPE_BOOK_CATEGORIES.length}`,
       panel.x + panel.w / 2,
-      panel.y + panel.h - BOOK_PAD / 2 - 2,
+      prev.y + prev.h / 2 + 1,
+    );
+
+    ctx.font = '9px "Courier New"';
+    ctx.fillStyle = 'rgba(255,255,255,0.35)';
+    ctx.fillText(
+      'click a lit recipe to craft it  ·  tabs flip category  ·  R or Esc to close',
+      panel.x + panel.w / 2,
+      panel.y + panel.h - 6,
     );
   }
 
   /**
    * Click handling for the book chrome: the corner button toggles it, the ✕
-   * and any click off the panel close it. Returns true when the click was
-   * spent on chrome; clicks *inside* the open book return false so they can
-   * still be tested against recipe entries (see hitTestCraft).
+   * and any click off the panel close it, and the tabs flip between
+   * categories. Returns true when the click was spent on chrome; clicks
+   * *inside* the open book return false so they can still be tested against
+   * recipe entries (see hitTestCraft).
    */
   handleRecipeBookClick(x: number, y: number): boolean {
     const button = this.bookButtonRect(this.canvas.width);
@@ -1094,9 +1169,18 @@ export class HUD {
     }
     if (!this.bookOpen) return false;
 
-    const { panel, close } = this.bookLayout(this.canvas.width, this.canvas.height);
+    const { panel, close, prev, next } = this.recipeBookLayout(this.canvas.width, this.canvas.height);
     if (rectHas(close, x, y) || !rectHas(panel, x, y)) {
       this.bookOpen = false;
+      return true;
+    }
+    if (rectHas(prev, x, y)) {
+      this.recipeCategoryIndex =
+        (this.recipeCategoryIndex - 1 + RECIPE_BOOK_CATEGORIES.length) % RECIPE_BOOK_CATEGORIES.length;
+      return true;
+    }
+    if (rectHas(next, x, y)) {
+      this.recipeCategoryIndex = (this.recipeCategoryIndex + 1) % RECIPE_BOOK_CATEGORIES.length;
       return true;
     }
     return false;
@@ -1105,17 +1189,20 @@ export class HUD {
   /**
    * Called with a canvas click. Returns the recipe id to craft if the click
    * landed on a startable recipe — either a corner row or an entry in the
-   * open book — or null to let the click fall through to the game.
+   * open book — or null to let the click fall through to the game. Entries
+   * with no recipe (see recipeBookLayout) are never craftable, so a click on
+   * one just falls out the bottom of the loop.
    */
   hitTestCraft(x: number, y: number): string | null {
     if (this.craftingId !== null) return null; // One craft at a time
 
-    const targets: (Rect & { recipe: Recipe })[] = this.bookOpen
-      ? this.bookLayout(this.canvas.width, this.canvas.height).entries
+    const targets: (Rect & { recipe: Recipe | null })[] = this.bookOpen
+      ? this.recipeBookLayout(this.canvas.width, this.canvas.height).entries
       : this.craftRows(this.canvas.height);
 
     for (const target of targets) {
       if (!rectHas(target, x, y)) continue;
+      if (!target.recipe) return null;
       if (this.isLocationLocked(target.recipe)) return null;
       return canAfford(target.recipe, this.inventory) ? target.recipe.id : null;
     }
