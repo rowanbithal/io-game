@@ -258,28 +258,44 @@ export const SPIDER_STRING_DROP = 2; // String dropped when a spider is killed
 // updateFox) — inside the dense forest it closes on a player who has to run
 // around every trunk, while out on the open plains a player is genuinely
 // faster and can break away.
-export const FOX_RADIUS = 20; // Between a player (16) and a spider (26)
-export const FOX_SPEED = 105; // Slower than the player (150), so it's outrunnable in the open
+export const FOX_RADIUS = 20; // Between a player (16) and a spider (26) — used for combat (getting hit, bot targeting) and rendering
+// A separate, smaller radius for the fox's own physical footprint — what it
+// collides with (see Game.ts's pushOutOfResources/pushOutOfStructures calls)
+// and what its nav grid corridors are sized around (see World.ts's
+// buildNavGrid/addNavObstacle). Kept below FOX_RADIUS on purpose: a fox
+// should be able to slip through gaps a bit tighter than the circle a
+// player's sword actually has to land inside, rather than the two being tied
+// to the same number.
+//
+// Floored at PLAYER_RADIUS rather than shrunk further: that nav grid is
+// shared with bot player steering (see World.ts's navigation-grid comment),
+// so anything narrower than a player's own collision radius would let the
+// grid mark a gap "open" that a bot's actual body can't fit through, and
+// send it into a wall it just has to be shoved back out of.
+export const FOX_MOVE_RADIUS = 16;
+export const FOX_SPEED = 98; // Slower than the player (150), so it's outrunnable in the open
 export const FOX_MAX_HP = 420; // 14 unarmed swings (HARVEST_DAMAGE each) — tougher than a spider's 12
 export const FOX_DAMAGE = 11; // Still less per bite than a spider (14), but it bites more often
 export const FOX_ATTACK_RANGE = 34;
 export const FOX_ATTACK_COOLDOWN = 0.8; // Seconds between bites
-export const FOX_AGGRO_RANGE = 480; // How close a player must get before a fox notices them
-// Once locked on, a fox keeps chasing until its quarry gets this far away,
-// then loses interest and gives up. Deliberately wider than the acquisition
-// range above: with a single threshold a player sitting right at the edge of
-// a fox's senses would make it flicker between chasing and idling every few
-// ticks. The gap between the two is the hysteresis that stops that.
+export const FOX_AGGRO_RANGE = 230; // How close a player must get before a fox notices them
+// Once locked on, a fox's leash stretches to this — FOX_AGGRO_RANGE grown by
+// FOX_AGGRO_BOOST_MULTIPLIER — and it keeps chasing until its quarry gets
+// this far away, then loses interest, gives up, and reverts to the normal
+// (unboosted) FOX_AGGRO_RANGE for re-acquisition. Deliberately wider than
+// the acquisition range above: with a single threshold a player sitting
+// right at the edge of a fox's senses would make it flicker between chasing
+// and idling every few ticks. The gap between the two is the hysteresis
+// that stops that, on top of just reading as a fox digging in once it's
+// actually caught your scent.
 //
-// Also chosen to land close to the edge of what a player can actually still
-// see: the world is rendered at a fixed 1.6x zoom (see client Camera.ts), so
-// at a typical desktop window a player's view reaches roughly 450-700 units
-// out from center depending on direction and screen size. The server has no
-// way to know any given client's actual window size, so this is a deliberate
-// approximation biased toward the smaller end of that range — a fox
-// occasionally giving up a little before it's fully off a wide monitor reads
-// far better than one still visibly on-screen and still coming.
-export const FOX_LOSE_INTEREST_RANGE = 500;
+// Note this (not FOX_AGGRO_RANGE) is the real "how far will it chase you"
+// distance — a fox that drops its quarry immediately re-acquires them if
+// they're still within FOX_AGGRO_RANGE, so keeping this comfortably below
+// the old screen-edge distance (~450-700 units, see client Camera.ts's 1.6x
+// zoom) is what actually lets a player still on-screen shake off a chase.
+export const FOX_AGGRO_BOOST_MULTIPLIER = 1.2; // Locked-on leash = aggro range + 20%
+export const FOX_LOSE_INTEREST_RANGE = Math.round(FOX_AGGRO_RANGE * FOX_AGGRO_BOOST_MULTIPLIER);
 // Raised alongside FOX_SPAWN_INTERVAL_NIGHT below, for the same reason as
 // SPIDER_MAX_COUNT — a faster night timer only shows up as more foxes if
 // there's cap room left for them to fill.
@@ -317,6 +333,17 @@ export const FOX_IDLE_DESPAWN_TIME = 30;
 // a fresh search every tick.
 export const FOX_REPATH_INTERVAL = 0.5; // Seconds a computed path is reused before refreshing
 export const FOX_WAYPOINT_REACHED_DIST = 18; // How close counts as having arrived at a waypoint
+
+// ── Idle wander (foxes & spiders) ───────────────────────────────────────────
+// When neither has anyone to chase, it ambles around instead of standing
+// frozen in place — see Game.ts's wanderFox/wanderSpider. Shared knobs since
+// the two behave identically here; only their top speed (and so how briskly
+// they amble) differs, via WANDER_SPEED_MULTIPLIER against each mob's own
+// *_SPEED.
+export const WANDER_RADIUS = 220; // How far from its current spot a new wander destination can land
+export const WANDER_INTERVAL = 5; // Seconds before picking a fresh destination, even if the last one hasn't been reached
+export const WANDER_ARRIVED_DIST = 18; // How close counts as having reached a wander destination
+export const WANDER_SPEED_MULTIPLIER = 0.35; // Wander speed as a fraction of the mob's full chase speed — an unhurried amble, not a chase
 
 // ── Bots ─────────────────────────────────────────────────────────────────────
 // Server-simulated players (see server/src/Bot.ts). They're real ServerPlayer

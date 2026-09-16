@@ -38,6 +38,12 @@ export class ServerFox {
    */
   idleTimer = 0;
 
+  /** Where an idle (untargeted) fox is currently ambling toward — see Game.ts's wanderFox. Null until it first goes idle. */
+  wanderTarget: { x: number; y: number } | null = null;
+
+  /** Seconds until wanderTarget is replaced, even if not yet reached — keeps an idle fox from beelining forever. */
+  wanderTimer = 0;
+
   constructor(x: number, y: number) {
     this.id = `fx${nextId++}`;
     this.x = x;
@@ -45,6 +51,14 @@ export class ServerFox {
   }
 
   toState(): FoxState {
-    return { id: this.id, x: this.x, y: this.y, angle: this.angle, hp: this.hp, maxHp: this.maxHp };
+    return {
+      id: this.id,
+      x: this.x,
+      y: this.y,
+      angle: this.angle,
+      hp: this.hp,
+      maxHp: this.maxHp,
+      aggro: this.targetId !== null,
+    };
   }
 }

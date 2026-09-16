@@ -1,4 +1,4 @@
-import { MAP_SIZE, GRID_CELL, TREE_SPAN, ROCK_SPAN, WHEAT_SPAN, GOLD_SPAN, GOLD_TOP_BAND, DARK_FOREST_BAND, DIAMOND_SPAN, DIAMOND_FAR_X, DIAMOND_MAX_Y, OASIS_X, OASIS_Y, OASIS_RADIUS, OASIS_SHORE_WIDTH, OASIS_VERTICAL_STRETCH, PLAYER_RADIUS, FOX_RADIUS, SOLID_COLLISION_RADIUS, ResourceType, LakeState, darkForestBandAt, seaCoastAt, seaSandStartAt, isInDesert } from '@io-game/shared';
+import { MAP_SIZE, GRID_CELL, TREE_SPAN, ROCK_SPAN, WHEAT_SPAN, GOLD_SPAN, GOLD_TOP_BAND, DARK_FOREST_BAND, DIAMOND_SPAN, DIAMOND_FAR_X, DIAMOND_MAX_Y, OASIS_X, OASIS_Y, OASIS_RADIUS, OASIS_SHORE_WIDTH, OASIS_VERTICAL_STRETCH, PLAYER_RADIUS, FOX_MOVE_RADIUS, SOLID_COLLISION_RADIUS, ResourceType, LakeState, darkForestBandAt, seaCoastAt, seaSandStartAt, isInDesert } from '@io-game/shared';
 import { ServerResource } from './entities/Resource';
 
 // ── Lakes ─────────────────────────────────────────────────────────────────────
@@ -59,7 +59,7 @@ function cellKey(cx: number, cy: number): number {
 // ── Navigation grid ───────────────────────────────────────────────────────────
 // A coarse walkability bitmap, used by the fox AI (and bot player steering) to
 // route around solid resources instead of walking into them (see findPath).
-// Every solid resource stamps out a disc of cells inflated by FOX_RADIUS, so a
+// Every solid resource stamps out a disc of cells inflated by FOX_MOVE_RADIUS, so a
 // path traced through free cells always leaves room to squeeze past without
 // clipping the obstacle.
 //
@@ -534,13 +534,13 @@ export class World {
 
   // ── Fox navigation ─────────────────────────────────────────────────────────
 
-  /** Stamps every solid resource's footprint into navBlockCount, inflated by FOX_RADIUS. */
+  /** Stamps every solid resource's footprint into navBlockCount, inflated by FOX_MOVE_RADIUS. */
   private buildNavGrid(): void {
     for (const r of this.resources.values()) {
       const solid = SOLID_COLLISION_RADIUS[r.type];
       if (solid === undefined) continue;
 
-      const clear = solid + FOX_RADIUS;
+      const clear = solid + FOX_MOVE_RADIUS;
       const minCx = Math.max(0, Math.floor((r.x - clear) / NAV_CELL));
       const maxCx = Math.min(NAV_COLS - 1, Math.floor((r.x + clear) / NAV_CELL));
       const minCy = Math.max(0, Math.floor((r.y - clear) / NAV_CELL));
@@ -604,15 +604,16 @@ export class World {
 
   /**
    * Stamps a circular obstacle's footprint into the nav grid, inflated by
-   * FOX_RADIUS — the same bookkeeping buildNavGrid uses for a solid resource
-   * baked in at generation, but for one placed at runtime instead (currently
-   * only wall structures, see Game.handlePlace). Keyed by the caller's own
-   * id so removeNavObstacle can find it again later; structure ids (`s...`)
-   * and resource ids (`r...`) never collide, so this shares navFootprint's
-   * map with setResourceNavBlocking's entries without needing a separate one.
+   * FOX_MOVE_RADIUS — the same bookkeeping buildNavGrid uses for a solid
+   * resource baked in at generation, but for one placed at runtime instead
+   * (currently only wall structures, see Game.handlePlace). Keyed by the
+   * caller's own id so removeNavObstacle can find it again later; structure
+   * ids (`s...`) and resource ids (`r...`) never collide, so this shares
+   * navFootprint's map with setResourceNavBlocking's entries without needing
+   * a separate one.
    */
   addNavObstacle(id: string, x: number, y: number, radius: number): void {
-    const clear = radius + FOX_RADIUS;
+    const clear = radius + FOX_MOVE_RADIUS;
     const minCx = Math.max(0, Math.floor((x - clear) / NAV_CELL));
     const maxCx = Math.min(NAV_COLS - 1, Math.floor((x + clear) / NAV_CELL));
     const minCy = Math.max(0, Math.floor((y - clear) / NAV_CELL));

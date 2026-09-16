@@ -1,4 +1,4 @@
-import { GameState, PlayerState, ResourceState, StructureState, SpiderState, FoxState, BeetleState, LakeState, FishingState, PLAYER_RADIUS, FOX_RADIUS, BEETLE_RADIUS, GRID_CELL, TREE_SPAN, ROCK_SPAN, WHEAT_SPAN, GOLD_SPAN, DIAMOND_SPAN, HARVEST_RANGE, HARVEST_ANGLE, HARVEST_COOLDOWN, STRUCTURE_SPAN, PLACE_RANGE, CAMPFIRE_LIGHT_RADIUS, CAMPFIRE_BURNOUT_FADE, SPIDER_RADIUS, CAST_RANGE, RECIPES_BY_ID, WOODEN_AXE_ID, WOODEN_PICKAXE_ID, WOODEN_SWORD_ID, STONE_AXE_ID, STONE_PICKAXE_ID, STONE_SWORD_ID, GOLD_AXE_ID, GOLD_PICKAXE_ID, GOLD_SWORD_ID, WOODEN_ARMOR_ID, STONE_ARMOR_ID, GOLD_ARMOR_ID, TORCH_LIGHT_RADIUS, CRAFTING_BENCH_ID, FISHING_ROD_ID, MAP_SIZE, DARK_FOREST_BAND, DARK_FOREST_TRANSITION, GOLD_TOP_BAND, FOREST_TREE_SCALE, FOREST_ROCK_SCALE, darkForestBandAt, DARK_FOREST_EDGE_AMPLITUDE, SEA_BAND, SEA_SAND_WIDTH, seaCoastAt, seaSandStartAt, SEA_EDGE_AMPLITUDE, DESERT_BAND, DESERT_TRANSITION, DESERT_EDGE_AMPLITUDE, desertBandAt, isInDesert, OASIS_VERTICAL_STRETCH, dayPhase, hashCell, clamp01, smoothstep, forestFactor, isForestTree, isForestRock, resourceCell, RESOURCE_SEED_SALT } from '@io-game/shared';
+import { GameState, PlayerState, ResourceState, StructureState, SpiderState, FoxState, BeetleState, LakeState, FishingState, PLAYER_RADIUS, FOX_RADIUS, BEETLE_RADIUS, GRID_CELL, TREE_SPAN, ROCK_SPAN, WHEAT_SPAN, GOLD_SPAN, DIAMOND_SPAN, HARVEST_RANGE, HARVEST_ANGLE, HARVEST_COOLDOWN, STRUCTURE_SPAN, PLACE_RANGE, CAMPFIRE_LIGHT_RADIUS, CAMPFIRE_BURNOUT_FADE, SPIDER_RADIUS, CAST_RANGE, FOX_AGGRO_RANGE, FOX_LOSE_INTEREST_RANGE, RECIPES_BY_ID, WOODEN_AXE_ID, WOODEN_PICKAXE_ID, WOODEN_SWORD_ID, STONE_AXE_ID, STONE_PICKAXE_ID, STONE_SWORD_ID, GOLD_AXE_ID, GOLD_PICKAXE_ID, GOLD_SWORD_ID, WOODEN_ARMOR_ID, STONE_ARMOR_ID, GOLD_ARMOR_ID, TORCH_LIGHT_RADIUS, CRAFTING_BENCH_ID, FISHING_ROD_ID, MAP_SIZE, DARK_FOREST_BAND, DARK_FOREST_TRANSITION, GOLD_TOP_BAND, FOREST_TREE_SCALE, FOREST_ROCK_SCALE, darkForestBandAt, DARK_FOREST_EDGE_AMPLITUDE, SEA_BAND, SEA_SAND_WIDTH, seaCoastAt, seaSandStartAt, SEA_EDGE_AMPLITUDE, DESERT_BAND, DESERT_TRANSITION, DESERT_EDGE_AMPLITUDE, desertBandAt, isInDesert, OASIS_VERTICAL_STRETCH, dayPhase, hashCell, clamp01, smoothstep, forestFactor, isForestTree, isForestRock, resourceCell, RESOURCE_SEED_SALT } from '@io-game/shared';
 import { Camera } from './Camera';
 
 import berryUrl from './assets/sprites/berry.png';
@@ -5395,6 +5395,19 @@ export class Renderer {
       ctx.fillStyle = '#c0392b';
       ctx.fillRect(bx, by, barW * Math.max(0, f.hp / f.maxHp), barH);
     }
+
+    // TEMP DEBUG: this fox's current aggro leash — FOX_AGGRO_RANGE while
+    // idle, jumping out to the wider FOX_LOSE_INTEREST_RANGE (20% bigger —
+    // see FOX_AGGRO_BOOST_MULTIPLIER) the instant it locks onto a player.
+    // Remove once eyeballed.
+    ctx.save();
+    ctx.strokeStyle = f.aggro ? 'rgba(255, 60, 60, 0.45)' : 'rgba(255, 210, 60, 0.45)';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([6, 6]);
+    ctx.beginPath();
+    ctx.arc(sx, sy, f.aggro ? FOX_LOSE_INTEREST_RANGE : FOX_AGGRO_RANGE, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
   }
 
   // ── Beetles ────────────────────────────────────────────────────────────────

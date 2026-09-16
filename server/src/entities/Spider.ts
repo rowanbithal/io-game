@@ -14,6 +14,12 @@ export class ServerSpider {
   /** Seconds until this spider can bite again. */
   attackCooldown = 0;
 
+  /** Where an idle (untargeted) spider is currently ambling toward — see Game.ts's wanderSpider. Null until it first goes idle. */
+  wanderTarget: { x: number; y: number } | null = null;
+
+  /** Seconds until wanderTarget is replaced, even if not yet reached — keeps an idle spider from beelining forever. */
+  wanderTimer = 0;
+
   constructor(x: number, y: number) {
     this.id = `sp${nextId++}`;
     this.x = x;

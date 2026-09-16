@@ -73,6 +73,8 @@ export interface FoxState {
   angle: number;
   hp: number;
   maxHp: number;
+  /** True while locked onto a player (see ServerFox.targetId) — the client uses this to show the boosted FOX_LOSE_INTEREST_RANGE leash instead of the base FOX_AGGRO_RANGE. */
+  aggro: boolean;
 }
 
 // ── Beetles ───────────────────────────────────────────────────────────────────

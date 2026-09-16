@@ -93,6 +93,7 @@ import {
   SPIDER_MIN_PLAYER_SPAWN_DIST,
   SPIDER_STRING_DROP,
   FOX_RADIUS,
+  FOX_MOVE_RADIUS,
   FOX_SPEED,
   FOX_DAMAGE,
   FOX_ATTACK_RANGE,
@@ -108,6 +109,10 @@ import {
   FOX_IDLE_DESPAWN_TIME,
   FOX_REPATH_INTERVAL,
   FOX_WAYPOINT_REACHED_DIST,
+  WANDER_RADIUS,
+  WANDER_INTERVAL,
+  WANDER_ARRIVED_DIST,
+  WANDER_SPEED_MULTIPLIER,
   BEETLE_RADIUS,
   BEETLE_SPEED,
   BEETLE_DAMAGE,
@@ -1609,6 +1614,13 @@ export class Game {
    * a spider steers straight at its target and relies on pushOutOfResources
    * to bounce it off anything solid in the way, the same as a player
    * walking into a tree, rather than routing around it.
+   *
+   * Unlike a fox (which routes around obstacles to keep a chase alive — see
+   * foxSteerTarget), a spider that loses sight of its target — a tree or
+   * structure now standing between them — drops its aggression outright
+   * rather than blindly walking toward their last known position. It'll
+   * re-aggro the moment someone (the same player or another) is both within
+   * range and visible again.
    */
   private updateSpider(spider: ServerSpider, dt: number): void {
     if (spider.attackCooldown > 0) spider.attackCooldown -= dt;
@@ -1617,7 +1629,7 @@ export class Game {
     let nearestDist = SPIDER_AGGRO_RANGE;
     for (const player of this.players.values()) {
       const d = Math.hypot(player.x - spider.x, player.y - spider.y);
-      if (d < nearestDist) {
+      if (d < nearestDist && this.world.hasClearPath(spider.x, spider.y, player.x, player.y)) {
         nearest = player;
         nearestDist = d;
       }
@@ -1641,12 +1653,70 @@ export class Game {
         nearest.health = Math.max(0, nearest.health - SPIDER_DAMAGE * (1 - reduction));
         spider.attackCooldown = SPIDER_ATTACK_COOLDOWN;
       }
+    } else {
+      // Nobody in range/sight — amble around instead of standing frozen.
+      this.wanderSpider(spider, dt);
     }
 
     const pushed = this.pushOutOfResources(spider.x, spider.y, SPIDER_RADIUS);
     const structPushed = this.pushOutOfStructures(pushed.x, pushed.y, SPIDER_RADIUS);
     spider.x = structPushed.x;
     spider.y = structPushed.y;
+  }
+
+  /**
+   * A random point within WANDER_RADIUS of (x, y) that's actually walkable —
+   * clear of solid resources/structures and water. Tried a handful of times
+   * before giving up for this tick rather than looping forever, since a spot
+   * boxed in on every side, while rare, is possible. Shared by wanderFox and
+   * wanderSpider; the optional `inTerritory` predicate is how a fox keeps its
+   * wander confined to its own forest — a spider has no such leash.
+   */
+  private pickWanderTarget(
+    x: number,
+    y: number,
+    inTerritory?: (x: number, y: number) => boolean,
+  ): { x: number; y: number } | null {
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const angle = Math.random() * Math.PI * 2;
+      const dist = Math.random() * WANDER_RADIUS;
+      const tx = clamp(x + Math.cos(angle) * dist, 0, MAP_SIZE);
+      const ty = clamp(y + Math.sin(angle) * dist, 0, MAP_SIZE);
+      if (this.world.isNavBlocked(tx, ty)) continue;
+      if (this.world.isBlockedByLake(tx, ty)) continue;
+      if (this.world.isBlockedBySea(tx, ty)) continue;
+      if (inTerritory && !inTerritory(tx, ty)) continue;
+      return { x: tx, y: ty };
+    }
+    return null;
+  }
+
+  /**
+   * Ambles an untargeted spider toward a random nearby point, picking a new
+   * one once reached or after WANDER_INTERVAL, at a fraction of full chase
+   * speed (see WANDER_SPEED_MULTIPLIER) — an unhurried amble, not a chase.
+   * Movement only; updateSpider still runs its usual push-out-of-solids pass
+   * afterward regardless of which branch moved the spider.
+   */
+  private wanderSpider(spider: ServerSpider, dt: number): void {
+    spider.wanderTimer -= dt;
+    const arrived =
+      !!spider.wanderTarget &&
+      Math.hypot(spider.wanderTarget.x - spider.x, spider.wanderTarget.y - spider.y) <= WANDER_ARRIVED_DIST;
+    if (!spider.wanderTarget || arrived || spider.wanderTimer <= 0) {
+      spider.wanderTarget = this.pickWanderTarget(spider.x, spider.y);
+      spider.wanderTimer = WANDER_INTERVAL;
+    }
+    if (!spider.wanderTarget) return; // nowhere walkable nearby this tick
+
+    const dx = spider.wanderTarget.x - spider.x;
+    const dy = spider.wanderTarget.y - spider.y;
+    const dist = Math.hypot(dx, dy) || 0.001;
+    spider.angle = Math.atan2(dy, dx);
+
+    const speed = SPIDER_SPEED * WANDER_SPEED_MULTIPLIER * this.spiderSpeedMultiplier(spider);
+    spider.x = clamp(spider.x + (dx / dist) * speed * dt, SPIDER_RADIUS, MAP_SIZE - SPIDER_RADIUS);
+    spider.y = clamp(spider.y + (dy / dist) * speed * dt, SPIDER_RADIUS, MAP_SIZE - SPIDER_RADIUS);
   }
 
   // ── Foxes ──────────────────────────────────────────────────────────────────
@@ -1707,6 +1777,39 @@ export class Game {
   }
 
   /**
+   * Ambles an untargeted fox toward a random nearby point within its own
+   * forest (see withinFoxLeash), picking a new one once reached or after
+   * WANDER_INTERVAL — the fox's answer to wanderSpider. Also pushes the fox
+   * back out of anything solid it ends up overlapping, same as the chase
+   * path does, since a wandering fox has no pathfinding to route around
+   * obstacles in the first place.
+   */
+  private wanderFox(fox: ServerFox, dt: number): void {
+    fox.wanderTimer -= dt;
+    const arrived =
+      !!fox.wanderTarget && Math.hypot(fox.wanderTarget.x - fox.x, fox.wanderTarget.y - fox.y) <= WANDER_ARRIVED_DIST;
+    if (!fox.wanderTarget || arrived || fox.wanderTimer <= 0) {
+      fox.wanderTarget = this.pickWanderTarget(fox.x, fox.y, (x, y) => this.withinFoxLeash(x, y));
+      fox.wanderTimer = WANDER_INTERVAL;
+    }
+    if (!fox.wanderTarget) return; // nowhere walkable nearby this tick
+
+    const dx = fox.wanderTarget.x - fox.x;
+    const dy = fox.wanderTarget.y - fox.y;
+    const dist = Math.hypot(dx, dy) || 0.001;
+    fox.angle = Math.atan2(dy, dx);
+
+    const speed = FOX_SPEED * WANDER_SPEED_MULTIPLIER * this.foxSpeedMultiplier(fox);
+    fox.x = clamp(fox.x + (dx / dist) * speed * dt, FOX_MOVE_RADIUS, MAP_SIZE - FOX_MOVE_RADIUS);
+    fox.y = clamp(fox.y + (dy / dist) * speed * dt, FOX_MOVE_RADIUS, MAP_SIZE - FOX_MOVE_RADIUS);
+
+    const pushed = this.pushOutOfResources(fox.x, fox.y, FOX_MOVE_RADIUS);
+    const structPushed = this.pushOutOfStructures(pushed.x, pushed.y, FOX_MOVE_RADIUS);
+    fox.x = structPushed.x;
+    fox.y = structPushed.y;
+  }
+
+  /**
    * Seek-and-bite AI that actually routes around obstacles, unlike the
    * spider's steer-straight-and-bounce approach (which would simply wedge a
    * fox against the first trunk in the dark forest).
@@ -1742,7 +1845,13 @@ export class Game {
       // target without ever leaving the forest — doesn't just sit there
       // holding one of FOX_MAX_COUNT's slots forever.
       const strandedOutsideForest = !this.withinFoxLeash(fox.x, fox.y);
-      if (strandedOutsideForest || fox.idleTimer >= FOX_IDLE_DESPAWN_TIME) this.foxes.delete(fox.id);
+      if (strandedOutsideForest || fox.idleTimer >= FOX_IDLE_DESPAWN_TIME) {
+        this.foxes.delete(fox.id);
+        return;
+      }
+      // Otherwise, no reason to just stand there — amble around like an
+      // actual animal until something worth chasing wanders by.
+      this.wanderFox(fox, dt);
       return;
     }
 
@@ -1768,11 +1877,11 @@ export class Game {
     fox.angle = Math.atan2(dy, dx);
 
     const speed = FOX_SPEED * this.foxSpeedMultiplier(fox);
-    fox.x = clamp(fox.x + (dx / dist) * speed * dt, FOX_RADIUS, MAP_SIZE - FOX_RADIUS);
-    fox.y = clamp(fox.y + (dy / dist) * speed * dt, FOX_RADIUS, MAP_SIZE - FOX_RADIUS);
+    fox.x = clamp(fox.x + (dx / dist) * speed * dt, FOX_MOVE_RADIUS, MAP_SIZE - FOX_MOVE_RADIUS);
+    fox.y = clamp(fox.y + (dy / dist) * speed * dt, FOX_MOVE_RADIUS, MAP_SIZE - FOX_MOVE_RADIUS);
 
-    const pushed = this.pushOutOfResources(fox.x, fox.y, FOX_RADIUS);
-    const structPushed = this.pushOutOfStructures(pushed.x, pushed.y, FOX_RADIUS);
+    const pushed = this.pushOutOfResources(fox.x, fox.y, FOX_MOVE_RADIUS);
+    const structPushed = this.pushOutOfStructures(pushed.x, pushed.y, FOX_MOVE_RADIUS);
     fox.x = structPushed.x;
     fox.y = structPushed.y;
   }
