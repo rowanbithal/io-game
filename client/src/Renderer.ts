@@ -4662,19 +4662,31 @@ export class Renderer {
   };
 
 
-  /** Draws a woody bar between every pair of orthogonally-adjacent trees. */
+  /**
+   * Draws a woody bar between every pair of orthogonally-adjacent trees.
+   * Keyed on the fine GRID_CELL grid (not resourceCell's TREE_SPAN-rounded
+   * bucket, which only approximates a tree's cell for seeding/appearance
+   * lookups) — two trees seeded by unrelated clusters can each round to a
+   * "neighboring" TREE_SPAN bucket while actually sitting up to ~2x TREE_SPAN
+   * apart, which drew a fixed-length branch stub floating between trunks with
+   * a visible gap on both ends instead of a real bridge. Only trees whose
+   * centers are truly one exact TREE_SPAN apart (how a contiguous cluster
+   * member is actually placed, see World.ts's generateClusters) match here.
+   */
   private drawTreeBranches(resources: ResourceState[]): void {
     const byCell = new Map<string, ResourceState>();
+    const fineKey = (x: number, y: number): string => `${Math.round(x / GRID_CELL)},${Math.round(y / GRID_CELL)}`;
     for (const r of resources) {
       if (r.type !== 'tree') continue;
-      const { gx, gy } = resourceCell(r.x, r.y, TREE_SPAN);
-      byCell.set(`${gx},${gy}`, r);
+      byCell.set(fineKey(r.x, r.y), r);
     }
+    const fineSpan = TREE_SPAN / GRID_CELL;
     for (const r of byCell.values()) {
-      const { gx, gy } = resourceCell(r.x, r.y, TREE_SPAN);
-      const east = byCell.get(`${gx + 1},${gy}`);
+      const gx = Math.round(r.x / GRID_CELL);
+      const gy = Math.round(r.y / GRID_CELL);
+      const east = byCell.get(`${gx + fineSpan},${gy}`);
       if (east) this.drawBranch(r.x, r.y, east.x, east.y);
-      const south = byCell.get(`${gx},${gy + 1}`);
+      const south = byCell.get(`${gx},${gy + fineSpan}`);
       if (south) this.drawBranch(r.x, r.y, south.x, south.y);
     }
   }

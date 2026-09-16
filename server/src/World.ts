@@ -1,4 +1,4 @@
-import { MAP_SIZE, GRID_CELL, TREE_SPAN, ROCK_SPAN, WHEAT_SPAN, GOLD_SPAN, GOLD_TOP_BAND, DARK_FOREST_BAND, DIAMOND_SPAN, DIAMOND_FAR_X, DIAMOND_MAX_Y, OASIS_X, OASIS_Y, OASIS_RADIUS, OASIS_SHORE_WIDTH, OASIS_VERTICAL_STRETCH, PLAYER_RADIUS, FOX_MOVE_RADIUS, SOLID_COLLISION_RADIUS, ResourceType, LakeState, darkForestBandAt, seaCoastAt, seaSandStartAt, isInDesert } from '@io-game/shared';
+import { MAP_SIZE, GRID_CELL, TREE_SPAN, ROCK_SPAN, WHEAT_SPAN, GOLD_SPAN, GOLD_TOP_BAND, DARK_FOREST_BAND, DIAMOND_SPAN, DIAMOND_FAR_X, DIAMOND_MAX_Y, OASIS_X, OASIS_Y, OASIS_RADIUS, OASIS_SHORE_WIDTH, OASIS_VERTICAL_STRETCH, FOX_MOVE_RADIUS, SOLID_COLLISION_RADIUS, ResourceType, LakeState, darkForestBandAt, seaCoastAt, seaSandStartAt, isInDesert } from '@io-game/shared';
 import { ServerResource } from './entities/Resource';
 
 // ── Lakes ─────────────────────────────────────────────────────────────────────
@@ -26,19 +26,6 @@ const LAKE_SPACING = 150; // Minimum gap left between two lakes' shores
 // simplicity, so pad them out to reduce (not fully eliminate) mismatch
 // between the visible water/shore and where it actually blocks/slows.
 const LAKE_LOBE_BUFFER = 1.2;
-
-// Players can walk through the branch bridging two connected trees (see
-// Renderer.ts's drawBranch) rather than being walled off between them —
-// the branch corridor is a capsule around the segment joining the two tree
-// centers, wide enough for a player to comfortably pass through.
-const CORRIDOR_HALF_WIDTH = PLAYER_RADIUS + 6;
-
-interface Corridor {
-  ax: number;
-  ay: number;
-  bx: number;
-  by: number;
-}
 
 // ── Spatial grid ──────────────────────────────────────────────────────────────
 // Divides the map into fixed-size cells so we can look up nearby resources in
@@ -226,12 +213,12 @@ const PLAINS_TREE_CONFIG: ClusterConfig = {
 // leaving gaps that read as individual trunks.
 //
 // targetCount has been walked in both directions to taste (220 -> 185 -> 160
-// -> 185) — dense enough to read as proper forest, with enough gaps left that
-// the oversized canopies don't merge into one shapeless mass.
+// -> 185 -> 165) — dense enough to read as proper forest, with enough gaps
+// left that the oversized canopies don't merge into one shapeless mass.
 const DARK_FOREST_TREE_BOOST: ClusterConfig = {
   type: 'tree',
   span: TREE_SPAN,
-  targetCount: 185,
+  targetCount: 165,
   minClusterSize: 1,
   maxClusterSize: 2,
   spreadRadius: 1,
@@ -318,13 +305,8 @@ export class World {
   /** Spatial grid: cellKey → set of resource IDs in that cell */
   private readonly grid = new Map<number, Set<string>>();
 
-  /** Branch corridors between orthogonally-adjacent trees (see CORRIDOR_HALF_WIDTH). */
-  private readonly treeCorridors: Corridor[] = [];
-
   /** Per-cell count of alive solid resources covering it — cell is blocked while > 0. See NAV_CELL. */
   private readonly navBlockCount = new Uint16Array(NAV_COLS * NAV_ROWS);
-  /** Cells inside a tree-branch corridor — always walkable regardless of navBlockCount (see buildTreeCorridors). */
-  private readonly navCorridorOpen = new Uint8Array(NAV_COLS * NAV_ROWS);
   /** Each solid resource's precomputed footprint cells, so death/respawn can toggle navBlockCount without rescanning. */
   private readonly navFootprint = new Map<string, number[]>();
 
@@ -335,7 +317,6 @@ export class World {
 
     this.generateLakes(margin);
     this.generateClusters(margin);
-    this.buildTreeCorridors();
     this.buildNavGrid();
 
     const area = MAP_SIZE * MAP_SIZE;
@@ -513,25 +494,6 @@ export class World {
     return this.isInLakeWater(x, y) || this.isInSeaWater(x, y);
   }
 
-  /** Mirrors the client's adjacency check (Renderer.ts drawTreeBranches) to find every connected tree pair. */
-  private buildTreeCorridors(): void {
-    const byCell = new Map<string, ServerResource>();
-    for (const r of this.resources.values()) {
-      if (r.type !== 'tree') continue;
-      const gx = Math.round(r.x / TREE_SPAN);
-      const gy = Math.round(r.y / TREE_SPAN);
-      byCell.set(`${gx},${gy}`, r);
-    }
-    for (const r of byCell.values()) {
-      const gx = Math.round(r.x / TREE_SPAN);
-      const gy = Math.round(r.y / TREE_SPAN);
-      const east = byCell.get(`${gx + 1},${gy}`);
-      if (east) this.treeCorridors.push({ ax: r.x, ay: r.y, bx: east.x, by: east.y });
-      const south = byCell.get(`${gx},${gy + 1}`);
-      if (south) this.treeCorridors.push({ ax: r.x, ay: r.y, bx: south.x, by: south.y });
-    }
-  }
-
   // ── Fox navigation ─────────────────────────────────────────────────────────
 
   /** Stamps every solid resource's footprint into navBlockCount, inflated by FOX_MOVE_RADIUS. */
@@ -562,26 +524,6 @@ export class World {
       // see setResourceNavBlocking) so death/respawn can find it again
       // without recomputing bounds from the resource's live x/y/type.
       this.navFootprint.set(r.id, footprint);
-    }
-
-    // Carve the tree corridors permanently open. Both trees either side of a
-    // branch block, but anything standing inside the branch capsule is exempt
-    // from being pushed out (see isInTreeCorridor), so these gaps are
-    // genuinely walkable. Leaving them stamped shut would make the grid
-    // disagree with the physics in the worst possible direction: an agent
-    // that squeezed through one would find every route back out apparently
-    // sealed, and sit there with no path anywhere. Marked in a separate mask
-    // rather than decrementing navBlockCount so a dying/respawning corridor
-    // tree can freely toggle its own count without ever re-sealing the gap.
-    for (const c of this.treeCorridors) {
-      const steps = Math.max(1, Math.ceil(Math.hypot(c.bx - c.ax, c.by - c.ay) / (NAV_CELL / 2)));
-      for (let i = 0; i <= steps; i++) {
-        const t = i / steps;
-        const cx = Math.floor((c.ax + (c.bx - c.ax) * t) / NAV_CELL);
-        const cy = Math.floor((c.ay + (c.by - c.ay) * t) / NAV_CELL);
-        if (cx < 0 || cy < 0 || cx >= NAV_COLS || cy >= NAV_ROWS) continue;
-        this.navCorridorOpen[cy * NAV_COLS + cx] = 1;
-      }
     }
   }
 
@@ -641,9 +583,9 @@ export class World {
     this.navFootprint.delete(id);
   }
 
-  /** True if the given flattened nav cell is solid — corridor cells are always exempt. */
+  /** True if the given flattened nav cell is solid. */
   private cellBlocked(cell: number): boolean {
-    return this.navCorridorOpen[cell] === 0 && this.navBlockCount[cell] > 0;
+    return this.navBlockCount[cell] > 0;
   }
 
   /** True if (x, y) sits in a blocked nav cell, or off the map entirely. */
@@ -1085,19 +1027,6 @@ export class World {
 
   // ── Public queries ─────────────────────────────────────────────────────────
 
-  /** True if (x, y) falls within the walkable branch corridor between treeX/treeY and a connected neighbor. */
-  isInTreeCorridor(x: number, y: number, treeX: number, treeY: number): boolean {
-    for (const c of this.treeCorridors) {
-      const matchesA = c.ax === treeX && c.ay === treeY;
-      const matchesB = c.bx === treeX && c.by === treeY;
-      if (!matchesA && !matchesB) continue;
-      if (pointSegmentDist2(x, y, c.ax, c.ay, c.bx, c.by) <= CORRIDOR_HALF_WIDTH * CORRIDOR_HALF_WIDTH) {
-        return true;
-      }
-    }
-    return false;
-  }
-
   /**
    * Returns living resources within `radius` of (x, y) — or every resource
    * there, dead ones included, with `includeDead`.
@@ -1149,18 +1078,4 @@ export class World {
       if (r.update(dt, () => isRespawnBlocked(r.x, r.y, r.type))) this.setResourceNavBlocking(r.id, true); // respawned this frame — solid again
     }
   }
-}
-
-/** Squared distance from (px, py) to the segment (ax, ay)–(bx, by). */
-function pointSegmentDist2(px: number, py: number, ax: number, ay: number, bx: number, by: number): number {
-  const dx = bx - ax;
-  const dy = by - ay;
-  const lenSq = dx * dx + dy * dy;
-  let t = lenSq > 0 ? ((px - ax) * dx + (py - ay) * dy) / lenSq : 0;
-  t = Math.max(0, Math.min(1, t));
-  const cx = ax + t * dx;
-  const cy = ay + t * dy;
-  const ex = px - cx;
-  const ey = py - cy;
-  return ex * ex + ey * ey;
 }

@@ -972,10 +972,6 @@ export class Game {
       const rRadius = COLLISION_RADIUS[r.type];
       if (rRadius === undefined) continue; // not solid (berry/mushroom)
 
-      // Let players (and spiders) walk through the branch bridging two
-      // connected trees instead of being walled off between them.
-      if (r.type === 'tree' && this.world.isInTreeCorridor(x, y, r.x, r.y)) continue;
-
       const minDist = radius + rRadius;
       const dx = x - r.x;
       const dy = y - r.y;
@@ -1568,6 +1564,9 @@ export class Game {
       const y = margin + Math.random() * (MAP_SIZE - margin * 2);
       if (this.world.isBlockedByLake(x, y)) continue;
       if (this.world.isBlockedBySea(x, y)) continue;
+      // Start on ground a spider can actually stand on, rather than inside a
+      // tree it would spend its first ticks stuck being shoved back out of.
+      if (this.world.isNavBlocked(x, y)) continue;
       if (players.some((p) => Math.hypot(p.x - x, p.y - y) < SPIDER_MIN_PLAYER_SPAWN_DIST)) continue;
 
       const spider = new ServerSpider(x, y);
@@ -1595,6 +1594,9 @@ export class Game {
       if (bandY <= margin) continue; // no forest to speak of at this x
       const y = margin + Math.random() * (bandY - margin);
       if (this.world.isBlockedByLake(x, y)) continue;
+      // Start on ground a spider can actually stand on, rather than inside a
+      // tree it would spend its first ticks stuck being shoved back out of.
+      if (this.world.isNavBlocked(x, y)) continue;
       if (players.some((p) => Math.hypot(p.x - x, p.y - y) < SPIDER_MIN_PLAYER_SPAWN_DIST)) continue;
 
       const spider = new ServerSpider(x, y);
