@@ -53,7 +53,7 @@ export const DEHYDRATION_DAMAGE = 2; // HP/s when thirst = 0
 // it eats it instead of holding it (see HUD.selectSlot) — without
 // duplicating the list. Raw meat is deliberately absent: it has to be cooked
 // into cooked_meat (see shared/crafting.ts) before it's edible.
-export const FOOD_ITEMS = new Set(['berry', 'mushroom', 'purple_berry', 'cooked_meat']);
+export const FOOD_ITEMS = new Set(['berry', 'mushroom', 'cooked_meat']);
 
 // How much hunger each food item restores when eaten (see Game.handleEat) —
 // per item rather than a flat amount, so cooking meat is worth more than a
@@ -61,7 +61,6 @@ export const FOOD_ITEMS = new Set(['berry', 'mushroom', 'purple_berry', 'cooked_
 export const FOOD_HUNGER_RESTORE: Record<string, number> = {
   berry: 2,
   mushroom: 2,
-  purple_berry: 1,
   cooked_meat: 15,
 };
 

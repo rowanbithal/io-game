@@ -2283,7 +2283,7 @@ export function drawWornBackpack(ctx: CanvasRenderingContext2D, angle: number): 
   ctx.restore();
 }
 
-// ── Berry / mushroom / purple-berry hotbar icons ────────────────────────────
+// ── Berry / mushroom hotbar icons ───────────────────────────────────────────
 // Unlike every icon above, these don't come from cell data — they reuse the
 // actual pixel-art sprites these resources are drawn with out in the world
 // (see RESOURCE_IMAGES above), scaled up to icon size and pixel-snapped, so
@@ -2305,9 +2305,6 @@ export function drawBerryIcon(ctx: CanvasRenderingContext2D, size: number): void
 }
 export function drawMushroomIcon(ctx: CanvasRenderingContext2D, size: number): void {
   drawResourceSpriteIcon(ctx, 'mushroom', size);
-}
-export function drawPurpleBerryIcon(ctx: CanvasRenderingContext2D, size: number): void {
-  drawResourceSpriteIcon(ctx, 'purple_berry', size);
 }
 
 // ── Spider ──────────────────────────────────────────────────────────────────

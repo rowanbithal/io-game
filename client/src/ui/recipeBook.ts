@@ -75,7 +75,7 @@ export const RECIPE_BOOK_CATEGORIES: RecipeBookCategory[] = [
     id: 'food',
     name: 'Food',
     tagline: 'What keeps the hunger bar up',
-    items: ['berry', 'mushroom', 'purple_berry', COOKED_MEAT_ID],
+    items: ['berry', 'mushroom', COOKED_MEAT_ID],
   },
   {
     id: 'placeable',
@@ -103,7 +103,6 @@ const ITEM_NAMES: Record<string, string> = {
   string: 'String',
   berry: 'Berry',
   mushroom: 'Mushroom',
-  purple_berry: 'Purple Berry',
 };
 
 /** The name to print on an item's book entry, recipe or not. */
@@ -129,9 +128,8 @@ const ITEM_NOTES: Record<string, string> = {
   [RAW_MEAT_ID]: 'Dropped by a slain fox or beetle — cook it at a campfire before eating.',
   [LEATHER_ID]: "A fox's hide, already tanned when it drops.",
   string: 'Spun from a slain spider.',
-  berry: 'Foraged growing wild. A quick bite, not a real meal.',
+  berry: 'Foraged growing wild — plains bushes and dark-forest ones alike. A quick bite, not a real meal.',
   mushroom: 'Foraged growing wild in the shade.',
-  purple_berry: 'Foraged growing wild — the least filling of the three.',
 };
 
 /** Same idea as ITEM_NOTES, for the item's book entry when it isn't a Recipe. */

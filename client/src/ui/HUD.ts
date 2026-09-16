@@ -76,7 +76,6 @@ import {
   FISH_ICON_HALF_BLOCKS,
   drawBerryIcon,
   drawMushroomIcon,
-  drawPurpleBerryIcon,
   MAP_COLORS,
   lakeHarmonics,
   lobeRadius,
@@ -2024,13 +2023,12 @@ export class HUD {
   }
 }
 
-// The three food types' hotbar icons, each reusing the real in-world sprite
+// The two food types' hotbar icons, each reusing the real in-world sprite
 // (see drawItemIcon above and Renderer.ts's drawBerryIcon/etc.) rather than
 // a unified "food" icon or an emoji placeholder.
 const RESOURCE_SPRITE_ICONS: Record<string, (ctx: CanvasRenderingContext2D, size: number) => void> = {
   berry: drawBerryIcon,
   mushroom: drawMushroomIcon,
-  purple_berry: drawPurpleBerryIcon,
 };
 
 const TOOL_ITEM_IDS = new Set([

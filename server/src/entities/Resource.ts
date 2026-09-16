@@ -39,7 +39,7 @@ export const RESOURCE_DROPS: Record<ResourceType, { type: string; count: number 
   berry: [{ type: 'berry', count: 1 }],
   mushroom: [{ type: 'mushroom', count: 1 }],
   wheat: [{ type: 'wheat', count: 2 }],
-  purple_berry: [{ type: 'purple_berry', count: 1 }], // A dark-forest delicacy — richer than a plains berry bush
+  purple_berry: [{ type: 'berry', count: 1 }], // A dark-forest bush — pools into the same berry stack as a plains one
   gold: [{ type: 'gold', count: 2 }],
   diamond: [{ type: 'diamond', count: 2 }],
 };
