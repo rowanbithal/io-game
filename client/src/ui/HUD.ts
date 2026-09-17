@@ -544,11 +544,9 @@ export class HUD {
     this.drawBestiaryTile(W);
     this.drawLeaderboard(state, me, W);
     this.drawChatLog(W);
-    this.drawDayNight(state, W);
     this.drawClock(state, W, H);
     this.drawMinimap(state, me, W, H);
     this.drawNotifications(me, W, H);
-    this.drawControls(W, H);
     // Last, so their dimmed backdrops sit over the rest of the HUD. Only one
     // of the two is ever open at once (see toggleRecipeBook/toggleBestiary),
     // so which one is drawn last here doesn't actually matter.
@@ -576,12 +574,14 @@ export class HUD {
       { label: '💧 Thirst', value: me.thirst, max: MAX_THIRST, fill: '#2980b9', low: '#e74c3c', threshold: 30 },
     ];
 
-    const bW = 150;
-    const bH = 18;
-    const gap = 12;
+    const bW = 170;
+    const bH = 22;
+    const gap = 13;
     const totalW = bars.length * bW + (bars.length - 1) * gap;
     let x = (W - totalW) / 2;
-    const y = H - 52;
+    // Sits just above the hotbar (see hotbarSlotRects, whose slots start at
+    // canvas.height - 78) with a small gap between the two.
+    const y = H - 78 - 16 - bH;
 
     for (const bar of bars) {
       const pct = Math.max(0, Math.min(1, bar.value / bar.max));
@@ -589,23 +589,23 @@ export class HUD {
 
       // Shadow panel
       this.ctx.fillStyle = 'rgba(0,0,0,0.45)';
-      this.pill(x - 1, y - 1, bW + 2, bH + 2, 6);
+      this.pill(x - 1, y - 1, bW + 2, bH + 2, 7);
       this.ctx.fill();
 
       // Empty track
       this.ctx.fillStyle = 'rgba(30,30,30,0.7)';
-      this.pill(x, y, bW, bH, 5);
+      this.pill(x, y, bW, bH, 6);
       this.ctx.fill();
 
       // Fill
       if (pct > 0.01) {
         this.ctx.fillStyle = color;
-        this.pill(x, y, bW * pct, bH, 5);
+        this.pill(x, y, bW * pct, bH, 6);
         this.ctx.fill();
       }
 
       // Label
-      this.ctx.font = 'bold 10px "Courier New"';
+      this.ctx.font = 'bold 12px "Courier New"';
       this.ctx.textAlign = 'center';
       this.ctx.textBaseline = 'middle';
       this.ctx.fillStyle = '#fff';
@@ -627,7 +627,7 @@ export class HUD {
     const gap = 8;
     const totalW = this.hotbarOrder.length * slotSize + (this.hotbarOrder.length - 1) * gap;
     let x = (this.canvas.width - totalW) / 2;
-    const y = this.canvas.height - 128;
+    const y = this.canvas.height - 78;
     return this.hotbarOrder.map(() => {
       const rect = { x, y, w: slotSize, h: slotSize };
       x += slotSize + gap;
@@ -859,7 +859,7 @@ export class HUD {
 
   /**
    * The book tile in the top-right corner: a rounded block of timber with the
-   * book cut into its face, and the shortcut key stamped in the bottom corner.
+   * book cut into its face, labelled underneath with its shortcut.
    */
   private drawBookTile(W: number): void {
     const { ctx } = this;
@@ -869,11 +869,11 @@ export class HUD {
     woodTile(ctx, t.x, t.y, t.w, t.h, { radius: 6, seed: 23, hover: hovered, active: this.bookOpen });
     drawCarvedBook(ctx, t.x + t.w / 2, t.y + t.h / 2 - 2, t.w - 12);
 
-    ctx.font = 'bold 8px "Courier New"';
+    ctx.font = 'bold 9px "Courier New"';
     ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillStyle = hovered || this.bookOpen ? WOOD.ink : WOOD.inkDim;
-    ctx.fillText('R', t.x + t.w / 2, t.y + t.h - 7);
+    ctx.textBaseline = 'top';
+    ctx.fillStyle = 'rgba(255,255,255,0.65)';
+    ctx.fillText('Press R', t.x + t.w / 2, t.y + t.h + 4);
   }
 
   /** True when a recipe needs a bench/campfire the player isn't standing by. */
@@ -1256,11 +1256,11 @@ export class HUD {
     woodTile(ctx, t.x, t.y, t.w, t.h, { radius: 6, seed: 41, hover: hovered, active: this.bestiaryOpen });
     drawCarvedPaw(ctx, t.x + t.w / 2, t.y + t.h / 2 - 1, t.w - 14);
 
-    ctx.font = 'bold 8px "Courier New"';
+    ctx.font = 'bold 9px "Courier New"';
     ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillStyle = hovered || this.bestiaryOpen ? WOOD.ink : WOOD.inkDim;
-    ctx.fillText('B', t.x + t.w / 2, t.y + t.h - 7);
+    ctx.textBaseline = 'top';
+    ctx.fillStyle = 'rgba(255,255,255,0.65)';
+    ctx.fillText('Press B', t.x + t.w / 2, t.y + t.h + 4);
   }
 
   /**
@@ -1648,20 +1648,6 @@ export class HUD {
     });
   }
 
-  // ── Day/Night indicator ────────────────────────────────────────────────────
-
-  private drawDayNight(state: GameState, W: number): void {
-    const { ctx } = this;
-    const isDay = state.isDay;
-    const label = isDay ? '☀ Day' : '🌙 Night';
-
-    ctx.font = 'bold 13px "Courier New"';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillStyle = isDay ? '#f1c40f' : '#a29bfe';
-    ctx.fillText(label, W / 2, 20);
-  }
-
   // ── Clock ──────────────────────────────────────────────────────────────────
 
   private drawClock(state: GameState, W: number, H: number): void {
@@ -1679,7 +1665,7 @@ export class HUD {
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillStyle = state.isDay ? '#f1c40f' : '#a29bfe';
-    ctx.fillText(`🕐 ${formatGameTime(state.dayTime)}`, px + panelW / 2, py + panelH / 2 + 1);
+    ctx.fillText(formatGameTime(state.dayTime), px + panelW / 2, py + panelH / 2 + 1);
   }
 
   // ── Minimap ────────────────────────────────────────────────────────────────
@@ -1801,10 +1787,10 @@ export class HUD {
     // Points at the /camera full-map view (see main.ts's KeyM handler) —
     // this minimap only ever shows what's nearby, so it's the natural spot
     // to mention the key that opens the whole map instead.
-    ctx.font = '10px "Courier New"';
+    ctx.font = 'bold 9px "Courier New"';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'top';
-    ctx.fillStyle = 'rgba(255,255,255,0.4)';
+    ctx.fillStyle = 'rgba(255,255,255,0.65)';
     ctx.fillText('Press M for map', mx + size / 2, my + size + 6);
   }
 
@@ -1858,21 +1844,6 @@ export class HUD {
     ctx.textBaseline = 'middle';
     ctx.fillStyle = '#56c9ff';
     ctx.fillText(text, W / 2, y + boxH / 2 + 1);
-  }
-
-  // ── Controls hint ──────────────────────────────────────────────────────────
-
-  private drawControls(W: number, H: number): void {
-    const { ctx } = this;
-    ctx.font = '10px "Courier New"';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'bottom';
-    ctx.fillStyle = 'rgba(255,255,255,0.25)';
-    ctx.fillText(
-      'WASD: Move  |  E / Click: Harvest  |  1-9 / Click Food: Eat  |  Click Armor / Torch: Equip  |  Scroll / Drag: Hotbar  |  Right-click / F: Place / Cast  |  R: Recipes  |  B: Animals  |  M: Map  |  Enter / T: Chat',
-      W / 2,
-      H - 8,
-    );
   }
 
   // ── Util ───────────────────────────────────────────────────────────────────
