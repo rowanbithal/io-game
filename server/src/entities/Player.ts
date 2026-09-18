@@ -19,6 +19,10 @@ import {
   THIRST_DECAY_RATE,
   THIRST_REGEN_RATE_IN_WATER,
   DEHYDRATION_DAMAGE,
+  MAX_AIR,
+  AIR_DECAY_RATE,
+  AIR_REGEN_RATE,
+  DROWNING_DAMAGE,
   HARVEST_COOLDOWN,
   CAMPFIRE_WARMTH_RATE,
   TORCH_WARMTH_RATE,
@@ -42,6 +46,7 @@ export class ServerPlayer {
   hunger = MAX_HUNGER;
   temperature = 100;
   thirst = MAX_THIRST;
+  air = MAX_AIR;
   score = 0;
 
   // Armor currently worn, or null — a separate slot from input.held (see
@@ -117,6 +122,7 @@ export class ServerPlayer {
     this.hunger = MAX_HUNGER;
     this.temperature = 100;
     this.thirst = MAX_THIRST;
+    this.air = MAX_AIR;
     this.score = 0;
     this.crafting = null;
     this.fishing = null;
@@ -165,8 +171,10 @@ export class ServerPlayer {
     // overrides the temperature swing below.
     if (inWater) {
       this.thirst = Math.min(MAX_THIRST, this.thirst + THIRST_REGEN_RATE_IN_WATER * dt);
+      this.air = Math.max(0, this.air - AIR_DECAY_RATE * dt);
     } else {
       this.thirst = Math.max(0, this.thirst - THIRST_DECAY_RATE * thirstMultiplier * dt);
+      this.air = Math.min(MAX_AIR, this.air + AIR_REGEN_RATE * dt);
     }
 
     // A campfire warms you faster than the night cools you, so sitting by one
@@ -201,6 +209,7 @@ export class ServerPlayer {
     if (this.hunger <= 0) this.health = Math.max(0, this.health - STARVATION_DAMAGE * dt);
     if (this.temperature <= 0) this.health = Math.max(0, this.health - COLD_DAMAGE * dt);
     if (this.thirst <= 0) this.health = Math.max(0, this.health - DEHYDRATION_DAMAGE * dt);
+    if (this.air <= 0) this.health = Math.max(0, this.health - DROWNING_DAMAGE * dt);
 
     // ── Cooldowns ────────────────────────────────────────────────────────────
     if (this.harvestCooldown > 0) {
@@ -242,6 +251,7 @@ export class ServerPlayer {
       hunger: this.hunger,
       temperature: this.temperature,
       thirst: this.thirst,
+      air: this.air,
       score: Math.floor(this.score),
       harvestCooldown: this.harvestCooldown,
       craftingId: this.crafting?.recipe.id ?? null,

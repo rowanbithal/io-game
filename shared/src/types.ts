@@ -112,6 +112,7 @@ export interface PlayerState {
   hunger: number; // 0-100
   temperature: number; // 0-100
   thirst: number; // 0-100
+  air: number; // 0-MAX_AIR seconds of breath left; only drains while wading in water
   score: number;
   harvestCooldown: number; // Seconds until the next harvest swing is allowed; used client-side to animate the swing
   craftingId: string | null; // Recipe currently being crafted, if any

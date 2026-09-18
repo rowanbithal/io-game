@@ -46,6 +46,15 @@ export const THIRST_DECAY_RATE = 0.8; // Per second
 export const THIRST_REGEN_RATE_IN_WATER = 20; // Per second while in lake water
 export const DEHYDRATION_DAMAGE = 2; // HP/s when thirst = 0
 
+// Wading (same isInWater as thirst above) also burns a short breath meter —
+// unlike thirst it doesn't help you, it just runs out. Deliberately short
+// (a handful of seconds) and quick to refill on dry land, so it punishes
+// lingering in water rather than ever being a real obstacle to crossing one.
+export const MAX_AIR = 5; // Seconds of air, full tank
+export const AIR_DECAY_RATE = 1; // Per second while in water (5s tank drains in 5s)
+export const AIR_REGEN_RATE = 2.5; // Per second on dry land (refills in 2s)
+export const DROWNING_DAMAGE = 12; // HP/s once air hits 0 — fast, well above the other survival damages
+
 // Item types that restore hunger when eaten (see Game.handleEat). Kept as
 // distinct types rather than a single unified "food" — each has its own
 // hotbar icon (see HUD.ts's RESOURCE_SPRITE_ICONS). Shared so the client can

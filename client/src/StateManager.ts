@@ -53,6 +53,7 @@ export class StateManager<T extends GameState = GameState> {
         hunger: lerp(prev.hunger, curr.hunger, alpha),
         temperature: lerp(prev.temperature, curr.temperature, alpha),
         thirst: lerp(prev.thirst, curr.thirst, alpha),
+        air: lerp(prev.air, curr.air, alpha),
       };
     });
 

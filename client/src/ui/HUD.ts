@@ -4,6 +4,7 @@ import {
   MAP_SIZE,
   MAX_HUNGER,
   MAX_THIRST,
+  MAX_AIR,
   RECIPES,
   RECIPES_BY_ID,
   Recipe,
@@ -149,8 +150,8 @@ const CHAT_LOG_MAX = 8;
 const CHAT_ENTRY_TTL = 25000; // ms
 const CHAT_FADE = 2500; // ms of fade at the end of the TTL
 const CHAT_LINE_H = 14;
-// Clears the leaderboard panel above it (12 top margin + 30 header + 5 rows).
-const CHAT_LOG_TOP = 164;
+// Clears the leaderboard panel above it (12 top margin + 30 header + 10 rows).
+const CHAT_LOG_TOP = 274;
 
 // Minimap. One terrain cell per MINIMAP_CELL screen pixels — chunky on
 // purpose, so the map reads as pixel art like the world it depicts.
@@ -537,6 +538,7 @@ export class HUD {
 
     if (state.spectating) this.drawSpectateBanner(me, W);
 
+    this.drawAirBar(me, W, H);
     this.drawStatBars(me, W, H);
     this.drawHotbar(state.spectating ? me?.held ?? null : undefined, me?.armor ?? null, me?.torch ?? null, me?.backpack ?? null);
     this.drawCrafting(H);
@@ -556,6 +558,46 @@ export class HUD {
     // Prune expired notifications
     const now = Date.now();
     this.notifications = this.notifications.filter((n) => now - n.born < n.ttl);
+  }
+
+  // ── Air ────────────────────────────────────────────────────────────────────
+
+  /**
+   * A thin breath meter that only appears while it isn't full — draining
+   * while wading (see ServerPlayer.update's AIR_DECAY_RATE) and refilling
+   * again on dry land, rather than sitting on screen at full length the
+   * whole game the way the stat bars below always do. Deliberately just a
+   * bare fill with no label or numeric readout — the countdown itself isn't
+   * the point, running out is.
+   */
+  private drawAirBar(me: PlayerState | undefined, W: number, H: number): void {
+    if (!me || me.air >= MAX_AIR) return;
+
+    // Matches drawStatBars' own bW/gap/count below it lines up with that row.
+    const bW = 170;
+    const gap = 13;
+    const totalW = 4 * bW + 3 * gap;
+    const barH = 22;
+    const thin = 5;
+    const x = (W - totalW) / 2;
+    const y = H - 78 - 16 - barH - 8 - thin;
+
+    const pct = Math.max(0, Math.min(1, me.air / MAX_AIR));
+    const color = pct <= 0.3 ? '#e74c3c' : '#5ec8f0';
+
+    this.ctx.fillStyle = 'rgba(0,0,0,0.45)';
+    this.pill(x - 1, y - 1, totalW + 2, thin + 2, thin / 2 + 1);
+    this.ctx.fill();
+
+    this.ctx.fillStyle = 'rgba(30,30,30,0.7)';
+    this.pill(x, y, totalW, thin, thin / 2);
+    this.ctx.fill();
+
+    if (pct > 0.01) {
+      this.ctx.fillStyle = color;
+      this.pill(x, y, totalW * pct, thin, thin / 2);
+      this.ctx.fill();
+    }
   }
 
   // ── Stat bars ──────────────────────────────────────────────────────────────
@@ -1617,9 +1659,9 @@ export class HUD {
   // ── Leaderboard ────────────────────────────────────────────────────────────
 
   private drawLeaderboard(state: GameState, me: PlayerState | undefined, W: number): void {
-    const top5 = [...state.players]
+    const top10 = [...state.players]
       .sort((a, b) => b.score - a.score)
-      .slice(0, 5);
+      .slice(0, 10);
 
     const { ctx } = this;
     const panelW = 180;
@@ -1628,7 +1670,7 @@ export class HUD {
     const py = 12;
 
     ctx.fillStyle = 'rgba(0,0,0,0.45)';
-    this.pill(px, py, panelW, 30 + top5.length * lineH, 6);
+    this.pill(px, py, panelW, 30 + top10.length * lineH, 6);
     ctx.fill();
 
     ctx.font = 'bold 11px "Courier New"';
@@ -1637,7 +1679,7 @@ export class HUD {
     ctx.fillStyle = '#aaa';
     ctx.fillText('⚔ LEADERBOARD', px + panelW / 2, py + 14);
 
-    top5.forEach((p, i) => {
+    top10.forEach((p, i) => {
       const isMe = p.id === me?.id;
       ctx.font = `${isMe ? 'bold' : ''} 11px "Courier New"`;
       ctx.fillStyle = isMe ? '#56c9ff' : '#ccc';
