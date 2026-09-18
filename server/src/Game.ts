@@ -240,6 +240,30 @@ const WEAPON_DAMAGE: Record<string, number> = {
   [GOLD_SWORD_ID]: GOLD_SWORD_DAMAGE_MULTIPLIER,
 };
 
+// Score per unit of a resource actually collected (see processHarvest) —
+// ramps up with how hard the resource is to reach, gold and diamond needing
+// progressively better pickaxes (see GOLD_CAPABLE_TOOLS/DIAMOND_CAPABLE_TOOLS).
+const RESOURCE_SCORE: Record<string, number> = {
+  wood: 1,
+  stone: 2,
+  gold: 10,
+  diamond: 50,
+};
+
+// Fraction of a defeated player's score the killer is awarded (see the
+// playerTargets loop in processHarvest).
+const KILL_SCORE_SHARE = 0.5;
+
+// Score for killing a mob outright (see the spider/fox/beetle loops in
+// processHarvest) — roughly scaled to each mob's HP (BEETLE_MAX_HP <
+// SPIDER_MAX_HP < FOX_MAX_HP), so the tougher kill is worth more.
+const SPIDER_KILL_SCORE = 30;
+const FOX_KILL_SCORE = 40;
+const BEETLE_KILL_SCORE = 15;
+
+// Flat score for landing a fish, regardless of species/rarity (see tickFishing).
+const FISH_SCORE = 200;
+
 // Worn armor that blocks a fraction of incoming damage — foxes, spiders, and
 // other players alike (see armorReduction). A set of valid ids too, so
 // handleEquip can reject anything that isn't actually a suit of armor.
@@ -1184,10 +1208,11 @@ export class Game {
     // hotbar's already full — reported once at the end as a single toast
     // rather than once per blocked drop.
     let hotbarFull = false;
-    const gain = (type: string, amount: number): void => {
+    const gain = (type: string, amount: number): number => {
       const gained = this.gainItem(player, inv, type, amount);
       if (gained > 0) allDrops.push({ type, count: gained });
       else hotbarFull = true;
+      return gained;
     };
 
     // Resolved once per swing, before anything is collected — otherwise
@@ -1205,6 +1230,7 @@ export class Game {
       if (spider.hp === 0) {
         this.spiders.delete(spider.id);
         gain('string', SPIDER_STRING_DROP);
+        player.score += SPIDER_KILL_SCORE;
       }
     }
 
@@ -1219,6 +1245,7 @@ export class Game {
         // Leather alongside the meat — the backpack's other ingredient,
         // string being the spider's (see BACKPACK_ID's recipe).
         gain(LEATHER_ID, FOX_LEATHER_DROP);
+        player.score += FOX_KILL_SCORE;
       }
     }
 
@@ -1228,13 +1255,20 @@ export class Game {
         this.beetles.delete(beetle.id);
         // Same raw-meat drop as a fox kill — has to be cooked before it's edible.
         gain(RAW_MEAT_ID, BEETLE_FOOD_DROP);
+        player.score += BEETLE_KILL_SCORE;
       }
     }
 
     for (const victim of playerTargets) {
       const victimInv = this.inventories.get(victim.id);
       const reduction = victimInv ? this.armorReduction(victim, victimInv) : 0;
+      const wasAlive = victim.health > 0;
       victim.health = Math.max(0, victim.health - combatDamage * (1 - reduction));
+      // Credited on the killing blow itself, before checkDeath resets the
+      // victim's score back to 0 on respawn.
+      if (wasAlive && victim.health === 0) {
+        player.score += victim.score * KILL_SCORE_SHARE;
+      }
     }
 
     // The held tool's effect on yield, as ServerResource.damage wants it —
@@ -1256,7 +1290,9 @@ export class Game {
       for (const drop of drops) {
         // Food items go to the inventory like anything else now — eating is
         // a deliberate action (see handleEat), not automatic on pickup.
-        gain(drop.type, drop.count);
+        const gained = gain(drop.type, drop.count);
+        const scorePerUnit = RESOURCE_SCORE[drop.type];
+        if (scorePerUnit && gained > 0) player.score += scorePerUnit * gained;
       }
     }
 
@@ -1400,6 +1436,7 @@ export class Game {
     const caught = pickRandomFish();
     const gained = this.gainItem(player, inv, caught.id, 1);
     if (gained > 0) {
+      player.score += FISH_SCORE;
       const rarityTag = caught.rarity === 'common' ? '' : ` (${caught.rarity})`;
       this.sendInventory(player, `Caught a ${caught.name}${rarityTag}!`);
     } else {

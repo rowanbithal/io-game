@@ -215,7 +215,7 @@ export class ServerPlayer {
     }
 
     // Score for surviving
-    this.score += dt * 10;
+    this.score += dt * 2.5;
   }
 
   /**
