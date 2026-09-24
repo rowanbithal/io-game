@@ -1,4 +1,4 @@
-import { GameState, PlayerState, ResourceState, StructureState, SpiderState, FoxState, BeetleState, LakeState, FishingState, PLAYER_RADIUS, FOX_RADIUS, BEETLE_RADIUS, GRID_CELL, TREE_SPAN, ROCK_SPAN, WHEAT_SPAN, GOLD_SPAN, DIAMOND_SPAN, HARVEST_RANGE, HARVEST_ANGLE, HARVEST_COOLDOWN, STRUCTURE_SPAN, PLACE_RANGE, CAMPFIRE_LIGHT_RADIUS, CAMPFIRE_BURNOUT_FADE, SPIDER_RADIUS, CAST_RANGE, FOX_AGGRO_RANGE, FOX_LOSE_INTEREST_RANGE, RECIPES_BY_ID, WOODEN_AXE_ID, WOODEN_PICKAXE_ID, WOODEN_SWORD_ID, STONE_AXE_ID, STONE_PICKAXE_ID, STONE_SWORD_ID, GOLD_AXE_ID, GOLD_PICKAXE_ID, GOLD_SWORD_ID, WOODEN_ARMOR_ID, STONE_ARMOR_ID, GOLD_ARMOR_ID, TORCH_LIGHT_RADIUS, CRAFTING_BENCH_ID, FISHING_ROD_ID, MAP_SIZE, DARK_FOREST_BAND, DARK_FOREST_TRANSITION, GOLD_TOP_BAND, FOREST_TREE_SCALE, FOREST_ROCK_SCALE, darkForestBandAt, DARK_FOREST_EDGE_AMPLITUDE, SEA_BAND, SEA_SAND_WIDTH, seaCoastAt, seaSandStartAt, SEA_EDGE_AMPLITUDE, DESERT_BAND, DESERT_TRANSITION, DESERT_EDGE_AMPLITUDE, desertBandAt, isInDesert, OASIS_VERTICAL_STRETCH, dayPhase, hashCell, clamp01, smoothstep, forestFactor, isForestTree, isForestRock, resourceCell, RESOURCE_SEED_SALT } from '@io-game/shared';
+import { GameState, PlayerState, ResourceState, StructureState, SpiderState, FoxState, BeetleState, LakeState, FishingState, FarmPlotState, PLAYER_RADIUS, FOX_RADIUS, BEETLE_RADIUS, GRID_CELL, TREE_SPAN, ROCK_SPAN, WHEAT_SPAN, GOLD_SPAN, DIAMOND_SPAN, HARVEST_RANGE, HARVEST_ANGLE, HARVEST_COOLDOWN, STRUCTURE_SPAN, PLACE_RANGE, CAMPFIRE_LIGHT_RADIUS, CAMPFIRE_BURNOUT_FADE, SPIDER_RADIUS, CAST_RANGE, FOX_AGGRO_RANGE, FOX_LOSE_INTEREST_RANGE, RECIPES_BY_ID, WOODEN_AXE_ID, WOODEN_PICKAXE_ID, WOODEN_SWORD_ID, STONE_AXE_ID, STONE_PICKAXE_ID, STONE_SWORD_ID, GOLD_AXE_ID, GOLD_PICKAXE_ID, GOLD_SWORD_ID, WOODEN_ARMOR_ID, STONE_ARMOR_ID, GOLD_ARMOR_ID, TORCH_LIGHT_RADIUS, CRAFTING_BENCH_ID, FISHING_ROD_ID, WOODEN_HOE_ID, WATERING_CAN_ID, FARM_PLOT_SPAN, FARM_PLOT_INTERACT_RADIUS, MAP_SIZE, DARK_FOREST_BAND, DARK_FOREST_TRANSITION, GOLD_TOP_BAND, FOREST_TREE_SCALE, FOREST_ROCK_SCALE, darkForestBandAt, DARK_FOREST_EDGE_AMPLITUDE, SEA_BAND, SEA_SAND_WIDTH, seaCoastAt, seaSandStartAt, SEA_EDGE_AMPLITUDE, DESERT_BAND, DESERT_TRANSITION, DESERT_EDGE_AMPLITUDE, desertBandAt, isInDesert, OASIS_VERTICAL_STRETCH, dayPhase, hashCell, clamp01, smoothstep, forestFactor, isForestTree, isForestRock, resourceCell, RESOURCE_SEED_SALT } from '@io-game/shared';
 import { Camera } from './Camera';
 
 import berryUrl from './assets/sprites/berry.png';
@@ -248,6 +248,42 @@ const P = {
   leather: '#a06f3c',
   leatherDark: '#6b4423',
 
+  // Farm plots (see drawFarmPlot) — furrowed soil, dry vs. freshly watered.
+  // Dry reuses the dark forest floor's own dirt tones (a tilled patch of
+  // plains grass exposes the same bare earth); wet is a darker, cooler-toned
+  // version, dark enough to read as damp without needing a shimmer/highlight
+  // effect of its own.
+  soilWetLight: '#4a3826',
+  soilWet: '#3a2b1c',
+  soilWetDark: '#241a10',
+
+  // A sprouting seedling, before wheat/berries have grown in enough to use
+  // their own real palette (see drawFarmPlot) — a young, pale green distinct
+  // from every other leaf tone in the game so an immature crop never reads
+  // as already-grown.
+  sproutLight: '#a8e06a',
+  sprout: '#7cc23f',
+  sproutDark: '#4f8f26',
+
+  // Watering can — plain galvanized tin, its own material family since it
+  // isn't a tiered tool the way the axes/pickaxes/swords are (see
+  // TOOL_VISUALS).
+  tinLight: '#dceaf0',
+  tin: '#9fb6be',
+  tinDark: '#66808a',
+
+  // Bread crust (see drawBreadIcon) — a warm golden-brown, its own family
+  // distinct from both raw and cooked meat's reds/browns.
+  breadLight: '#e8b56b',
+  bread: '#c98a3f',
+  breadDark: '#8f5b24',
+
+  // Berry seeds (see drawBerrySeedIcon) — small dark reddish pips, reading as
+  // "the pit of that same berry" rather than an unrelated item.
+  berrySeedLight: '#c96a7a',
+  berrySeed: '#8f3348',
+  berrySeedDark: '#5c1f2d',
+
   // Fireflies (dark forest ambiance)
   fireflyGlow: '#e8ff7a',
 
@@ -274,7 +310,7 @@ const HELD_ITEM_COLORS: Record<string, string> = {
 // with a gold head, so each upgrade reads as the same tool in a new
 // material rather than an unrelated item.
 
-type ToolShape = 'axe' | 'pickaxe' | 'sword' | 'rod';
+type ToolShape = 'axe' | 'pickaxe' | 'sword' | 'rod' | 'hoe' | 'wateringcan';
 interface ToolVisual { shape: ToolShape; head: string; guard: string; scale: number }
 
 const TOOL_VISUALS: Record<string, ToolVisual> = {
@@ -288,6 +324,8 @@ const TOOL_VISUALS: Record<string, ToolVisual> = {
   [STONE_SWORD_ID]: { shape: 'sword', head: P.rock, guard: P.rockHighlight, scale: 1.2 },
   [GOLD_SWORD_ID]: { shape: 'sword', head: P.gold, guard: P.goldHighlight, scale: 1.35 },
   [FISHING_ROD_ID]: { shape: 'rod', head: P.rockShadow, guard: P.stringDark, scale: 1 },
+  [WOODEN_HOE_ID]: { shape: 'hoe', head: P.rockShadow, guard: P.logDark, scale: 1 },
+  [WATERING_CAN_ID]: { shape: 'wateringcan', head: P.tinLight, guard: P.tin, scale: 1 },
 };
 
 // Dark wrap lashing a stone or wooden head to its haft — always this tone
@@ -344,6 +382,36 @@ function drawHeldTool(
     return;
   }
 
+  if (shape === 'hoe') {
+    ctx.fillStyle = P.logLight;
+    ctx.fillRect(toolX, toolY, b * 4.4, block);
+
+    ctx.fillStyle = TOOL_BINDING;
+    ctx.fillRect(toolX + b * 3.65, toolY - b * 0.15, b * 0.35, block + b * 0.3);
+
+    // A flat blade mounted crosswise at the tip, like a real hoe head —
+    // distinct from the axe's angled wedge and the pickaxe's hooked points.
+    ctx.fillStyle = head;
+    ctx.fillRect(toolX + b * 3.9, toolY - b * 1.7, b * 1.6, b * 0.75);
+    return;
+  }
+
+  if (shape === 'wateringcan') {
+    // A squat can body with a raised front panel, a carry handle looping
+    // over the top, and a spout angled out and down toward the tip.
+    ctx.fillStyle = guard;
+    ctx.fillRect(toolX, toolY - b * 0.5, b * 2.0, b * 2.0);
+
+    ctx.fillStyle = head;
+    ctx.fillRect(toolX + b * 0.25, toolY - b * 0.25, b * 1.5, b * 1.5);
+
+    ctx.fillStyle = guard;
+    ctx.fillRect(toolX + b * 0.5, toolY - b * 1.05, b * 1.0, b * 0.55); // handle loop
+    ctx.fillRect(toolX + b * 1.85, toolY - b * 1.0, b * 1.5, b * 0.55); // spout
+    ctx.fillRect(toolX + b * 3.15, toolY - b * 0.65, b * 0.55, b * 0.55); // spout tip
+    return;
+  }
+
   if (shape === 'rod') {
     // A long, thin pole — nothing else this shape-family draws is this
     // long or this narrow — with a grip near the hand and a small guide
@@ -382,12 +450,14 @@ function drawHeldTool(
 // sized for the ROTATED icon (see drawToolIcon) — a 45°-rotated bounding
 // box needs more room than the unrotated shape, so this is bigger than the
 // shape's own unrotated half-width, with a small safety margin on top.
-const TOOL_ICON_HALF_WIDTH: Record<ToolShape, number> = { axe: 3.5, pickaxe: 2.9, sword: 3.2, rod: 3.25 };
+const TOOL_ICON_HALF_WIDTH: Record<ToolShape, number> = { axe: 3.5, pickaxe: 2.9, sword: 3.2, rod: 3.25, hoe: 3.5, wateringcan: 2.6 };
 const TOOL_ICON_CENTER: Record<ToolShape, { x: number; y: number }> = {
   axe: { x: -2.6, y: 0.8 },
   pickaxe: { x: -2.275, y: 0 },
   sword: { x: -2.475, y: -0.5 },
   rod: { x: -3.65, y: -0.5 },
+  hoe: { x: -2.6, y: 0.85 },
+  wateringcan: { x: -1.6, y: 0.25 },
 };
 
 /**
@@ -2116,6 +2186,37 @@ const WOOD_ICON_CELLS: Cell[] = [
 // guaranteed to look like the same rock you'd chip it out of.
 const STONE_ICON_CELLS = rockPatchCells(7);
 
+// Farm plot soil (see Renderer.drawFarmPlot) — a furrowed square exactly
+// FARM_PLOT_SPAN wide (three GRID_CELL cells, the same fine grid trees/
+// rocks/the reach-grid overlay all align to — see Game.handleTill, which
+// snaps every till to that same grid), so a plot always reads as sitting
+// squarely on the game's placement grid rather than a free-floating patch.
+// Furrow rows run light (sun-facing) at the top through base to dark at the
+// bottom, the same "sun from the upper-left" convention every other
+// 3-shade surface in the game uses.
+const FARM_PLOT_BLOCK = GRID_CELL;
+const SOIL_PALETTE: Palette3 = { light: P.dirtLight, base: P.dirt, dark: P.dirtDark };
+const WET_SOIL_PALETTE: Palette3 = { light: P.soilWetLight, base: P.soilWet, dark: P.soilWetDark };
+const FARM_PLOT_SOIL_CELLS: Cell[] = (() => {
+  const cells: Cell[] = [];
+  for (let gy = -1; gy <= 1; gy++) {
+    const shade: Shade = gy === -1 ? 'light' : gy === 0 ? 'base' : 'dark';
+    for (let gx = -1; gx <= 1; gx++) cells.push({ gx, gy, shade });
+  }
+  return cells;
+})();
+
+// A young sprout — a stem plus two leaves, shared by both crops while
+// immature (see drawWheatCrop/drawBerryCrop); the difference between them is
+// entirely in the growth-stage size lerp, not the shape.
+const SPROUT_PALETTE: Palette3 = { light: P.sproutLight, base: P.sprout, dark: P.sproutDark };
+const SPROUT_CELLS: Cell[] = [
+  { gx: 0, gy: 0.6, shade: 'dark' },
+  { gx: 0, gy: 0, shade: 'base' },
+  { gx: -0.7, gy: -0.5, shade: 'light' },
+  { gx: 0.7, gy: -0.5, shade: 'light' },
+];
+
 /** A small bundle of wheat strands — a condensed version of the in-field look. */
 const WHEAT_ICON_CELLS: Cell[] = [
   { gx: -2.1, gy: -1.4, shade: 'light' },
@@ -2219,6 +2320,44 @@ export function drawLeatherIcon(ctx: CanvasRenderingContext2D, block: number = B
   drawBlockShape(ctx, LEATHER_ICON_CELLS, LEATHER_PALETTE, block);
 }
 export const LEATHER_ICON_HALF_BLOCKS = 2.8;
+
+// A rounded loaf with a couple of darker score-line cells across the top —
+// same "circle plus a couple of accent cells" trick STRING/MEAT/LEATHER's
+// icons use, here reading as the slashes baked into a loaf's crust.
+const BREAD_ICON_CELLS: Cell[] = [
+  ...blockCircle(2.0, 1.3),
+  { gx: -0.8, gy: -0.6, shade: 'dark' },
+  { gx: 0.3, gy: -0.9, shade: 'dark' },
+  { gx: 1.2, gy: -0.5, shade: 'dark' },
+];
+const BREAD_PALETTE: Palette3 = { light: P.breadLight, base: P.bread, dark: P.breadDark };
+
+export function drawBreadIcon(ctx: CanvasRenderingContext2D, block: number = BLOCK): void {
+  drawBlockShape(ctx, BREAD_ICON_CELLS, BREAD_PALETTE, block);
+}
+export const BREAD_ICON_HALF_BLOCKS = 2.6;
+
+// A small scattered handful of seeds — reused for both berry and wheat seeds
+// (see drawBerrySeedIcon/drawWheatSeedIcon below), just with a different
+// palette each time, the same "same shape, different material" trick
+// drawGoldIcon/drawDiamondIcon play off drawStoneIcon's STONE_ICON_CELLS.
+const SEED_ICON_CELLS: Cell[] = [
+  { gx: -1.3, gy: -0.6, shade: 'dark' },
+  { gx: -0.3, gy: -1.1, shade: 'light' },
+  { gx: 0.7, gy: -0.5, shade: 'base' },
+  { gx: -0.7, gy: 0.6, shade: 'base' },
+  { gx: 0.4, gy: 1.0, shade: 'dark' },
+  { gx: 1.3, gy: 0.1, shade: 'light' },
+];
+const BERRY_SEED_PALETTE: Palette3 = { light: P.berrySeedLight, base: P.berrySeed, dark: P.berrySeedDark };
+
+export function drawBerrySeedIcon(ctx: CanvasRenderingContext2D, block: number = BLOCK): void {
+  drawBlockShape(ctx, SEED_ICON_CELLS, BERRY_SEED_PALETTE, block);
+}
+export function drawWheatSeedIcon(ctx: CanvasRenderingContext2D, block: number = BLOCK): void {
+  drawBlockShape(ctx, SEED_ICON_CELLS, WHEAT_PALETTE, block);
+}
+export const SEED_ICON_HALF_BLOCKS = 2.2;
 
 // ── Backpack sprite ──────────────────────────────────────────────────────────
 // A supplied image rather than cell-drawn art like everything else above —
@@ -2870,6 +3009,38 @@ const BOBBER_PALETTE: Palette3 = { light: P.bobberRed, base: P.bobberRed, dark: 
 // 1000+ resources from every animation frame down to a sixth of them.
 const OVERVIEW_REDRAW_INTERVAL_MS = 66;
 
+// Till/plant are mouse-aimed at a specific world point; watering isn't — it
+// waters every farm plot within swing range at once (see Game.handleWater),
+// so there's no single point to carry. See setFarmActionTarget/
+// drawFarmActionGhost.
+type FarmActionTarget =
+  | { kind: 'till'; x: number; y: number }
+  | { kind: 'water' }
+  | { kind: 'plant'; x: number; y: number };
+
+/**
+ * Client-side mirror of Game.ts's own inSwingRange — same HARVEST_RANGE/
+ * HARVEST_ANGLE cone test, treating the target as a circle rather than a
+ * point. Used only to preview which farm plots a watering-can pour would
+ * reach (see drawFarmActionGhost); the server is the actual authority on
+ * what a swing connects with.
+ */
+function inSwingRange(me: PlayerState, x: number, y: number, radius: number): boolean {
+  const dx = x - me.x;
+  const dy = y - me.y;
+  const centerDist = Math.hypot(dx, dy);
+  if (centerDist - radius > HARVEST_RANGE) return false;
+
+  if (centerDist > radius) {
+    const angularRadius = Math.asin(Math.min(1, radius / centerDist));
+    const angleTo = Math.atan2(dy, dx);
+    const angleDiff = Math.atan2(Math.sin(angleTo - me.angle), Math.cos(angleTo - me.angle));
+    if (Math.abs(angleDiff) > HARVEST_ANGLE / 2 + angularRadius) return false;
+  }
+
+  return true;
+}
+
 export class Renderer {
   private ctx: CanvasRenderingContext2D;
   private groundPattern: CanvasPattern | null = null;
@@ -2964,6 +3135,12 @@ export class Renderer {
 
   // World position a cast would land, or null unless a fishing rod is held.
   private castTarget: { x: number; y: number } | null = null;
+
+  // The pending till/water/plant action, if any — null unless a hoe,
+  // watering can, or seed is selected (see main.ts's tillTarget/canWater/
+  // plantTarget, at most one of which is active at a time, same mutual
+  // exclusion placementTarget/castTarget already rely on).
+  private farmActionTarget: FarmActionTarget | null = null;
 
   // Per-player last-known bobber position, purely to detect the
   // fishing->not-fishing transition (a catch) and fire a one-shot splash.
@@ -3078,6 +3255,11 @@ export class Renderer {
   /** Where a cast would land, in world coordinates. */
   setCastTarget(target: { x: number; y: number } | null): void {
     this.castTarget = target;
+  }
+
+  /** The pending till/water/plant action, if any — see farmActionTarget. */
+  setFarmActionTarget(target: FarmActionTarget | null): void {
+    this.farmActionTarget = target;
   }
 
   /** Lakes are static for the session — called once, right after joining. */
@@ -3976,6 +4158,14 @@ export class Renderer {
       this.drawSeaRipples(W / zoom, H / zoom);
       this.drawSeaFish(W / zoom, H / zoom);
     }
+    // Tilled soil is excluded from actual water and from the dark forest/
+    // desert biomes (see Game.isTillable), but a beach's sand — sea or lake
+    // alike — is still ordinary tillable ground right up to the shoreline,
+    // so this has to draw after every one of the ground-color layers above
+    // (sea/lake sand included) rather than before them, or a plot tilled
+    // near a shore would sit underneath the sand it displaced instead of on
+    // top of it.
+    for (const p of state.farmPlots) this.drawFarmPlot(p);
     this.drawMapBorder(mapSize);
     this.drawTreeBranches(resources);
     this.drawTreeLeafLitter(resources);
@@ -4016,6 +4206,7 @@ export class Renderer {
         this.drawPlayer(me, hideChrome, now);
         this.drawPlacementGhost(me, now);
         this.drawCastPreview(me);
+        this.drawFarmActionGhost(me, state.farmPlots);
       }
 
       for (const p of state.players) this.drawFishingLine(p, now);
@@ -4947,6 +5138,91 @@ export class Renderer {
     ctx.restore();
   }
 
+  // ── Farm plots ─────────────────────────────────────────────────────────────
+  // Tilled soil (see drawFarmPlot) with whatever's planted layered on top.
+  // Crops reuse existing art rather than inventing a bespoke "farmed" look:
+  // wheat is the exact same WHEAT_ICON_CELLS shape the inventory icon uses,
+  // just smaller and green while immature; a mature berry plant reuses the
+  // wild bush's own sprite + hp-scale size language (see drawImageResource
+  // above), fed a synthetic "ripeness" fraction standing in for hp.
+
+  private drawFarmPlot(plot: FarmPlotState): void {
+    const { ctx, camera } = this;
+    const { sx, sy } = camera.toScreen(plot.x, plot.y);
+    ctx.save();
+    ctx.translate(sx, sy);
+    drawBlockShape(ctx, FARM_PLOT_SOIL_CELLS, plot.wet ? WET_SOIL_PALETTE : SOIL_PALETTE, FARM_PLOT_BLOCK);
+    if (plot.crop === 'wheat') this.drawWheatCrop(plot.growth, plot.mature);
+    else if (plot.crop === 'berry') this.drawBerryCrop(plot);
+    ctx.restore();
+  }
+
+  /**
+   * Wheat overlay: a small sprout for the first 30% of growth, then the real
+   * wheat-bundle shape scaling up the rest of the way — green while still
+   * growing, swapping to the true golden WHEAT_PALETTE only once mature.
+   * Sized by passing a bigger `block` straight to drawBlockShape rather than
+   * a canvas scale transform, matching how the world's oversized dark-forest
+   * trees/rocks are already scaled (see FOREST_TREE_SCALE) — keeps every
+   * edge a whole-pixel rect instead of picking up scale-transform blur.
+   *
+   * Sized in absolute world units, not FARM_PLOT_BLOCK-relative — the wheat
+   * bundle's own cells already span ~5.4 blocks corner to corner
+   * (WHEAT_ICON_CELLS), so scaling that off the plot's own 10-unit grid
+   * block would draw it wider than the plot itself. WHEAT_MATURE_BLOCK is
+   * picked so a fully-grown bundle comes out comfortably inside a single
+   * FARM_PLOT_SPAN-wide tile.
+   */
+  /** [block at the start of the stage, block at the end] — see drawWheatCrop. */
+  private static readonly WHEAT_SPROUT_BLOCK: [number, number] = [1.6, 2.6];
+  private static readonly WHEAT_MATURE_BLOCK: [number, number] = [2.4, 4.2];
+
+  private drawWheatCrop(growth: number, mature: boolean): void {
+    const { ctx } = this;
+    if (growth < 0.3) {
+      const [from, to] = Renderer.WHEAT_SPROUT_BLOCK;
+      const block = from + (growth / 0.3) * (to - from);
+      drawBlockShape(ctx, SPROUT_CELLS, SPROUT_PALETTE, block);
+      return;
+    }
+    const t = (growth - 0.3) / 0.7;
+    const [from, to] = Renderer.WHEAT_MATURE_BLOCK;
+    const block = from + t * (to - from);
+    drawBlockShape(ctx, WHEAT_ICON_CELLS, mature ? WHEAT_PALETTE : SPROUT_PALETTE, block);
+  }
+
+  /**
+   * Berry overlay: the same sprout language as drawWheatCrop while growing
+   * toward its first batch (there's no separate "berry bundle" shape to
+   * graduate into), then the wild bush's own sprite once mature — full size
+   * and ripe while hasBerry, shrunk down and regrowing otherwise (see
+   * berryRegrowth), the exact HP_SCALE size lerp drawImageResource uses for
+   * a damaged wild bush, just driven by ripeness instead of hp.
+   */
+  private drawBerryCrop(plot: FarmPlotState): void {
+    const { ctx } = this;
+    if (!plot.mature) {
+      // Same absolute sprout sizing as drawWheatCrop's own pre-maturity
+      // stage (see WHEAT_SPROUT_BLOCK) — both crops share one shape/size
+      // language while they're just a seedling, only diverging once mature.
+      const [from, to] = Renderer.WHEAT_SPROUT_BLOCK;
+      const block = from + plot.growth * (to - from);
+      drawBlockShape(ctx, SPROUT_CELLS, SPROUT_PALETTE, block);
+      return;
+    }
+
+    const img = RESOURCE_IMAGES.berry;
+    if (!img.complete) return;
+    const def = SPRITES.berry;
+    const ripeness = plot.hasBerry ? 1 : plot.berryRegrowth;
+    const [base, range] = Renderer.HP_SCALE.berry;
+    const s = base + ripeness * range;
+    ctx.save();
+    ctx.scale(s, s);
+    ctx.drawImage(img, -def.anchorX * BLOCK, -def.anchorY * BLOCK, def.w * BLOCK, def.h * BLOCK);
+    ctx.restore();
+  }
+
   // ── Structures ─────────────────────────────────────────────────────────────
 
   private drawStructure(s: StructureState, now: number): void {
@@ -5149,6 +5425,84 @@ export class Renderer {
     ctx.lineWidth = 1.5;
     ctx.beginPath();
     ctx.arc(0, 0, 6, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  /**
+   * Ghost/ring preview for a pending till/water/plant action. Till gets a
+   * square footprint outline (mirrors drawPlacementGhost's structure
+   * footprint); plant gets a ring at the nearest existing plot (mirrors
+   * drawCastPreview's ring — the ring previews which plot the action would
+   * actually land on, same nearest-plot resolution the server itself uses,
+   * see Game.nearestFarmPlot); water gets a ring around *every* plot within
+   * swing range at once, since a single pour waters all of them together
+   * (see Game.handleWater/findFarmPlotsInRange) rather than landing on one
+   * aimed point. Cyan/amber if it would land, red if out of range, no plot
+   * is within reach, or (plant specifically) the plot's already planted.
+   */
+  private drawFarmActionGhost(me: PlayerState, farmPlots: FarmPlotState[]): void {
+    const target = this.farmActionTarget;
+    if (!target) return;
+    const { ctx, camera } = this;
+
+    if (target.kind === 'till') {
+      // Snapped to the same FARM_PLOT_SPAN grid Game.handleTill itself
+      // rounds to (see resourceCell) — otherwise the ghost would slide
+      // smoothly with the mouse while the actual till it previews always
+      // jumps to a fixed cell, the same mismatch a free-floating cursor
+      // would have against a snapped-placement structure ghost.
+      const { gx, gy } = resourceCell(target.x, target.y, FARM_PLOT_SPAN);
+      const tx = gx * FARM_PLOT_SPAN;
+      const ty = gy * FARM_PLOT_SPAN;
+      const inRange = Math.hypot(tx - me.x, ty - me.y) <= PLACE_RANGE;
+
+      const { sx, sy } = camera.toScreen(tx, ty);
+      ctx.save();
+      ctx.strokeStyle = inRange ? 'rgba(200,150,90,0.75)' : 'rgba(255,90,90,0.6)';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(sx - FARM_PLOT_SPAN / 2, sy - FARM_PLOT_SPAN / 2, FARM_PLOT_SPAN, FARM_PLOT_SPAN);
+      ctx.restore();
+      return;
+    }
+
+    if (target.kind === 'water') {
+      for (const plot of farmPlots) {
+        if (!inSwingRange(me, plot.x, plot.y, FARM_PLOT_INTERACT_RADIUS)) continue;
+        const { sx, sy } = camera.toScreen(plot.x, plot.y);
+        ctx.save();
+        ctx.translate(sx, sy);
+        ctx.strokeStyle = 'rgba(120,220,255,0.85)';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.arc(0, 0, FARM_PLOT_SPAN / 2 + 3, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+      }
+      return;
+    }
+
+    const inRange = Math.hypot(target.x - me.x, target.y - me.y) <= PLACE_RANGE;
+
+    let nearest: FarmPlotState | null = null;
+    let bestDist = FARM_PLOT_INTERACT_RADIUS;
+    for (const plot of farmPlots) {
+      const dist = Math.hypot(target.x - plot.x, target.y - plot.y);
+      if (dist <= bestDist) {
+        nearest = plot;
+        bestDist = dist;
+      }
+    }
+    if (!nearest) return;
+
+    const valid = inRange && !nearest.crop;
+    const { sx, sy } = camera.toScreen(nearest.x, nearest.y);
+    ctx.save();
+    ctx.translate(sx, sy);
+    ctx.strokeStyle = valid ? 'rgba(120,220,255,0.85)' : 'rgba(255,90,90,0.6)';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.arc(0, 0, FARM_PLOT_SPAN / 2 + 3, 0, Math.PI * 2);
     ctx.stroke();
     ctx.restore();
   }

@@ -29,6 +29,7 @@ import {
   MAP_SIZE,
   Recipe,
   FishingState,
+  WATERING_CAN_MAX_CHARGES,
 } from '@io-game/shared';
 
 export class ServerPlayer {
@@ -68,6 +69,13 @@ export class ServerPlayer {
   // it has no gameplay effect of its own here; Game.hotbarCapacity reads it
   // to decide whether the hotbar's slot cap is currently raised.
   backpack: string | null = null;
+
+  // Charges left in a held watering can, out of WATERING_CAN_MAX_CHARGES —
+  // spent one per Game.handleWater, refilled to full in one tick by wading
+  // into water (see Game.refillWateringCan). Server-only, like
+  // torchRemaining: the client never needs the exact count, just the toast
+  // Game.handleWater sends when it runs out.
+  wateringCanCharges = WATERING_CAN_MAX_CHARGES;
 
   input: PlayerInput = {
     up: false,
@@ -131,6 +139,7 @@ export class ServerPlayer {
     this.torch = null;
     this.torchRemaining = 0;
     this.backpack = null;
+    this.wateringCanCharges = WATERING_CAN_MAX_CHARGES;
     this.x = MAP_SIZE * (0.3 + Math.random() * 0.4);
     this.y = MAP_SIZE * (0.3 + Math.random() * 0.4);
   }

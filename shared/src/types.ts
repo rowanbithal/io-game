@@ -16,6 +16,34 @@ export interface ResourceState {
   maxHp: number;
 }
 
+// ── Farming ──────────────────────────────────────────────────────────────────
+// Tilled ground a player made with a hoe, optionally planted with a seed.
+// Player-built like a structure (cleared with the rest of what its owner
+// built on death/disconnect — see Game.removeFarmPlotsOwnedBy), but kept as
+// its own array rather than folded into StructureType: unlike a campfire or
+// wall a plot is never solid, so it never belongs in the collision/placement
+// machinery every StructureType entry is required to answer for (see
+// STRUCTURE_SPAN/STRUCTURE_COLLISION_RADIUS in constants.ts).
+export type CropType = 'wheat' | 'berry';
+
+export interface FarmPlotState {
+  id: string;
+  x: number;
+  y: number;
+  /** True while watered — speeds growth (see WET_GROWTH_MULTIPLIER) until wateredRemaining runs out. */
+  wet: boolean;
+  /** What's planted, or null for bare tilled soil. */
+  crop: CropType | null;
+  /** 0..1 through the crop's growth to maturity — meaningless while crop is null. */
+  growth: number;
+  /** True once growth reaches 1. Wheat waits to be harvested; a berry plant starts producing. */
+  mature: boolean;
+  /** Berry plants only: true while a berry is ripe and ready to pick. */
+  hasBerry: boolean;
+  /** Berry plants only: 0..1 progress toward hasBerry flipping back true after being picked. */
+  berryRegrowth: number;
+}
+
 // ── Lakes ─────────────────────────────────────────────────────────────────────
 // Static terrain features — generated once at world startup and sent to the
 // client a single time (in JoinedPayload), unlike resources which change and
@@ -180,6 +208,30 @@ export interface CastRequest {
   y: number;
 }
 
+/** Sent client → server to till a patch of ground at a world position — must be holding a hoe. */
+export interface TillRequest {
+  x: number;
+  y: number;
+}
+
+/**
+ * Sent client → server to plant a seed into a farm plot at a world position.
+ * `itemId` names the seed explicitly (same shape as PlaceRequest) rather
+ * than relying on the server's cached input.held.
+ */
+export interface PlantRequest {
+  itemId: string;
+  x: number;
+  y: number;
+}
+
+/** Sent client → server to execute a trading-post offer (see TradeOffer) — instant, no position or held item involved. */
+export interface TradeRequest {
+  offerId: string;
+  /** How many batches of the offer to execute at once — see the trading post's quantity stepper (HUD.tradeQty). */
+  quantity: number;
+}
+
 /**
  * Sent client → server to eat a food item straight from the hotbar. Unlike
  * PlaceRequest/CastRequest, this isn't derived from PlayerInput.held — food
@@ -228,6 +280,7 @@ export interface GameState {
   spiders: SpiderState[]; // Only nearby spiders are included
   foxes: FoxState[]; // Only nearby foxes are included
   beetles: BeetleState[]; // Only nearby beetles are included
+  farmPlots: FarmPlotState[]; // Only nearby farm plots are included
   /**
    * True when this socket is watching another player via "/spectate <name>"
    * instead of playing their own. When set, `isMe` in `players` marks the

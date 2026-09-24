@@ -79,6 +79,27 @@ export const LEATHER_ID = 'leather';
 // rather than simply owned — it has to actually be on to raise the cap.
 export const BACKPACK_ID = 'backpack';
 
+// ── Farming ──────────────────────────────────────────────────────────────────
+// The hoe tills bare ground into a farm plot (see Game.handleTill) — a
+// one-off action per plot, not consumed, same "held tool that does something
+// on use" deal as the fishing rod. The watering can is the same shape again:
+// held, reusable, and spends a charge per use rather than the plant/craft
+// itself (see WATERING_CAN_MAX_CHARGES).
+export const WOODEN_HOE_ID = 'wooden_hoe';
+export const WATERING_CAN_ID = 'watering_can';
+
+// Seeds: what a berry/wheat harvest converts into before it can be planted
+// (see Game.handlePlant) — a deliberate extra step (and cost) rather than
+// planting the raw food item directly, so farming trades some of what you
+// already gathered for a repeatable future supply instead of being free.
+export const BERRY_SEED_ID = 'berry_seed';
+export const WHEAT_SEED_ID = 'wheat_seed';
+
+// Baked from farmed wheat at a campfire — same requiresCampfire gate as
+// cooked_meat, and the best hunger restore in the game (see
+// FOOD_HUNGER_RESTORE), rewarding the farming loop over foraging alone.
+export const BREAD_ID = 'bread';
+
 /** Wood yield multiplier while an axe is the held item. */
 export const AXE_WOOD_MULTIPLIER = 1.5;
 export const STONE_AXE_WOOD_MULTIPLIER = 2;
@@ -277,6 +298,42 @@ export const RECIPES: Recipe[] = [
     icon: '🎒',
     cost: { [LEATHER_ID]: 6, string: 4 },
     craftTime: 10,
+  },
+  {
+    id: WOODEN_HOE_ID,
+    name: 'Wooden Hoe',
+    icon: '🌱',
+    cost: { wood: 20 },
+    craftTime: 5,
+  },
+  {
+    id: WATERING_CAN_ID,
+    name: 'Watering Can',
+    icon: '💧',
+    cost: { wood: 20, stone: 10 },
+    craftTime: 6,
+  },
+  {
+    id: BERRY_SEED_ID,
+    name: 'Berry Seeds',
+    icon: '🌰',
+    cost: { berry: 3 },
+    craftTime: 2,
+  },
+  {
+    id: WHEAT_SEED_ID,
+    name: 'Wheat Seeds',
+    icon: '🌾',
+    cost: { wheat: 3 },
+    craftTime: 2,
+  },
+  {
+    id: BREAD_ID,
+    name: 'Bread',
+    icon: '🍞',
+    cost: { wheat: 3 },
+    craftTime: 4,
+    requiresCampfire: true,
   },
 ];
 

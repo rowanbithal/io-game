@@ -31,6 +31,11 @@ import {
   RAW_MEAT_ID,
   COOKED_MEAT_ID,
   LEATHER_ID,
+  WOODEN_HOE_ID,
+  WATERING_CAN_ID,
+  BERRY_SEED_ID,
+  WHEAT_SEED_ID,
+  BREAD_ID,
 } from '@io-game/shared';
 
 export interface RecipeBookCategory {
@@ -75,7 +80,13 @@ export const RECIPE_BOOK_CATEGORIES: RecipeBookCategory[] = [
     id: 'food',
     name: 'Food',
     tagline: 'What keeps the hunger bar up',
-    items: ['berry', 'mushroom', COOKED_MEAT_ID],
+    items: ['berry', 'mushroom', COOKED_MEAT_ID, BREAD_ID],
+  },
+  {
+    id: 'farming',
+    name: 'Farming',
+    tagline: 'Till, plant, water, and harvest your own supply instead of foraging for it',
+    items: [WOODEN_HOE_ID, WATERING_CAN_ID, BERRY_SEED_ID, WHEAT_SEED_ID],
   },
   {
     id: 'placeable',

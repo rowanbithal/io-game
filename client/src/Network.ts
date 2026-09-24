@@ -91,8 +91,25 @@ export class Network {
     this.socket.emit('cast', { x, y });
   }
 
+  till(x: number, y: number): void {
+    this.socket.emit('till', { x, y });
+  }
+
+  /** No target — waters every farm plot within swing range, the same reach a harvest connects with (see Game.handleWater). */
+  water(): void {
+    this.socket.emit('water');
+  }
+
+  plant(itemId: string, x: number, y: number): void {
+    this.socket.emit('plant', { itemId, x, y });
+  }
+
   eat(itemId: string): void {
     this.socket.emit('eat', { itemId });
+  }
+
+  trade(offerId: string, quantity: number): void {
+    this.socket.emit('trade', { offerId, quantity });
   }
 
   equip(itemId: string): void {

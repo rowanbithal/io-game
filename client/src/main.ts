@@ -1,4 +1,4 @@
-import { TICK_RATE, RECIPES_BY_ID, FISHING_ROD_ID, PreviewState, ResourceState } from '@io-game/shared';
+import { TICK_RATE, RECIPES_BY_ID, FISHING_ROD_ID, WOODEN_HOE_ID, WATERING_CAN_ID, BERRY_SEED_ID, WHEAT_SEED_ID, PreviewState, ResourceState } from '@io-game/shared';
 import { Network } from './Network';
 import { Input } from './Input';
 import { Camera } from './Camera';
@@ -193,6 +193,14 @@ class ClientGame {
         this.hud.toggleBestiary();
         return;
       }
+      // V opens/closes the trading post — same toggle-both-ways pattern as
+      // R/B above. Not T: that's already chat's own open shortcut (see
+      // setupChat), sharing a keydown listener with this one so both would
+      // fire on the same press.
+      if (e.code === 'KeyV') {
+        this.hud.toggleTrade();
+        return;
+      }
       // M opens/closes the full-map view — same toggle either way (see
       // handleSlashCommand), so there's no separate on/off branch to pick
       // between the way Escape below has to.
@@ -211,6 +219,7 @@ class ClientGame {
         }
         this.hud.closeRecipeBook();
         this.hud.closeBestiary();
+        this.hud.closeTrade();
         return;
       }
 
@@ -244,7 +253,7 @@ class ClientGame {
 
       // The animal compendium's button and (while open) its whole panel —
       // checked first since it's a full-screen modal with nothing clickable
-      // behind it, same reasoning as the recipe book below.
+      // behind it, same reasoning as the recipe book/trading post below.
       if (this.hud.handleBestiaryClick(x, y)) return true;
 
       const slot = this.hud.hitTestHotbar(x, y);
@@ -269,7 +278,15 @@ class ClientGame {
       if (recipeId) this.network.craft(recipeId);
       // Swallow clicks anywhere on the panel, so a click on an unaffordable
       // recipe doesn't fall through and harvest whatever is behind it.
-      return recipeId !== null || this.hud.isOverCrafting(x, y);
+      if (recipeId !== null || this.hud.isOverCrafting(x, y)) return true;
+
+      // Trading post: same "toggle button, then offer rows" shape as the
+      // recipe book/craft test just above.
+      if (this.hud.handleTradeClick(x, y)) return true;
+
+      const offerId = this.hud.hitTestTrade(x, y);
+      if (offerId) this.network.trade(offerId, this.hud.getTradeQuantity());
+      return offerId !== null || this.hud.isOverTrade(x, y);
     });
 
     // Ended on window (not the canvas) so releasing the mouse off-canvas
@@ -301,6 +318,35 @@ class ClientGame {
 
     const { wx, wy } = this.camera.toWorld(this.input.mouseX, this.input.mouseY);
     return { x: wx, y: wy };
+  }
+
+  /** World position a till would land at — the mouse point, or null unless a hoe is held. */
+  private tillTarget(): { x: number; y: number } | null {
+    if (this.hud.getSelectedItem() !== WOODEN_HOE_ID) return null;
+    if (this.hud.getItemCount(WOODEN_HOE_ID) < 1) return null;
+
+    const { wx, wy } = this.camera.toWorld(this.input.mouseX, this.input.mouseY);
+    return { x: wx, y: wy };
+  }
+
+  /**
+   * True when a watering-can action is ready to fire. Unlike till/plant,
+   * this isn't mouse-aimed at all — see Game.handleWater, which waters
+   * every farm plot within swing range in one go, the same reach a harvest
+   * connects with, rather than a single point the player clicked on.
+   */
+  private canWater(): boolean {
+    return this.hud.getSelectedItem() === WATERING_CAN_ID && this.hud.getItemCount(WATERING_CAN_ID) >= 1;
+  }
+
+  /** World position a seed would be planted at — the mouse point, or null unless a seed is held. */
+  private plantTarget(): { itemId: string; x: number; y: number } | null {
+    const item = this.hud.getSelectedItem();
+    if (item !== BERRY_SEED_ID && item !== WHEAT_SEED_ID) return null;
+    if (this.hud.getItemCount(item) < 1) return null;
+
+    const { wx, wy } = this.camera.toWorld(this.input.mouseX, this.input.mouseY);
+    return { itemId: item, x: wx, y: wy };
   }
 
   // ── Game loop ──────────────────────────────────────────────────────────────
@@ -358,25 +404,44 @@ class ClientGame {
       this.renderer.setHeldItem(me?.held ?? null);
       this.renderer.setPlacementTarget(null);
       this.renderer.setCastTarget(null);
+      this.renderer.setFarmActionTarget(null);
     } else {
-      // Placement/casting are aimed with the mouse, so they have to be
-      // resolved after the camera has been moved for this frame. Right-
-      // click / F means "place" or "cast" depending on what's held — never
-      // both, since nothing is simultaneously placeable and a fishing rod.
-      // Eating isn't part of this: food is never held at all (see HUD's
-      // selectSlot), it's eaten straight from the hotbar — see setupHotbar.
+      // Placement/casting/till/plant are all aimed with the mouse, so they
+      // have to be resolved after the camera has been moved for this frame.
+      // Watering is the one exception — it isn't aimed at all, see canWater.
+      // Right-click / F means exactly one of "place", "cast", "till",
+      // "water", or "plant" depending on what's held — never more than one,
+      // since each of these is itself gated on a different, mutually
+      // exclusive held item. Eating isn't part of this: food is never held
+      // at all (see HUD's selectSlot), it's eaten straight from the hotbar
+      // — see setupHotbar.
       const target = this.placementTarget();
       const fishTarget = this.castTarget();
+      const tillTarget = this.tillTarget();
+      const watering = this.canWater();
+      const plantTarget = this.plantTarget();
       const altAction = this.input.consumeAltAction();
       if (altAction && target) {
         this.network.place(this.hud.getSelectedItem()!, target.x, target.y);
       } else if (altAction && fishTarget) {
         this.network.cast(fishTarget.x, fishTarget.y);
+      } else if (altAction && tillTarget) {
+        this.network.till(tillTarget.x, tillTarget.y);
+      } else if (altAction && watering) {
+        this.network.water();
+      } else if (altAction && plantTarget) {
+        this.network.plant(plantTarget.itemId, plantTarget.x, plantTarget.y);
       }
 
       this.renderer.setHeldItem(this.hud.getSelectedItem());
       this.renderer.setPlacementTarget(target);
       this.renderer.setCastTarget(fishTarget);
+      this.renderer.setFarmActionTarget(
+        tillTarget ? { kind: 'till', x: tillTarget.x, y: tillTarget.y } :
+        watering ? { kind: 'water' } :
+        plantTarget ? { kind: 'plant', x: plantTarget.x, y: plantTarget.y } :
+        null,
+      );
     }
     this.renderer.render(snapshot, this.mapSize);
     if (snapshot.cameraMode) {

@@ -49,6 +49,8 @@ export interface WoodPanelOptions {
   seed?: number;
   /** Nail heads in the corners. Off for small rows, on for big panels. */
   nails?: boolean;
+  /** Random dark knots in the grain. On by default — a nice touch on a big panel, but turn off for anything small enough that a knot could land on/beside content sitting on top of it (see woodTile's own default). */
+  knots?: boolean;
 }
 
 /**
@@ -63,7 +65,7 @@ export function woodPanel(
   rh: number,
   opts: WoodPanelOptions = {},
 ): void {
-  const { plankH = 13, border = 3, seed = 1, nails = false } = opts;
+  const { plankH = 13, border = 3, seed = 1, nails = false, knots = true } = opts;
   const x = Math.round(rx);
   const y = Math.round(ry);
   const w = Math.round(rw);
@@ -76,7 +78,7 @@ export function woodPanel(
   ctx.fillStyle = WOOD.frame;
   ctx.fillRect(x + 1, y + 1, w - 2, h - 2);
 
-  drawPlanks(ctx, x + border, y + border, w - border * 2, h - border * 2, plankH, seed);
+  drawPlanks(ctx, x + border, y + border, w - border * 2, h - border * 2, plankH, seed, knots);
 
   if (nails) {
     const inset = border + 3;
@@ -100,6 +102,7 @@ function drawPlanks(
   ih: number,
   plankH: number,
   seed: number,
+  knots: boolean = true,
 ): void {
   if (iw <= 0 || ih <= 0) return;
   const rand = seeded(seed);
@@ -130,7 +133,7 @@ function drawPlanks(
     }
 
     // The odd knot — a dark blob with a lighter core.
-    if (plankH >= 10 && rand() < 0.3) {
+    if (knots && plankH >= 10 && rand() < 0.3) {
       const kx = ix + Math.floor(rand() * Math.max(1, iw - 6));
       const ky = py + Math.floor(plankH / 2) - 2;
       ctx.fillStyle = WOOD.dark;
@@ -186,6 +189,8 @@ export interface WoodTileOptions {
   hover?: boolean;
   /** Pressed/open: the tile darkens and its outline lights up. */
   active?: boolean;
+  /** Random dark knots in the grain — off by default here (unlike woodPanel's own default): a tile this small has a carved icon sitting on top of it with real gaps in its own silhouette (an open sign board, the space between a paw's toes), and a knot showing through one reads as a stray dark blob on the icon rather than as wood grain. */
+  knots?: boolean;
 }
 
 /**
@@ -201,7 +206,7 @@ export function woodTile(
   rh: number,
   opts: WoodTileOptions = {},
 ): void {
-  const { radius = 5, plankH = 11, seed = 17, hover = false, active = false } = opts;
+  const { radius = 5, plankH = 11, seed = 17, hover = false, active = false, knots = false } = opts;
   const x = Math.round(rx);
   const y = Math.round(ry);
   const w = Math.round(rw);
@@ -216,7 +221,7 @@ export function woodTile(
 
   ctx.save();
   ctx.clip(pixelRoundRect(x + 2, y + 2, w - 4, h - 4, radius - 1));
-  drawPlanks(ctx, x + 2, y + 2, w - 4, h - 4, plankH, seed);
+  drawPlanks(ctx, x + 2, y + 2, w - 4, h - 4, plankH, seed, knots);
   if (hover || active) {
     ctx.globalAlpha = active ? 0.22 : 0.14;
     ctx.fillStyle = active ? WOOD.edge : WOOD.light;
@@ -442,6 +447,97 @@ export function drawCarvedPaw(
   // outline rim stays visible all the way around, tiny toes included.
   stamp(PAW_CELLS, WOOD.edge);
   stamp(PAW_INNER_CELLS, WOOD.dark);
+}
+
+// A market stand for the trading post's button — a scalloped awning on a
+// rail, two poles framing an open sign board, and a counter with a raised
+// top ledge (a plain silhouette read at a glance, the same shape a real
+// market-stall icon uses). Wider than it is tall, like an actual stall
+// (and unlike this icon's own first draft) — see the block-size comment in
+// drawCarvedStand for how that's kept inside the button's square footprint.
+// Built from named rect pieces, like drawCarvedBook's cover/spine/pages,
+// rather than one tapered row-shape like drawCarvedPaw/that first draft
+// used — the poles need real empty space between them for the sign board
+// to read as open, which a single span-per-row silhouette can't leave.
+// Same carved-into-the-board treatment throughout: a light lip below, a
+// dark outline, each piece filled a shade lighter so the rim stays visible
+// — except the poles and awning teeth, too thin at this scale to inset at
+// all, which just stay the outline's own dark tone, reading as a clean
+// line rather than a two-tone piece with no room left for a rim.
+const STAND_COLS = 13;
+const STAND_ROWS = 9;
+
+/** Every piece of the stand, as (gx, gy, cols, rows) rects — shared by the silhouette pass and the per-piece fills below. */
+function standPieces(cell: (gx: number, gy: number, cols?: number, rows?: number) => void): void {
+  cell(1, 0, 11, 1); // awning rail
+  cell(1, 1, 11, 1); // awning band
+  cell(1, 2); // scalloped teeth — alternating, so the awning's bottom edge
+  cell(3, 2); // reads as wavy rather than a straight cut. Odd columns only:
+  cell(5, 2); // the gaps between them fall outside the silhouette entirely,
+  cell(7, 2); // showing the bare board through rather than another color.
+  cell(9, 2);
+  cell(11, 2);
+  cell(1, 3, 1, 3); // left pole
+  cell(11, 3, 1, 3); // right pole — the 9-wide gap between the poles (cols
+  // 2..10) is deliberately empty: the stand's open sign board, same as the
+  // reference icon's blank panel.
+  cell(1, 6, 11, 1); // counter ledge
+  cell(1, 7, 11, 2); // counter body
+}
+
+export function drawCarvedStand(
+  ctx: CanvasRenderingContext2D,
+  cx: number,
+  cy: number,
+  size: number,
+): void {
+  // Sized off whichever dimension is larger (unlike the other carved icons,
+  // all taller than wide, which could just divide by their row count) — a
+  // wide, short shape like this one would otherwise blow past `size`
+  // sideways if the block size were still picked from the (now smaller)
+  // row count alone.
+  const b = Math.max(1, Math.floor(size / Math.max(STAND_COLS, STAND_ROWS)));
+  const ox = Math.round(cx - (STAND_COLS * b) / 2);
+  const oy = Math.round(cy - (STAND_ROWS * b) / 2);
+  const cell = (gx: number, gy: number, cols = 1, rows = 1): void => {
+    ctx.fillRect(ox + gx * b, oy + gy * b, cols * b, rows * b);
+  };
+  const silhouette = (): void => standPieces(cell);
+
+  // The lip of the carve: the whole shape in light, offset down.
+  ctx.globalAlpha = 0.5;
+  ctx.fillStyle = WOOD.light;
+  ctx.save();
+  ctx.translate(0, Math.max(1, Math.round(b / 2)));
+  silhouette();
+  ctx.restore();
+  ctx.globalAlpha = 1;
+
+  // Outline — every piece starts this color, so the poles/teeth (skipped
+  // below, no room to inset) simply stay it.
+  ctx.fillStyle = WOOD.edge;
+  silhouette();
+
+  // Awning: the same off-white WOOD.nail tone the counter's own ledge below
+  // uses (and drawCarvedPouch's coin/drawCarvedBook's pages before it) —
+  // not a fabric color of its own, just this icon set's one shared
+  // highlight tone. Rail and band inset by one ring; the teeth are one
+  // cell each, too small to inset, so they're recolored whole.
+  ctx.fillStyle = WOOD.nail;
+  cell(2, 0, 9, 1);
+  cell(2, 1, 9, 1);
+  cell(1, 2);
+  cell(3, 2);
+  cell(5, 2);
+  cell(7, 2);
+  cell(9, 2);
+  cell(11, 2);
+
+  // Counter: the same ledge highlight, the body itself inset by one ring.
+  ctx.fillStyle = WOOD.nail;
+  cell(2, 6, 9, 1);
+  ctx.fillStyle = WOOD.dark;
+  cell(2, 7, 9, 2);
 }
 
 // ── Animal compendium: leather book chrome ──────────────────────────────────

@@ -33,6 +33,15 @@ import {
   COOKED_MEAT_ID,
   LEATHER_ID,
   BACKPACK_ID,
+  WOODEN_HOE_ID,
+  WATERING_CAN_ID,
+  BERRY_SEED_ID,
+  WHEAT_SEED_ID,
+  BREAD_ID,
+  TRADE_OFFERS,
+  TradeOffer,
+  canAffordTrade,
+  MAX_TRADE_QUANTITY,
   LakeState,
   DARK_FOREST_TRANSITION,
   darkForestBandAt,
@@ -72,6 +81,11 @@ import {
   MEAT_ICON_HALF_BLOCKS,
   drawLeatherIcon,
   LEATHER_ICON_HALF_BLOCKS,
+  drawBreadIcon,
+  BREAD_ICON_HALF_BLOCKS,
+  drawBerrySeedIcon,
+  drawWheatSeedIcon,
+  SEED_ICON_HALF_BLOCKS,
   drawBackpackIcon,
   drawFishIcon,
   FISH_ICON_HALF_BLOCKS,
@@ -93,8 +107,12 @@ import {
 import {
   WOOD,
   woodTile,
+  woodPanel,
+  woodSlot,
+  pixelRoundRect,
   drawCarvedBook,
   drawCarvedPaw,
+  drawCarvedStand,
   LEATHER,
   drawLeatherCover,
   drawPageSheet,
@@ -320,6 +338,8 @@ function clamp01(v: number): number {
 export class HUD {
   private readonly canvas: HTMLCanvasElement;
   private readonly ctx: CanvasRenderingContext2D;
+  // The trading post's quantity field — see the constructor for setup.
+  private readonly qtyInput: HTMLInputElement;
   private inventory: Record<string, number> = {};
   private notifications: Notification[] = [];
 
@@ -360,6 +380,13 @@ export class HUD {
   // ANIMALS its current page shows.
   private bestiaryOpen = false;
   private bestiaryPage = 0;
+  // Whether the trading post is open over the game — no pagination of its
+  // own, every offer fits on its one fixed spread (see tradeLayout).
+  private tradeOpen = false;
+  // How many batches of an offer a click executes — the stepper's value
+  // (see qtyInput/adjustTradeQty), applied uniformly to whichever row is
+  // clicked rather than tracked per-row.
+  private tradeQty = 1;
   // Last known cursor position, fed in each frame by the game loop — the HUD
   // draws hover states for its wooden buttons, which a click-only interface
   // can't tell it about.
@@ -376,6 +403,52 @@ export class HUD {
     // sprite image (see drawItemIcon) that needs this to stay crisp at
     // hotbar-icon scale instead of blurring like a photo thumbnail.
     this.ctx.imageSmoothingEnabled = false;
+
+    // The trading post's quantity field: a real <input> laid over the
+    // canvas, same reasoning as ChatBox's composer — a caret and selection
+    // that behave correctly for free, rather than reimplementing text entry
+    // in canvas. Repositioned every frame the panel is open (see
+    // drawTradePanel) to stay glued to the stepper's box; hidden otherwise.
+    this.qtyInput = document.createElement('input');
+    this.qtyInput.type = 'text';
+    this.qtyInput.inputMode = 'numeric';
+    this.qtyInput.maxLength = String(MAX_TRADE_QUANTITY).length;
+    this.qtyInput.autocomplete = 'off';
+    this.qtyInput.spellcheck = false;
+    this.qtyInput.value = '1';
+    this.qtyInput.style.cssText = [
+      'position:fixed',
+      'display:none',
+      'z-index:25',
+      'box-sizing:border-box',
+      'text-align:center',
+      'font:bold 13px "Courier New", monospace',
+      'color:#f4e4c1',
+      'background:#20140a',
+      'border:2px solid #3a2513',
+      'border-radius:3px',
+      'outline:none',
+      'padding:0',
+    ].join(';');
+    document.body.appendChild(this.qtyInput);
+
+    // Digits only, live — invalid characters are stripped as they're typed
+    // rather than rejected key-by-key, so paste works too. An empty field
+    // reads as 1 for gameplay purposes without forcing "1" back into the box
+    // mid-edit; blur is what actually normalizes what's shown (see below).
+    this.qtyInput.addEventListener('input', () => {
+      const digits = this.qtyInput.value.replace(/[^0-9]/g, '');
+      if (digits !== this.qtyInput.value) this.qtyInput.value = digits;
+      const n = digits ? parseInt(digits, 10) : 0;
+      this.tradeQty = Math.max(1, Math.min(MAX_TRADE_QUANTITY, n || 1));
+    });
+    this.qtyInput.addEventListener('blur', () => {
+      this.qtyInput.value = String(this.tradeQty);
+    });
+    // Keys typed here shouldn't also reach the game's window-level listeners
+    // (same reasoning as ChatBox) — Escape would otherwise close the panel
+    // out from under a field that's still focused.
+    this.qtyInput.addEventListener('keydown', (e) => e.stopPropagation());
   }
 
   resize(): void {
@@ -544,16 +617,18 @@ export class HUD {
     this.drawCrafting(H);
     this.drawBookTile(W);
     this.drawBestiaryTile(W);
+    this.drawTradeTile(W);
     this.drawLeaderboard(state, me, W);
     this.drawChatLog(W);
     this.drawClock(state, W, H);
     this.drawMinimap(state, me, W, H);
     this.drawNotifications(me, W, H);
     // Last, so their dimmed backdrops sit over the rest of the HUD. Only one
-    // of the two is ever open at once (see toggleRecipeBook/toggleBestiary),
-    // so which one is drawn last here doesn't actually matter.
+    // of the three is ever open at once (see toggleRecipeBook/toggleBestiary/
+    // toggleTrade), so which one is drawn last here doesn't actually matter.
     this.drawRecipeBook(W, H);
     this.drawBestiary(W, H);
+    this.drawTradePanel(W, H);
 
     // Prune expired notifications
     const now = Date.now();
@@ -924,20 +999,21 @@ export class HUD {
   }
 
   /**
-   * Draws a recipe's ingredients across the book entry as item icons with
+   * Draws a cost (a recipe's ingredients, or a trade offer's single `give`
+   * item — see drawTradePanel) across the book entry as item icons with
    * `have/need` counts, coloured by whether the player is short. `y` is the
    * vertical centre of the strip. Icons are drawn at ICON_INGREDIENT rather
    * than squeezed to fit: item art is built from whole blocks, and much
    * smaller than this they stop resembling the same objects.
    */
-  private drawCostStrip(recipe: Recipe, x: number, y: number): void {
+  private drawCostStrip(cost: Record<string, number>, x: number, y: number): void {
     const { ctx } = this;
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
     ctx.font = 'bold 11px "Courier New"';
 
     let cx = x;
-    for (const [item, need] of Object.entries(recipe.cost)) {
+    for (const [item, need] of Object.entries(cost)) {
       const have = this.inventory[item] ?? 0;
       this.drawItemIcon(item, cx + ICON_INGREDIENT / 2, y, ICON_INGREDIENT, '▪');
       cx += ICON_INGREDIENT + 2;
@@ -951,10 +1027,13 @@ export class HUD {
 
   // ── Recipe book ────────────────────────────────────────────────────────────
 
-  /** Opens/closes the full recipe catalogue. Opening it closes the bestiary — only one full-screen book at a time. */
+  /** Opens/closes the full recipe catalogue. Opening it closes the bestiary/trading post — only one full-screen panel at a time. */
   toggleRecipeBook(): void {
     this.bookOpen = !this.bookOpen;
-    if (this.bookOpen) this.bestiaryOpen = false;
+    if (this.bookOpen) {
+      this.bestiaryOpen = false;
+      this.tradeOpen = false;
+    }
   }
 
   closeRecipeBook(): void {
@@ -1126,7 +1205,7 @@ export class HUD {
         ctx.fillStyle = LEATHER.inkDim;
         ctx.fillText(`${recipe.craftTime}s`, textX + nameW + 8, y + 17);
 
-        this.drawCostStrip(recipe, textX, y + h - 18);
+        this.drawCostStrip(recipe.cost, textX, y + h - 18);
 
         // Station requirement: the actual bench/campfire sprite plus a
         // label, rather than an emoji that renders in whatever the OS feels
@@ -1269,10 +1348,13 @@ export class HUD {
   // Deliberately a different material from the recipe book's wooden panel, so
   // the two read as distinct objects rather than the same UI reskinned.
 
-  /** Opens/closes the compendium. Opening it closes the recipe book — only one full-screen book at a time. */
+  /** Opens/closes the compendium. Opening it closes the recipe book/trading post — only one full-screen panel at a time. */
   toggleBestiary(): void {
     this.bestiaryOpen = !this.bestiaryOpen;
-    if (this.bestiaryOpen) this.bookOpen = false;
+    if (this.bestiaryOpen) {
+      this.bookOpen = false;
+      this.tradeOpen = false;
+    }
   }
 
   closeBestiary(): void {
@@ -1303,6 +1385,28 @@ export class HUD {
     ctx.textBaseline = 'top';
     ctx.fillStyle = 'rgba(255,255,255,0.65)';
     ctx.fillText('Press B', t.x + t.w / 2, t.y + t.h + 4);
+  }
+
+  /** Screen rect of the trading post's button — just left of the compendium tile, same size. */
+  private tradeButtonRect(W: number): Rect {
+    const bestiary = this.bestiaryButtonRect(W);
+    return { x: bestiary.x - 8 - BOOK_TILE, y: bestiary.y, w: BOOK_TILE, h: BOOK_TILE };
+  }
+
+  /** The market-stand-stamped wooden tile that opens the trading post, styled to match drawBookTile/drawBestiaryTile. */
+  private drawTradeTile(W: number): void {
+    const { ctx } = this;
+    const t = this.tradeButtonRect(W);
+    const hovered = this.pointerInside(t.x, t.y, t.w, t.h);
+
+    woodTile(ctx, t.x, t.y, t.w, t.h, { radius: 6, seed: 59, hover: hovered, active: this.tradeOpen });
+    drawCarvedStand(ctx, t.x + t.w / 2, t.y + t.h / 2 - 1, t.w - 14);
+
+    ctx.font = 'bold 9px "Courier New"';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    ctx.fillStyle = 'rgba(255,255,255,0.65)';
+    ctx.fillText('Press V', t.x + t.w / 2, t.y + t.h + 4);
   }
 
   /**
@@ -1588,6 +1692,265 @@ export class HUD {
       return true;
     }
     return true;
+  }
+
+  // ── Trading post ─────────────────────────────────────────────────────────
+  // A one-way vendor: sell berries or wheat for wood/stone/gold/diamond (see
+  // shared TRADE_OFFERS). Wooden-plank chrome (woodPanel/woodSlot — the same
+  // material the corner buttons are built from) rather than the recipe
+  // book's leather-and-parchment look, so it reads as a functional shop GUI
+  // sitting over the game rather than another book to page through. Every
+  // offer fits on one fixed spread (berries on the left, wheat on the
+  // right), so the only navigation is the quantity stepper (tradeQty),
+  // which scales every offer's give/get before it's shown or sent (see
+  // qtyInput/adjustTradeQty).
+
+  closeTrade(): void {
+    this.tradeOpen = false;
+  }
+
+  isTradeOpen(): boolean {
+    return this.tradeOpen;
+  }
+
+  /** Opens/closes the trading post. Opening it closes the recipe book/bestiary — only one full-screen panel at a time. */
+  toggleTrade(): void {
+    this.tradeOpen = !this.tradeOpen;
+    if (this.tradeOpen) {
+      this.bookOpen = false;
+      this.bestiaryOpen = false;
+      this.qtyInput.value = String(this.tradeQty);
+    }
+  }
+
+  /** The quantity a trade-row click currently executes — see the panel's stepper. */
+  getTradeQuantity(): number {
+    return this.tradeQty;
+  }
+
+  /** Nudges the quantity stepper by `delta`, clamped to [1, MAX_TRADE_QUANTITY] — see qtyMinus/qtyPlus below. */
+  private adjustTradeQty(delta: number): void {
+    this.tradeQty = Math.max(1, Math.min(MAX_TRADE_QUANTITY, this.tradeQty + delta));
+    this.qtyInput.value = String(this.tradeQty);
+  }
+
+  /**
+   * The panel plus its fixed two-column spread and quantity stepper — one
+   * place so the renderer and the click hit-tests agree (same reasoning as
+   * recipeBookLayout). Berries fill the left page top-to-bottom, wheat the
+   * right, in the same wood/stone/gold/diamond order both use (see
+   * TRADE_OFFERS).
+   */
+  private tradeLayout(W: number, H: number): {
+    panel: Rect;
+    close: Rect;
+    qtyMinus: Rect;
+    qtyBox: Rect;
+    qtyPlus: Rect;
+    left: Rect;
+    right: Rect;
+    entries: (Rect & { offer: TradeOffer })[];
+  } {
+    const panelW = Math.min(820, W - 80);
+    const panelH = Math.min(540, H - 80);
+    const px = Math.round((W - panelW) / 2);
+    const py = Math.round((H - panelH) / 2);
+
+    const pad = 22;
+    const gutter = 14;
+    const titleH = 42;
+    const qtyRowH = 34;
+    const columnHeaderH = 20;
+    const pageW = (panelW - pad * 2 - gutter) / 2;
+    const pageH = panelH - pad * 2 - titleH - qtyRowH - columnHeaderH;
+
+    const left: Rect = { x: px + pad, y: py + pad + titleH + qtyRowH + columnHeaderH, w: pageW, h: pageH };
+    const right: Rect = { x: left.x + pageW + gutter, y: left.y, w: pageW, h: pageH };
+
+    const berryOffers = TRADE_OFFERS.filter((o) => o.give.type === 'berry');
+    const wheatOffers = TRADE_OFFERS.filter((o) => o.give.type === 'wheat');
+    const rowGap = 10;
+    const rowH = Math.max(50, Math.min(90, (pageH - (berryOffers.length - 1) * rowGap) / berryOffers.length));
+
+    const entries: (Rect & { offer: TradeOffer })[] = [
+      ...berryOffers.map((offer, i) => ({ offer, x: left.x, y: left.y + i * (rowH + rowGap), w: left.w, h: rowH })),
+      ...wheatOffers.map((offer, i) => ({ offer, x: right.x, y: right.y + i * (rowH + rowGap), w: right.w, h: rowH })),
+    ];
+
+    const qtyBtnW = 26;
+    const qtyBtnH = 26;
+    const qtyBoxW = 56;
+    const qtyY = py + pad + titleH + (qtyRowH - qtyBtnH) / 2;
+    const qtyCenterX = px + panelW / 2;
+
+    return {
+      panel: { x: px, y: py, w: panelW, h: panelH },
+      close: { x: px + panelW - pad - 22, y: py + 10, w: 22, h: 22 },
+      qtyMinus: { x: qtyCenterX - qtyBoxW / 2 - 6 - qtyBtnW, y: qtyY, w: qtyBtnW, h: qtyBtnH },
+      qtyBox: { x: qtyCenterX - qtyBoxW / 2, y: qtyY, w: qtyBoxW, h: qtyBtnH },
+      qtyPlus: { x: qtyCenterX + qtyBoxW / 2 + 6, y: qtyY, w: qtyBtnW, h: qtyBtnH },
+      left,
+      right,
+      entries,
+    };
+  }
+
+  /** A small square wooden button with a centered glyph — the quantity stepper's −/+ and the panel's own close button. */
+  private drawWoodButton(r: Rect, label: string, hover: boolean): void {
+    const { ctx } = this;
+    ctx.fillStyle = WOOD.edge;
+    ctx.fill(pixelRoundRect(r.x, r.y, r.w, r.h, 4));
+    ctx.fillStyle = hover ? WOOD.ember : WOOD.frame;
+    ctx.fill(pixelRoundRect(r.x + 1, r.y + 1, r.w - 2, r.h - 2, 3));
+    ctx.font = 'bold 13px "Courier New"';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = WOOD.ink;
+    ctx.fillText(label, r.x + r.w / 2, r.y + r.h / 2 + 1);
+  }
+
+  private drawTradePanel(W: number, H: number): void {
+    // Keeps the real <input> glued to the stepper's box every frame this is
+    // open — the panel can move (window resize), and canvas pixel
+    // coordinates map 1:1 onto fixed-position CSS pixels the same way
+    // ChatBox's own composer does. Hidden the instant the panel isn't.
+    this.qtyInput.style.display = this.tradeOpen ? 'block' : 'none';
+    if (!this.tradeOpen) return;
+    const { ctx } = this;
+    const { panel, close, qtyMinus, qtyBox, qtyPlus, left, right, entries } = this.tradeLayout(W, H);
+
+    this.qtyInput.style.left = `${Math.round(qtyBox.x)}px`;
+    this.qtyInput.style.top = `${Math.round(qtyBox.y)}px`;
+    this.qtyInput.style.width = `${Math.round(qtyBox.w)}px`;
+    this.qtyInput.style.height = `${Math.round(qtyBox.h)}px`;
+
+    ctx.fillStyle = 'rgba(0,0,0,0.55)';
+    ctx.fillRect(0, 0, W, H);
+
+    woodPanel(ctx, panel.x, panel.y, panel.w, panel.h, { plankH: 14, border: 4, seed: 53, nails: true });
+
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = 'bold 15px "Courier New"';
+    ctx.fillStyle = WOOD.ink;
+    ctx.fillText('TRADING POST', panel.x + panel.w / 2, panel.y + 20);
+
+    ctx.font = 'italic 11px "Courier New"';
+    ctx.fillStyle = WOOD.inkDim;
+    ctx.fillText('Sell what you grow for what you’d otherwise have to mine', panel.x + panel.w / 2, panel.y + 38);
+
+    // Quantity stepper, centered under the title — the real <input> (see
+    // above) sits visually between these two buttons.
+    this.drawWoodButton(qtyMinus, '−', this.pointerInside(qtyMinus.x, qtyMinus.y, qtyMinus.w, qtyMinus.h));
+    this.drawWoodButton(qtyPlus, '+', this.pointerInside(qtyPlus.x, qtyPlus.y, qtyPlus.w, qtyPlus.h));
+    ctx.font = '9px "Courier New"';
+    ctx.fillStyle = WOOD.inkMuted;
+    ctx.textAlign = 'center';
+    ctx.fillText('QTY PER TRADE', qtyBox.x + qtyBox.w / 2, qtyBox.y - 7);
+
+    ctx.textAlign = 'left';
+    ctx.font = 'bold 11px "Courier New"';
+    ctx.fillStyle = WOOD.ink;
+    ctx.fillText('BERRIES', left.x + 2, left.y - 8);
+    ctx.fillText('WHEAT', right.x + 2, right.y - 8);
+
+    for (const { offer, x, y, w, h } of entries) {
+      const affordable = canAffordTrade(offer, this.inventory, this.tradeQty);
+      const hovered = this.pointerInside(x, y, w, h);
+
+      ctx.fillStyle = 'rgba(0,0,0,0.4)';
+      this.pill(x, y, w, h, 6);
+      ctx.fill();
+
+      if (hovered) {
+        ctx.globalAlpha = 0.12;
+        ctx.fillStyle = '#ffffff';
+        this.pill(x, y, w, h, 6);
+        ctx.fill();
+        ctx.globalAlpha = 1;
+      }
+
+      // A green edge on offers you can afford at the current quantity —
+      // same "lit" convention the crafting panel's affordable rows use.
+      ctx.strokeStyle = affordable ? 'rgba(46,204,113,0.7)' : 'rgba(255,255,255,0.12)';
+      ctx.lineWidth = 1.5;
+      this.pill(x + 0.75, y + 0.75, w - 1.5, h - 1.5, 5);
+      ctx.stroke();
+
+      const slotSize = Math.min(ICON_RESULT, h - 14) + 8;
+      woodSlot(ctx, x + 8, y + h / 2 - slotSize / 2, slotSize, slotSize);
+      ctx.globalAlpha = affordable ? 1 : 0.5;
+      this.drawItemIcon(offer.get.type, x + 8 + slotSize / 2, y + h / 2, slotSize - 8);
+      ctx.globalAlpha = 1;
+
+      const textX = x + 8 + slotSize + 12;
+      const name = `${offer.get.amount * this.tradeQty} ${itemDisplayName(offer.get.type)}`;
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.font = 'bold 12px "Courier New"';
+      ctx.fillStyle = affordable ? WOOD.ink : WOOD.inkDim;
+      ctx.fillText(name, textX, y + 16);
+
+      this.drawCostStrip({ [offer.give.type]: offer.give.amount * this.tradeQty }, textX, y + h - 18);
+    }
+
+    this.drawWoodButton(close, '✕', this.pointerInside(close.x, close.y, close.w, close.h));
+
+    ctx.font = '9px "Courier New"';
+    ctx.fillStyle = 'rgba(255,255,255,0.35)';
+    ctx.textAlign = 'center';
+    ctx.fillText('click a lit offer to trade  ·  V or Esc to close', panel.x + panel.w / 2, panel.y + panel.h - 6);
+  }
+
+  /**
+   * Called with a canvas click. Returns the offer id to execute if the
+   * click landed on a row affordable at the current quantity in the open
+   * panel, or null to let the click fall through to the game.
+   */
+  hitTestTrade(x: number, y: number): string | null {
+    if (!this.tradeOpen) return null;
+    for (const { offer, x: ex, y: ey, w, h } of this.tradeLayout(this.canvas.width, this.canvas.height).entries) {
+      if (!rectHas({ x: ex, y: ey, w, h }, x, y)) continue;
+      return canAffordTrade(offer, this.inventory, this.tradeQty) ? offer.id : null;
+    }
+    return null;
+  }
+
+  /**
+   * Click handling for the trading post's chrome: the corner button toggles
+   * it, the quantity stepper's −/+ adjust tradeQty, and the ✕ or
+   * any click off the panel closes it. Clicks *inside* the open panel
+   * return false so they can still be tested against offer rows (see
+   * hitTestTrade).
+   */
+  handleTradeClick(x: number, y: number): boolean {
+    const button = this.tradeButtonRect(this.canvas.width);
+    if (rectHas(button, x, y)) {
+      this.toggleTrade();
+      return true;
+    }
+    if (!this.tradeOpen) return false;
+
+    const { panel, close, qtyMinus, qtyPlus } = this.tradeLayout(this.canvas.width, this.canvas.height);
+    if (rectHas(close, x, y) || !rectHas(panel, x, y)) {
+      this.tradeOpen = false;
+      return true;
+    }
+    if (rectHas(qtyMinus, x, y)) {
+      this.adjustTradeQty(-1);
+      return true;
+    }
+    if (rectHas(qtyPlus, x, y)) {
+      this.adjustTradeQty(1);
+      return true;
+    }
+    return false;
+  }
+
+  /** True if the click landed on trading-post UI (used to swallow it so it doesn't also swing at whatever is behind the panel). */
+  isOverTrade(x: number, y: number): boolean {
+    if (this.tradeOpen) return true;
+    return rectHas(this.tradeButtonRect(this.canvas.width), x, y);
   }
 
   // ── Chat log ───────────────────────────────────────────────────────────────
@@ -1972,6 +2335,21 @@ export class HUD {
       return;
     }
 
+    if (item === BREAD_ID) {
+      drawSprite(BREAD_ICON_HALF_BLOCKS, (block) => drawBreadIcon(ctx, block));
+      return;
+    }
+
+    if (item === BERRY_SEED_ID) {
+      drawSprite(SEED_ICON_HALF_BLOCKS, (block) => drawBerrySeedIcon(ctx, block));
+      return;
+    }
+
+    if (item === WHEAT_SEED_ID) {
+      drawSprite(SEED_ICON_HALF_BLOCKS, (block) => drawWheatSeedIcon(ctx, block));
+      return;
+    }
+
     if (TOOL_ITEM_IDS.has(item)) {
       drawSprite(toolIconHalfBlocks(item), (block) => drawToolIcon(ctx, item, block));
       return;
@@ -2055,6 +2433,8 @@ const TOOL_ITEM_IDS = new Set([
   GOLD_PICKAXE_ID,
   GOLD_SWORD_ID,
   FISHING_ROD_ID,
+  WOODEN_HOE_ID,
+  WATERING_CAN_ID,
 ]);
 
 /** dayTime: 0 = noon, 0.5 = midnight, wraps 0..1 → a 12-hour clock string. */

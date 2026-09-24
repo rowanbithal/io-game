@@ -62,7 +62,7 @@ export const DROWNING_DAMAGE = 12; // HP/s once air hits 0 — fast, well above 
 // it eats it instead of holding it (see HUD.selectSlot) — without
 // duplicating the list. Raw meat is deliberately absent: it has to be cooked
 // into cooked_meat (see shared/crafting.ts) before it's edible.
-export const FOOD_ITEMS = new Set(['berry', 'mushroom', 'cooked_meat']);
+export const FOOD_ITEMS = new Set(['berry', 'mushroom', 'cooked_meat', 'bread']);
 
 // How much hunger each food item restores when eaten (see Game.handleEat) —
 // per item rather than a flat amount, so cooking meat is worth more than a
@@ -71,6 +71,7 @@ export const FOOD_HUNGER_RESTORE: Record<string, number> = {
   berry: 2,
   mushroom: 2,
   cooked_meat: 15,
+  bread: 18, // Baked from farmed wheat at a campfire — the best hunger restore in the game, rewarding the farming loop over foraging
 };
 
 // ── World ─────────────────────────────────────────────────────────────────────
@@ -551,6 +552,53 @@ export const DIAMOND_MAX_Y = DARK_FOREST_BAND * 0.4;
 // would allow.
 export const HOTBAR_BASE_SLOTS = 10;
 export const HOTBAR_BACKPACK_SLOTS = 14;
+
+// ── Farming ──────────────────────────────────────────────────────────────────
+// A tilled plot (see Game.handleTill/FarmPlotState) footprint, in world
+// units — a multiple of GRID_CELL (three cells) like every other placed
+// footprint, well under a structure's STRUCTURE_SPAN so a small farm reads
+// as a tight grid of beds rather than eating the same room a campfire
+// would. Also the snap size a till lands on (see Game.handleTill, which
+// rounds the aim point to the nearest FARM_PLOT_SPAN-multiple world
+// position via resourceCell) — every plot's center is therefore always an
+// exact multiple of this, which is what keeps plots aligned to the game's
+// placement grid and guarantees two of them can never partially overlap.
+export const FARM_PLOT_SPAN = 30;
+// How far from the player a plot can be tilled, or an existing plot watered/
+// planted/harvested from — same reach as placing a structure (see PLACE_RANGE)
+// for till/water/plant, and see HARVEST_RANGE for picking a ready crop.
+export const FARM_PLOT_INTERACT_RADIUS = FARM_PLOT_SPAN / 2;
+// Seconds a dry plot's crop takes to reach maturity, per crop — wheat is the
+// quicker of the two, berries take longer but then never need replanting
+// (see BERRY_PLANT_REGROW_TIME). Halved (see WET_GROWTH_MULTIPLIER) while wet.
+export const WHEAT_GROW_TIME = 50;
+export const BERRY_GROW_TIME = 70;
+// Growth rate multiplier while a plot is wet (see Game.handleWater) — the
+// entire reason to keep a watering can filled instead of just waiting out a
+// dry plot.
+export const WET_GROWTH_MULTIPLIER = 2;
+// Seconds a watering keeps a plot wet before it dries back out — short enough
+// that staying ahead of it is a real, repeated choice rather than a single
+// one-and-done action per plot.
+export const WATERING_WET_DURATION = 60;
+// A watering can's charges — each water action spends one (see
+// Game.handleWater) — refilled to full in one tick by wading into any lake
+// or sea water (see Game.refillWateringCan), same isInWater check thirst
+// already uses.
+export const WATERING_CAN_MAX_CHARGES = 8;
+// Wheat is picked once and gone — the plot reverts to bare tilled soil and
+// needs a fresh seed (see ServerFarmPlot.harvest). A farmed clump yields more
+// than a wild one (RESOURCE_DROPS.wheat's 2) to reward the water/wait loop.
+export const FARMED_WHEAT_YIELD = 4;
+// A berry plant never needs replanting once it matures — only the single
+// ripe batch is picked, then it regrows on its own (see
+// BERRY_PLANT_REGROW_TIME). Matches the wild bush's own per-pick yield
+// (RESOURCE_DROPS.berry).
+export const FARMED_BERRY_YIELD = 1;
+// Seconds a mature berry plant takes to grow its next ripe batch after being
+// picked — also sped up by WET_GROWTH_MULTIPLIER while the plot is wet, same
+// as the initial growth to maturity.
+export const BERRY_PLANT_REGROW_TIME = 40;
 
 // ── Chat ─────────────────────────────────────────────────────────────────────
 /** Longest message accepted. Enforced server-side too — the client's input

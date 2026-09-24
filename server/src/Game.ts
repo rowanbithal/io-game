@@ -10,6 +10,11 @@ import {
   CraftRequest,
   PlaceRequest,
   CastRequest,
+  TillRequest,
+  PlantRequest,
+  TradeRequest,
+  TRADE_OFFERS_BY_ID,
+  MAX_TRADE_QUANTITY,
   EatRequest,
   EquipRequest,
   ChatRequest,
@@ -133,6 +138,7 @@ import {
   DARK_FOREST_EDGE_AMPLITUDE,
   desertBandAt,
   isInDesert,
+  resourceCell,
   BOT_SEARCH_RADIUS,
   BOT_ENGAGE_RANGE,
   BOT_STRING_HUNT_RANGE,
@@ -176,11 +182,21 @@ import {
   BACKPACK_ID,
   HOTBAR_BASE_SLOTS,
   HOTBAR_BACKPACK_SLOTS,
+  FarmPlotState,
+  CropType,
+  WOODEN_HOE_ID,
+  WATERING_CAN_ID,
+  BERRY_SEED_ID,
+  WHEAT_SEED_ID,
+  FARM_PLOT_SPAN,
+  FARM_PLOT_INTERACT_RADIUS,
+  WATERING_CAN_MAX_CHARGES,
 } from '@io-game/shared';
 
 import { ServerPlayer } from './entities/Player';
 import { ServerResource } from './entities/Resource';
 import { ServerStructure } from './entities/Structure';
+import { ServerFarmPlot } from './entities/FarmPlot';
 import { ServerSpider } from './entities/Spider';
 import { ServerFox } from './entities/Fox';
 import { ServerBeetle } from './entities/Beetle';
@@ -240,12 +256,19 @@ const WEAPON_DAMAGE: Record<string, number> = {
   [GOLD_SWORD_ID]: GOLD_SWORD_DAMAGE_MULTIPLIER,
 };
 
-// Score per unit of a resource actually collected (see processHarvest) —
-// ramps up with how hard the resource is to reach, gold and diamond needing
-// progressively better pickaxes (see GOLD_CAPABLE_TOOLS/DIAMOND_CAPABLE_TOOLS).
+// Score per unit of a resource actually collected — read both by the wild-
+// resource loop and the farm-plot loop in processHarvest, so a wheat/berry
+// harvest scores the same per unit whether it was foraged wild or grown on
+// a tilled plot (see ServerFarmPlot.harvest's FARMED_WHEAT_YIELD/
+// FARMED_BERRY_YIELD, which just change the count handed to this, not
+// whether it counts at all). Otherwise ramps up with how hard the resource
+// is to reach, gold and diamond needing progressively better pickaxes (see
+// GOLD_CAPABLE_TOOLS/DIAMOND_CAPABLE_TOOLS).
 const RESOURCE_SCORE: Record<string, number> = {
   wood: 1,
   stone: 2,
+  wheat: 1,
+  berry: 1,
   gold: 10,
   diamond: 50,
 };
@@ -424,6 +447,7 @@ export class Game {
   // else riding along in it, player/mob positions included.
   private readonly cameraResourceCache = new Map<string, ResourceState[]>();
   private readonly structures: ServerStructure[] = [];
+  private readonly farmPlots = new Map<string, ServerFarmPlot>();
   private readonly spiders = new Map<string, ServerSpider>();
   private readonly foxes = new Map<string, ServerFox>();
   private readonly beetles = new Map<string, ServerBeetle>();
@@ -524,6 +548,7 @@ export class Game {
     // crafting bench (which has no lifetime of its own) would sit on the map
     // for the rest of the server's uptime, one more every time anyone quits.
     this.removeStructuresOwnedBy(id);
+    this.removeFarmPlotsOwnedBy(id);
     if (player) console.log(`[Game] - ${player.name} (${id})`);
   }
 
@@ -608,6 +633,169 @@ export class Game {
     this.sendInventory(player, `${recipe.name} placed`);
   }
 
+  /** Nearest farm plot to (x, y) within `radius`, or null — used by handlePlant to resolve a mouse-aimed click onto an actual plot (watering isn't aimed this way any more — see handleWater/findFarmPlotsInRange). */
+  private nearestFarmPlot(x: number, y: number, radius: number): ServerFarmPlot | null {
+    let best: ServerFarmPlot | null = null;
+    let bestDist = radius;
+    for (const plot of this.farmPlots.values()) {
+      const dist = Math.hypot(x - plot.x, y - plot.y);
+      if (dist <= bestDist) {
+        best = plot;
+        bestDist = dist;
+      }
+    }
+    return best;
+  }
+
+  /**
+   * Rejects a tilling spot that overlaps a resource, water, another farm
+   * plot, or a structure — same clearance reasoning as isPlaceable (see its
+   * own doc comment), just measured against FARM_PLOT_SPAN's footprint
+   * instead of a StructureType's. Also confines plots to ordinary plains
+   * ground: the dark forest (and the desert carved out of its own band, see
+   * isInDesert) is excluded outright, both so the client's plot rendering
+   * never has to contend with the forest/desert ground layers drawn over
+   * plains (see Renderer.drawWorld) and so a crop doesn't quietly inherit
+   * the desert's own DESERT_THIRST_MULTIPLIER-style hostility for free.
+   */
+  private isTillable(x: number, y: number): boolean {
+    if (y < darkForestBandAt(x) || isInDesert(x, y)) return false;
+
+    const half = FARM_PLOT_SPAN / 2;
+    if (this.world.isBlockedByLake(x, y, half)) return false;
+    if (this.world.isBlockedBySeaWater(x, y, half)) return false;
+
+    for (const r of this.world.getNearby(x, y, half + MAX_PLACEMENT_CLEARANCE)) {
+      if (Math.hypot(x - r.x, y - r.y) < PLACEMENT_CLEARANCE[r.type] + half) return false;
+    }
+    for (const s of this.structures) {
+      if (Math.hypot(x - s.x, y - s.y) < (FARM_PLOT_SPAN + STRUCTURE_SPAN[s.type]) / 2) return false;
+    }
+    // Every plot (this one included, once tilled) sits at an exact multiple
+    // of FARM_PLOT_SPAN — see handleTill's snap — so this is really an exact
+    // "is this the same cell" check: two distinct cells are always this far
+    // apart or more, never partway. Adjacent (touching, not overlapping)
+    // cells land exactly on the boundary and are still allowed through.
+    for (const p of this.farmPlots.values()) {
+      if (Math.hypot(x - p.x, y - p.y) < FARM_PLOT_SPAN) return false;
+    }
+    return true;
+  }
+
+  /**
+   * Tills a patch of bare ground into a farm plot — must be holding a hoe.
+   * The aim point snaps to the nearest FARM_PLOT_SPAN-multiple world
+   * position (the exact same "round to a span-sized cell" trick
+   * resourceCell already uses to grid-align trees/rocks/wheat — see
+   * biome.ts) rather than landing wherever the mouse happened to be. That
+   * keeps every plot aligned to the game's placement grid, and — since
+   * isTillable's own plot-clearance check is a distance-under-FARM_PLOT_SPAN
+   * test — is what actually makes two plots geometrically unable to
+   * overlap: snapped to the same grid, two distinct cells are always either
+   * identical (rejected below) or a full span-or-more apart.
+   */
+  handleTill(id: string, { x, y }: TillRequest): void {
+    if (this.spectators.has(id)) return;
+    const player = this.players.get(id);
+    const inv = this.inventories.get(id);
+    if (!player || !inv) return;
+    if (player.input.held !== WOODEN_HOE_ID || (inv.get(WOODEN_HOE_ID) ?? 0) < 1) return;
+
+    const { gx, gy } = resourceCell(x, y, FARM_PLOT_SPAN);
+    const tx = gx * FARM_PLOT_SPAN;
+    const ty = gy * FARM_PLOT_SPAN;
+
+    if (Math.hypot(tx - player.x, ty - player.y) > PLACE_RANGE || tx < 0 || ty < 0 || tx > MAP_SIZE || ty > MAP_SIZE) {
+      this.sendInventory(player, 'Too far away');
+      return;
+    }
+    if (!this.isTillable(tx, ty)) {
+      this.sendInventory(player, "Can't till there");
+      return;
+    }
+
+    const plot = new ServerFarmPlot(tx, ty, id);
+    this.farmPlots.set(plot.id, plot);
+    this.sendInventory(player, 'Tilled the soil');
+  }
+
+  /** Plants a seed into an existing bare farm plot — must be holding the matching seed. */
+  handlePlant(id: string, { itemId, x, y }: PlantRequest): void {
+    if (this.spectators.has(id)) return;
+    const player = this.players.get(id);
+    const inv = this.inventories.get(id);
+    if (!player || !inv) return;
+
+    const crop: CropType | null = itemId === BERRY_SEED_ID ? 'berry' : itemId === WHEAT_SEED_ID ? 'wheat' : null;
+    if (!crop || (inv.get(itemId) ?? 0) < 1) return;
+    if (Math.hypot(x - player.x, y - player.y) > PLACE_RANGE) return;
+
+    const plot = this.nearestFarmPlot(x, y, FARM_PLOT_INTERACT_RADIUS);
+    if (!plot) {
+      this.sendInventory(player, 'Needs tilled soil');
+      return;
+    }
+    if (plot.crop) {
+      this.sendInventory(player, 'Already planted');
+      return;
+    }
+
+    plot.plant(crop);
+    const left = (inv.get(itemId) ?? 0) - 1;
+    if (left > 0) inv.set(itemId, left);
+    else inv.delete(itemId);
+    this.sendInventory(player, `Planted ${RECIPES_BY_ID[itemId].name.toLowerCase()}`);
+  }
+
+  /**
+   * Waters every farm plot within swing range in one go — must be holding a
+   * watering can with charges left. Deliberately the same swing-cone reach
+   * a harvest connects with (see inSwingRange/findFarmPlotsInRange), not a
+   * single mouse-aimed plot: one pour spends one charge regardless of how
+   * many plots it lands on, the same way one harvest swing costs a single
+   * cooldown no matter how many resources it hits, so watering a small
+   * cluster of beds is one action instead of one click per bed.
+   */
+  handleWater(id: string): void {
+    if (this.spectators.has(id)) return;
+    const player = this.players.get(id);
+    const inv = this.inventories.get(id);
+    if (!player || !inv) return;
+    if (player.input.held !== WATERING_CAN_ID || (inv.get(WATERING_CAN_ID) ?? 0) < 1) return;
+    if (player.wateringCanCharges < 1) {
+      this.sendInventory(player, 'Watering can is empty — refill by wading into water');
+      return;
+    }
+
+    const plots = this.findFarmPlotsInRange(player, false);
+    if (plots.length === 0) return;
+
+    for (const plot of plots) plot.water();
+    player.wateringCanCharges -= 1;
+    const label = plots.length === 1 ? 'plot' : 'plots';
+    this.sendInventory(player, `Watered ${plots.length} ${label} — ${player.wateringCanCharges}/${WATERING_CAN_MAX_CHARGES} uses left`);
+  }
+
+  /** Refills a held watering can to full while its owner is wading — see WATERING_CAN_MAX_CHARGES. */
+  private refillWateringCan(player: ServerPlayer, inWater: boolean): void {
+    if (!inWater || player.wateringCanCharges >= WATERING_CAN_MAX_CHARGES) return;
+    const inv = this.inventories.get(player.id);
+    if (!inv || (inv.get(WATERING_CAN_ID) ?? 0) < 1) return;
+    player.wateringCanCharges = WATERING_CAN_MAX_CHARGES;
+  }
+
+  /** Ages every farm plot's growth/wetness — see ServerFarmPlot.update. */
+  private updateFarmPlots(dt: number): void {
+    for (const plot of this.farmPlots.values()) plot.update(dt);
+  }
+
+  /** Removes every farm plot a given player tilled — see checkDeath/removePlayer, same "nothing survives" rule as removeStructuresOwnedBy. */
+  private removeFarmPlotsOwnedBy(ownerId: string): void {
+    for (const plot of this.farmPlots.values()) {
+      if (plot.ownerId === ownerId) this.farmPlots.delete(plot.id);
+    }
+  }
+
   /**
    * Ages every structure, dropping the ones that burn out this tick (see
    * ServerStructure.update). Torn-down structures need no teardown beyond
@@ -678,6 +866,43 @@ export class Game {
     const restore = FOOD_HUNGER_RESTORE[itemId];
     player.hunger = Math.min(MAX_HUNGER, player.hunger + restore);
     this.sendInventory(player, `+${restore} hunger`);
+  }
+
+  /**
+   * Executes `quantity` batches of a trading-post offer at once (see
+   * TRADE_OFFERS and the trading post's quantity stepper) — an instant,
+   * one-way exchange with no craft timer and no position/held-item
+   * involved, unlike every other inventory-mutating request.
+   * Ingredients-then-result is the same "pay first" shape handleCraft uses
+   * (see hasHotbarRoom), just resolved in one step instead of over a
+   * countdown, and scaled by the whole batch at once rather than looped —
+   * a client claiming a huge quantity just fails the affordability check
+   * below, the same as claiming a huge single-item cost would.
+   */
+  handleTrade(id: string, { offerId, quantity }: TradeRequest): void {
+    if (this.spectators.has(id)) return;
+    const player = this.players.get(id);
+    const inv = this.inventories.get(id);
+    if (!player || !inv) return;
+
+    const offer = TRADE_OFFERS_BY_ID[offerId];
+    if (!offer) return;
+    const qty = Math.max(1, Math.min(MAX_TRADE_QUANTITY, Math.floor(quantity) || 1));
+    const giveAmount = offer.give.amount * qty;
+    const getAmount = offer.get.amount * qty;
+
+    if ((inv.get(offer.give.type) ?? 0) < giveAmount) return;
+    if (!inv.has(offer.get.type) && !this.hasHotbarRoom(player, inv, { [offer.give.type]: giveAmount })) {
+      this.sendInventory(player, 'Hotbar full — craft a backpack for more room');
+      return;
+    }
+
+    const left = (inv.get(offer.give.type) ?? 0) - giveAmount;
+    if (left > 0) inv.set(offer.give.type, left);
+    else inv.delete(offer.give.type);
+
+    inv.set(offer.get.type, (inv.get(offer.get.type) ?? 0) + getAmount);
+    this.sendInventory(player, `Traded ${giveAmount} ${offer.give.type} for ${getAmount} ${offer.get.type}`);
   }
 
   /**
@@ -871,9 +1096,9 @@ export class Game {
    * Dead resources don't count here — a harvested stump, an empty berry
    * bush, is exactly the ground a player should be able to reclaim and build
    * on. That used to make a structure planted there just get grown through a
-   * minute later, but isBlockedByStructure now stops the resource side of
-   * that instead (see World.update): the respawn itself is what's held off,
-   * not the placement.
+   * minute later, but isRespawnBlocked now stops the resource side of that
+   * instead (see World.update): the respawn itself is what's held off, not
+   * the placement.
    */
   private isPlaceable(x: number, y: number, type: StructureType): boolean {
     const half = STRUCTURE_SPAN[type] / 2;
@@ -891,22 +1116,34 @@ export class Game {
       if (Math.hypot(x - s.x, y - s.y) < (STRUCTURE_SPAN[type] + STRUCTURE_SPAN[s.type]) / 2) return false;
     }
 
+    // Nor a farm plot — a wall or bench dropped on tilled soil would sit
+    // half-buried in it, same overlap reasoning as the structures loop above.
+    for (const p of this.farmPlots.values()) {
+      if (Math.hypot(x - p.x, y - p.y) < (STRUCTURE_SPAN[type] + FARM_PLOT_SPAN) / 2) return false;
+    }
+
     return true;
   }
 
   /**
-   * True if a structure already occupies the ground a dead resource of
-   * `type` wants to respawn onto. isPlaceable happily lets a player build
-   * over a harvested stump or empty bush (dead resources carry no clearance
-   * of their own there), so this is what actually keeps the tree/rock/etc.
-   * from growing back through whatever got planted on top of it — same
-   * clearance math as isPlaceable, just checked from the resource's side
-   * rather than the structure's. See World.update, which gates a resource's
-   * respawn on this.
+   * True if a structure or farm plot already occupies the ground a dead
+   * resource of `type` wants to respawn onto. isPlaceable/isTillable both
+   * happily let a player build or till over a harvested stump or empty bush
+   * (dead resources carry no clearance of their own there), so this is what
+   * actually keeps the tree/rock/etc. from growing back through whatever
+   * got placed on top of it — same clearance math as isPlaceable, just
+   * checked from the resource's side rather than the structure's/plot's.
+   * See World.update, which gates a resource's respawn on this.
    */
-  private isBlockedByStructure(x: number, y: number, type: ResourceType): boolean {
+  private isRespawnBlocked(x: number, y: number, type: ResourceType): boolean {
     const clearance = PLACEMENT_CLEARANCE[type];
-    return this.structures.some((s) => Math.hypot(x - s.x, y - s.y) < clearance + STRUCTURE_SPAN[s.type] / 2);
+    for (const s of this.structures) {
+      if (Math.hypot(x - s.x, y - s.y) < clearance + STRUCTURE_SPAN[s.type] / 2) return true;
+    }
+    for (const p of this.farmPlots.values()) {
+      if (Math.hypot(x - p.x, y - p.y) < clearance + FARM_PLOT_SPAN / 2) return true;
+    }
+    return false;
   }
 
   // ── Main simulation step ───────────────────────────────────────────────────
@@ -926,8 +1163,9 @@ export class Game {
     const isDay = isDaytime(this.dayTime);
 
     // Update world (resource respawning)
-    this.world.update(dt, (x, y, type) => this.isBlockedByStructure(x, y, type));
+    this.world.update(dt, (x, y, type) => this.isRespawnBlocked(x, y, type));
     this.updateStructures(dt);
+    this.updateFarmPlots(dt);
 
     // Bots decide first, writing the same PlayerInput a client would have
     // sent this tick — then fall through the ordinary player loop below.
@@ -937,7 +1175,9 @@ export class Game {
     for (const player of this.players.values()) {
       const speedMultiplier = this.getSpeedMultiplier(player);
       const thirstMultiplier = this.getThirstMultiplier(player);
-      player.update(dt, isDay, speedMultiplier, this.isNearFire(player), this.world.isInWater(player.x, player.y), thirstMultiplier);
+      const inWater = this.world.isInWater(player.x, player.y);
+      player.update(dt, isDay, speedMultiplier, this.isNearFire(player), inWater, thirstMultiplier);
+      this.refillWateringCan(player, inWater);
       const pushed = this.pushOutOfResources(player.x, player.y, PLAYER_RADIUS);
       const structPushed = this.pushOutOfStructures(pushed.x, pushed.y, PLAYER_RADIUS);
       player.x = structPushed.x;
@@ -1123,6 +1363,22 @@ export class Game {
     return targets;
   }
 
+  /**
+   * Every farm plot within swing range — the same reach a harvest connects
+   * with (see inSwingRange), shared by processHarvest (readyOnly: true,
+   * only plots with something to pick — see ServerFarmPlot.isReady) and
+   * handleWater (readyOnly: false, every plot gets watered regardless of
+   * what's growing in it, bare tilled soil included).
+   */
+  private findFarmPlotsInRange(player: ServerPlayer, readyOnly: boolean): ServerFarmPlot[] {
+    const targets: ServerFarmPlot[] = [];
+    for (const plot of this.farmPlots.values()) {
+      if (readyOnly && !plot.isReady()) continue;
+      if (this.inSwingRange(player, plot.x, plot.y, FARM_PLOT_INTERACT_RADIUS)) targets.push(plot);
+    }
+    return targets;
+  }
+
   /** Every other player within swing range — PvP uses the same swing as everything else. */
   private findPlayerTargets(attacker: ServerPlayer): ServerPlayer[] {
     const targets: ServerPlayer[] = [];
@@ -1192,12 +1448,14 @@ export class Game {
     const foxTargets = this.findFoxTargets(player);
     const beetleTargets = this.findBeetleTargets(player);
     const playerTargets = this.findPlayerTargets(player);
+    const farmTargets = this.findFarmPlotsInRange(player, true);
     if (
       targets.length === 0 &&
       spiderTargets.length === 0 &&
       foxTargets.length === 0 &&
       beetleTargets.length === 0 &&
-      playerTargets.length === 0
+      playerTargets.length === 0 &&
+      farmTargets.length === 0
     ) {
       return;
     }
@@ -1294,6 +1552,14 @@ export class Game {
         const scorePerUnit = RESOURCE_SCORE[drop.type];
         if (scorePerUnit && gained > 0) player.score += scorePerUnit * gained;
       }
+    }
+
+    for (const plot of farmTargets) {
+      const drop = plot.harvest();
+      if (!drop) continue;
+      const gained = gain(drop.type, drop.count);
+      const scorePerUnit = RESOURCE_SCORE[drop.type];
+      if (scorePerUnit && gained > 0) player.score += scorePerUnit * gained;
     }
 
     if (hotbarFull) this.sendInventory(player, 'Hotbar full — craft a backpack for more room');
@@ -1540,6 +1806,7 @@ export class Game {
     // of every one of them across any number of deaths. Applies to bots too,
     // which is why it sits above the bot branch below.
     this.removeStructuresOwnedBy(player.id);
+    this.removeFarmPlotsOwnedBy(player.id);
 
     const bot = this.bots.find((b) => b.id === player.id);
     if (bot) {
@@ -3535,6 +3802,9 @@ export class Game {
         beetles: Array.from(this.beetles.values())
           .filter(b => Math.hypot(b.x - anchor.x, b.y - anchor.y) <= viewDistance)
           .map(b => b.toState()),
+        farmPlots: Array.from(this.farmPlots.values())
+          .filter(p => Math.hypot(p.x - anchor.x, p.y - anchor.y) <= viewDistance)
+          .map(p => p.toState()),
         spectating: anchor.id !== player.id,
         cameraMode: isCameraViewer,
         cameraResources,
@@ -3579,6 +3849,9 @@ export class Game {
       beetles: Array.from(this.beetles.values())
         .filter(b => Math.hypot(b.x - x, b.y - y) <= VIEW_DISTANCE)
         .map(b => b.toState()),
+      farmPlots: Array.from(this.farmPlots.values())
+        .filter(p => Math.hypot(p.x - x, p.y - y) <= VIEW_DISTANCE)
+        .map(p => p.toState()),
       focus: this.previewBot.id,
       lakes: this.world.lakes,
     };
