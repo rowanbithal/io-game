@@ -1,6 +1,58 @@
 import { ResourceType } from './types';
 import { DARK_FOREST_BAND, SEA_BAND, SEA_SAND_WIDTH, DESERT_BAND, TREE_SPAN, FOREST_TREE_SCALE, FOREST_ROCK_SCALE } from './constants';
 
+// ── Seeded RNG (Mulberry32) ──────────────────────────────────────────────────
+// Shared by both sides: the client uses it to draw a lake/island's jagged
+// coastline (see lakeHarmonics) and endless other cosmetic shape variation,
+// while the server only ever needs it for lakeHarmonics — but it has to be
+// the exact same generator either way, or the two sides would derive
+// different harmonics from the same seed.
+export function mulberry32(seed: number): () => number {
+  return () => {
+    seed |= 0;
+    seed = (seed + 0x6d2b79f5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// ── Lake/island coastline lobes ──────────────────────────────────────────────
+// A lake or island's outline isn't a jittered circle — its radius varies with
+// angle (a few random sine harmonics summed together), giving real coves,
+// bays and headlands instead of just a bumpy circle. Originally client-only
+// (the renderer's own coastline shapes), but the server needs the exact same
+// smooth lobed radius too: gameplay's "is this point in the water" checks
+// used to compare against a plain buffered circle, which could be wildly
+// wrong in either direction against the actual jagged shape a cove pulls
+// back from or a headland bulges past. Computing the identical lobeRadius
+// from the same seed (sent once to the client in LakeState/IslandState, see
+// World.ts) is what keeps collision in step with what's actually drawn.
+export interface LakeHarmonic { freq: number; amp: number; phase: number }
+
+export function lakeHarmonics(seed: number): LakeHarmonic[] {
+  const rng = mulberry32(seed);
+  return [
+    { freq: 2 + Math.floor(rng() * 2), amp: 0.12 + rng() * 0.1, phase: rng() * Math.PI * 2 },
+    { freq: 3 + Math.floor(rng() * 3), amp: 0.07 + rng() * 0.06, phase: rng() * Math.PI * 2 },
+    { freq: 6 + Math.floor(rng() * 4), amp: 0.03 + rng() * 0.04, phase: rng() * Math.PI * 2 },
+  ];
+}
+
+/**
+ * The coastline's own radius at a given angle — the water's edge for a lake,
+ * the land's edge for an island — before any shore ring is added. Linear in
+ * baseRadius, so it works equally whether that's passed in world units (the
+ * server's gameplay checks) or in render "blocks" (the client's per-cell
+ * shape generation, see Renderer.ts's lakeWaterCells/lakeShoreCells) — same
+ * proportional bulge either way, just scaled.
+ */
+export function lobeRadius(theta: number, baseRadius: number, harmonics: LakeHarmonic[]): number {
+  let r = baseRadius;
+  for (const h of harmonics) r += baseRadius * h.amp * Math.sin(h.freq * theta + h.phase);
+  return r;
+}
+
 /**
  * How far the dark forest's edge wanders above/below DARK_FOREST_BAND at a
  * given world x — three summed sine waves at different wavelengths and

@@ -43,6 +43,7 @@ import {
   canAffordTrade,
   MAX_TRADE_QUANTITY,
   LakeState,
+  IslandState,
   DARK_FOREST_TRANSITION,
   darkForestBandAt,
   SEA_SAND_WIDTH,
@@ -50,6 +51,9 @@ import {
   isInDesert,
   forestBorderIsDesert,
   hashCell,
+  lakeHarmonics,
+  lobeRadius,
+  LakeHarmonic,
 } from '@io-game/shared';
 import {
   drawCampfireSprite,
@@ -92,9 +96,6 @@ import {
   drawBerryIcon,
   drawMushroomIcon,
   MAP_COLORS,
-  lakeHarmonics,
-  lobeRadius,
-  LakeHarmonic,
   drawFoxPortrait,
   FOX_PORTRAIT_HALF_BLOCKS,
   drawSpiderPortrait,
@@ -193,6 +194,7 @@ function terrainColor(
   wy: number,
   noise: number,
   lakes: { lake: LakeState; harmonics: LakeHarmonic[] }[],
+  islands: { island: IslandState; harmonics: LakeHarmonic[] }[],
 ): string {
   for (const { lake, harmonics } of lakes) {
     const dx = wx - lake.x;
@@ -215,6 +217,24 @@ function terrainColor(
     const fromWater = d - coast;
     if (fromWater <= lake.shoreWidth) return pick(shoreTones, noise < 0.5 ? 1 : 2);
     if (fromWater <= lake.shoreWidth * 1.5 && noise < 0.45) return pick(shoreTones, 0);
+  }
+
+  // A sea island — same lobe-coastline treatment as a lake's above, just
+  // inverted (grass in the middle, sand at the edge, sea beyond) — checked
+  // before the sea's own coast/sand-ring logic below since an island's
+  // whole footprint would otherwise just read as open water.
+  for (const { island, harmonics } of islands) {
+    const dx = wx - island.x;
+    const dy = wy - island.y;
+    const d = Math.hypot(dx, dy);
+    if (d > island.radius * 1.6 + island.shoreWidth * 1.5) continue;
+
+    const land = lobeRadius(Math.atan2(dy, dx), island.radius, harmonics);
+    if (d <= land) return pick(MAP_COLORS.grass, noise < 0.45 ? 0 : noise < 0.85 ? 1 : 2);
+
+    const fromLand = d - land;
+    if (fromLand <= island.shoreWidth) return pick(MAP_COLORS.sand, noise < 0.5 ? 1 : 2);
+    if (fromLand <= island.shoreWidth * 1.5 && noise < 0.45) return pick(MAP_COLORS.sand, 0);
   }
 
   // The sea, across the bottom of the map — same coast/sand-ring treatment
@@ -370,6 +390,7 @@ export class HUD {
   // into — see setLakes / buildTerrain. Null until the first frame after the
   // lakes land, then reused for the rest of the session.
   private lakes: LakeState[] = [];
+  private islands: IslandState[] = [];
   private terrain: HTMLCanvasElement | null = null;
 
   // Whether the full recipe catalogue is open over the game, and which of
@@ -2086,6 +2107,12 @@ export class HUD {
     this.terrain = null; // rebuilt on the next frame at map resolution
   }
 
+  /** Same deal as setLakes, for the sea's three islands. */
+  setIslands(islands: IslandState[]): void {
+    this.islands = islands;
+    this.terrain = null;
+  }
+
   /**
    * Paints the whole world's terrain into an offscreen canvas once, at one
    * cell per MINIMAP_CELL screen pixels: grass and its shaded approach to the
@@ -2105,6 +2132,7 @@ export class HUD {
     // Each lake's coastline harmonics, so the map's shoreline is the same
     // irregular outline the world draws rather than a plain circle.
     const lakes = this.lakes.map((lake) => ({ lake, harmonics: lakeHarmonics(lake.seed) }));
+    const islands = this.islands.map((island) => ({ island, harmonics: lakeHarmonics(island.seed) }));
 
     for (let cy = 0; cy < cells; cy++) {
       for (let cx = 0; cx < cells; cx++) {
@@ -2113,7 +2141,7 @@ export class HUD {
         // 0..1 per cell, stable across rebuilds — picks tone variation.
         const noise = hashCell(cx, cy, 7) / 4294967295;
 
-        g.fillStyle = terrainColor(wx, wy, noise, lakes);
+        g.fillStyle = terrainColor(wx, wy, noise, lakes, islands);
         g.fillRect(cx * MINIMAP_CELL, cy * MINIMAP_CELL, MINIMAP_CELL, MINIMAP_CELL);
       }
     }

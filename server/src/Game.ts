@@ -530,7 +530,7 @@ export class Game {
     this.players.set(socket.id, player);
     this.inventories.set(socket.id, new Map());
 
-    const payload: JoinedPayload = { id: socket.id, mapSize: MAP_SIZE, lakes: this.world.lakes };
+    const payload: JoinedPayload = { id: socket.id, mapSize: MAP_SIZE, lakes: this.world.lakes, islands: this.world.islands };
     socket.emit('joined', payload);
     console.log(`[Game] + ${sanitised} (${socket.id})`);
   }
@@ -3854,6 +3854,7 @@ export class Game {
         .map(p => p.toState()),
       focus: this.previewBot.id,
       lakes: this.world.lakes,
+      islands: this.world.islands,
     };
   }
 

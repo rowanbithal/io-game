@@ -1,4 +1,4 @@
-import { MAP_SIZE, GRID_CELL, TREE_SPAN, ROCK_SPAN, WHEAT_SPAN, GOLD_SPAN, GOLD_TOP_BAND, DARK_FOREST_BAND, DIAMOND_SPAN, DIAMOND_FAR_X, DIAMOND_MAX_Y, OASIS_X, OASIS_Y, OASIS_RADIUS, OASIS_SHORE_WIDTH, OASIS_VERTICAL_STRETCH, FOX_MOVE_RADIUS, SOLID_COLLISION_RADIUS, ResourceType, LakeState, darkForestBandAt, seaCoastAt, seaSandStartAt, isInDesert } from '@io-game/shared';
+import { MAP_SIZE, GRID_CELL, TREE_SPAN, ROCK_SPAN, WHEAT_SPAN, GOLD_SPAN, GOLD_TOP_BAND, DARK_FOREST_BAND, DIAMOND_SPAN, DIAMOND_FAR_X, DIAMOND_MAX_Y, OASIS_X, OASIS_Y, OASIS_RADIUS, OASIS_SHORE_WIDTH, OASIS_VERTICAL_STRETCH, FOX_MOVE_RADIUS, SOLID_COLLISION_RADIUS, ResourceType, LakeState, IslandState, LakeHarmonic, darkForestBandAt, seaCoastAt, seaSandStartAt, isInDesert, lakeHarmonics, lobeRadius } from '@io-game/shared';
 import { ServerResource } from './entities/Resource';
 
 // ── Lakes ─────────────────────────────────────────────────────────────────────
@@ -20,12 +20,43 @@ const LAKE_MAX_RADIUS = 180;
 const LAKE_MIN_SHORE = 30;
 const LAKE_MAX_SHORE = 50;
 const LAKE_SPACING = 150; // Minimum gap left between two lakes' shores
-// The client renders each lake's coastline as an irregular blob (lobes/coves
-// via sine harmonics, see Renderer.ts's lakeHarmonics) that can bulge up to
-// ~1.4x the nominal radius. These gameplay checks are circular for
-// simplicity, so pad them out to reduce (not fully eliminate) mismatch
-// between the visible water/shore and where it actually blocks/slows.
-const LAKE_LOBE_BUFFER = 1.2;
+// The client renders each lake's coastline as an irregular blob — lobeRadius
+// varying the water's own radius by angle (see lakeHarmonics/lobeRadius,
+// shared with the client so both sides derive the identical shape from the
+// same seed). Gameplay's own water/shore checks (isBlockedByLake,
+// isInLakeWater) walk that exact same lobed radius rather than a plain
+// buffered circle — this is just the small leftover slop on top of it, to
+// cover the fine per-cell jitter the render adds that isn't worth
+// replicating server-side (a few world units, not a shape-changing amount).
+const LAKE_EDGE_SLOP = 10;
+// The three sine harmonics' own amp ranges (see lakeHarmonics) top out at
+// 0.22 + 0.13 + 0.07 = 0.42 combined — so lobeRadius can bulge a coastline up
+// to 1.42x its nominal radius in the most extreme (all three waves peaking
+// at once) case. Used below to keep an island's worst-case bulge from ever
+// reaching back up into the mainland's own coastline.
+const LOBE_MAX_BULGE = 1.42;
+
+// ── Islands ──────────────────────────────────────────────────────────────────
+// Three fixed landmasses out in the sea (see generateIslands) — deliberate
+// landmarks like the desert's one oasis, rather than a randomized grid the
+// way ordinary lakes are: the ask was always "three islands," not "however
+// many happen to fit."
+const ISLAND_RADIUS = 150;
+const ISLAND_SHORE_WIDTH = 55;
+// Same deal as LAKE_EDGE_SLOP, for isOnIsland's own lobed check.
+const ISLAND_EDGE_SLOP = 10;
+// World units south of the sea's coastline *at the island's own x* every
+// island's center sits — not a single fixed y shared by all three. A y safe
+// against the coastline's worst-case wander anywhere on the map (SEA_BAND +
+// SEA_EDGE_AMPLITUDE) would leave an island this size no room left before
+// running off the map's own southern edge; anchoring to each island's own
+// local coastline (see generateIslands) keeps the same gameplay clearance
+// (the island's own worst-case bulge, LOBE_MAX_BULGE, plus its shore ring)
+// while actually fitting.
+const ISLAND_SEA_GAP = LOBE_MAX_BULGE * ISLAND_RADIUS + ISLAND_SHORE_WIDTH + ISLAND_EDGE_SLOP + 40;
+// Evenly spread across the map's width, well clear of the edges (and of each
+// other — the gap here dwarfs twice an island's own footprint).
+const ISLAND_X_FRACTIONS = [0.18, 0.5, 0.82];
 
 // ── Spatial grid ──────────────────────────────────────────────────────────────
 // Divides the map into fixed-size cells so we can look up nearby resources in
@@ -301,6 +332,17 @@ const DIAMOND_CLUSTER: ClusterConfig = {
 export class World {
   readonly resources = new Map<string, ServerResource>();
   readonly lakes: LakeState[] = [];
+  readonly islands: IslandState[] = [];
+
+  /**
+   * Each lake/island's own lakeHarmonics(seed), cached by id rather than
+   * recomputed on every collision check — cheap either way (three RNG draws),
+   * but pointless to redo for something that never changes once generated.
+   * Populated as each lake/island is pushed (see generateLakes/
+   * generateIslands), so lookups below can assume it's always present.
+   */
+  private readonly lakeHarmonicsById = new Map<string, LakeHarmonic[]>();
+  private readonly islandHarmonicsById = new Map<string, LakeHarmonic[]>();
 
   /** Spatial grid: cellKey → set of resource IDs in that cell */
   private readonly grid = new Map<number, Set<string>>();
@@ -316,6 +358,7 @@ export class World {
     const margin = Math.max(TREE_SPAN, GOLD_SPAN, DIAMOND_SPAN); // comfortably fits the largest footprint, a multiple of GRID_CELL
 
     this.generateLakes(margin);
+    this.generateIslands();
     this.generateClusters(margin);
     this.buildNavGrid();
 
@@ -344,7 +387,7 @@ export class World {
       }
     }
 
-    console.log(`[World] Generated ${this.resources.size} resources, ${this.lakes.length} lakes`);
+    console.log(`[World] Generated ${this.resources.size} resources, ${this.lakes.length} lakes, ${this.islands.length} islands`);
   }
 
   /**
@@ -367,7 +410,7 @@ export class World {
     // its own tooClose check treats the oasis as an existing lake too — an
     // ordinary lake landing right on top of the desert's one landmark would
     // defeat the point of it being one.
-    this.lakes.push({
+    this.pushLake({
       id: `lake${this.lakes.length}`,
       x: OASIS_X,
       y: OASIS_Y,
@@ -414,7 +457,7 @@ export class World {
           });
           if (tooClose) continue;
 
-          this.lakes.push({
+          this.pushLake({
             id: `lake${this.lakes.length}`,
             x,
             y,
@@ -428,29 +471,85 @@ export class World {
     }
   }
 
+  /** Pushes a lake and caches its lakeHarmonics(seed) alongside it — see lakeHarmonicsById. */
+  private pushLake(lake: LakeState): void {
+    this.lakes.push(lake);
+    this.lakeHarmonicsById.set(lake.id, lakeHarmonics(lake.seed));
+  }
+
+  /** Pushes an island and caches its lakeHarmonics(seed) alongside it — see islandHarmonicsById. */
+  private pushIsland(island: IslandState): void {
+    this.islands.push(island);
+    this.islandHarmonicsById.set(island.id, lakeHarmonics(island.seed));
+  }
+
   /**
-   * Distance from (x, y) to a lake's centre, in the same "circular" units
-   * every other lake check here compares against a plain radius — except
-   * for the oasis, whose render (see Renderer.ts's drawLakes) is stretched
-   * taller than it is wide (OASIS_VERTICAL_STRETCH). Shrinking the y
-   * component by that same factor before measuring is what makes a
-   * plain-radius comparison land on the oasis's actual (elliptical) edge
-   * instead of the circle it would otherwise be.
+   * Places the map's three fixed islands out in the sea — see the ISLAND_*
+   * constants' own doc comments for why their position is derived the way it
+   * is. Unlike generateLakes, there's no grid or retry loop: three fixed
+   * landmarks is the whole point, not a randomized scatter that happens to
+   * land near three.
    */
-  private lakeDist(lake: LakeState, x: number, y: number): number {
+  private generateIslands(): void {
+    for (const xFraction of ISLAND_X_FRACTIONS) {
+      const x = MAP_SIZE * xFraction;
+      this.pushIsland({
+        id: `island${this.islands.length}`,
+        x,
+        y: seaCoastAt(x) + ISLAND_SEA_GAP,
+        radius: ISLAND_RADIUS,
+        shoreWidth: ISLAND_SHORE_WIDTH,
+        seed: Math.floor(Math.random() * 0xffffffff),
+      });
+    }
+  }
+
+  /**
+   * True if (x, y) falls within any island's land or shore — the sea's
+   * mirror of isBlockedByLake, walking each island's own lobed coastline
+   * (lobeRadius, from the same harmonics — see islandHarmonicsById — the
+   * client renders islandShoreCells from) rather than a flat buffered
+   * circle. That's what keeps a cove or headland the harmonics carve out of
+   * the nominal radius reading as the correct side of the line, instead of
+   * a circle that either swallows a cove that's actually dry or leaves a
+   * headland's own bulge unprotected.
+   */
+  isOnIsland(x: number, y: number, extraMargin = 0): boolean {
+    for (const island of this.islands) {
+      const dx = x - island.x;
+      const dy = y - island.y;
+      const harmonics = this.islandHarmonicsById.get(island.id)!;
+      const edge = lobeRadius(Math.atan2(dy, dx), island.radius, harmonics) + island.shoreWidth;
+      if (Math.hypot(dx, dy) < edge + ISLAND_EDGE_SLOP + extraMargin) return true;
+    }
+    return false;
+  }
+
+  /**
+   * How far (x, y) sits outside a lake's own coastline at the matching angle
+   * — negative once inside it — rather than a flat radius (see isOnIsland's
+   * own doc comment for why). `ringWidth` lets the same helper answer both
+   * isBlockedByLake (water + shore) and isInLakeWater (water alone) just by
+   * passing the shore's width or 0. The oasis (see OASIS_VERTICAL_STRETCH)
+   * is rendered stretched taller than it is wide; unstretching dy before
+   * either the distance or the angle is what makes this land on its actual
+   * (elliptical, still lobed) edge instead of the circle it would otherwise
+   * be — lakeWaterCells/lakeShoreCells apply that exact same stretch after
+   * computing their own lobed shape, not before, so undoing it here rather
+   * than leaving it in is what keeps the two in step.
+   */
+  private lakeEdgeGap(lake: LakeState, x: number, y: number, ringWidth: number): number {
     const dx = x - lake.x;
-    const dy = y - lake.y;
-    return isInDesert(lake.x, lake.y) ? Math.hypot(dx, dy / OASIS_VERTICAL_STRETCH) : Math.hypot(dx, dy);
+    const dy = isInDesert(lake.x, lake.y) ? (y - lake.y) / OASIS_VERTICAL_STRETCH : y - lake.y;
+    const harmonics = this.lakeHarmonicsById.get(lake.id)!;
+    const edge = lobeRadius(Math.atan2(dy, dx), lake.radius, harmonics) + ringWidth;
+    return Math.hypot(dx, dy) - edge;
   }
 
   /** True if (x, y) falls within any lake's water or shore. */
   isBlockedByLake(x: number, y: number, extraMargin = 0): boolean {
     for (const lake of this.lakes) {
-      // Rendered coastlines bulge out into coves/inlets beyond the nominal
-      // radius (see Renderer.ts's lakeHarmonics) — this simple circular
-      // check pads out a bit so resources stay clear of the biggest bulges.
-      const clear = (lake.radius + lake.shoreWidth) * LAKE_LOBE_BUFFER + extraMargin;
-      if (this.lakeDist(lake, x, y) < clear) return true;
+      if (this.lakeEdgeGap(lake, x, y, lake.shoreWidth) < LAKE_EDGE_SLOP + extraMargin) return true;
     }
     return false;
   }
@@ -458,7 +557,7 @@ export class World {
   /** True if (x, y) falls within any lake's water specifically (not just its shore). */
   isInLakeWater(x: number, y: number): boolean {
     for (const lake of this.lakes) {
-      if (this.lakeDist(lake, x, y) < lake.radius * LAKE_LOBE_BUFFER) return true;
+      if (this.lakeEdgeGap(lake, x, y, 0) < LAKE_EDGE_SLOP) return true;
     }
     return false;
   }
@@ -471,12 +570,12 @@ export class World {
    * coastline (and beach — see isBlockedBySea) instead of being landlocked.
    */
   isInSeaWater(x: number, y: number): boolean {
-    return seaCoastAt(x) <= y;
+    return seaCoastAt(x) <= y && !this.isOnIsland(x, y);
   }
 
   /** True if (x, y) falls on the sea's beach or in its water — mirrors isBlockedByLake's shore+water reach, for spawn checks that should stay off the coast entirely. */
   isBlockedBySea(x: number, y: number, extraMargin = 0): boolean {
-    return seaSandStartAt(x) - extraMargin <= y;
+    return seaSandStartAt(x) - extraMargin <= y && !this.isOnIsland(x, y, extraMargin);
   }
 
   /**
@@ -486,7 +585,7 @@ export class World {
    * just its water), so this is deliberately narrower than isBlockedBySea.
    */
   isBlockedBySeaWater(x: number, y: number, extraMargin = 0): boolean {
-    return seaCoastAt(x) - extraMargin <= y;
+    return seaCoastAt(x) - extraMargin <= y && !this.isOnIsland(x, y, extraMargin);
   }
 
   /** True if (x, y) is water, lake or sea — the single "is this a wading/casting/swimming spot" check the rest of Game.ts wants. */

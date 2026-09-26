@@ -57,6 +57,21 @@ export interface LakeState {
   seed: number; // Deterministic seed for the client's procedural shoreline shape
 }
 
+// ── Islands ──────────────────────────────────────────────────────────────────
+// Static landmasses out in the sea — a lake's mirror image (land ringed by
+// beach, sitting in water, rather than water ringed by beach sitting in
+// land). Same shape as LakeState and generated/sent the same way (once at
+// world startup, in JoinedPayload) so the client can reuse the exact same
+// shoreline-harmonics math (see Renderer.ts's lakeHarmonics/lakeShoreCells).
+export interface IslandState {
+  id: string;
+  x: number;
+  y: number;
+  radius: number; // Land radius
+  shoreWidth: number; // Sand/pebble ring thickness beyond the land's edge
+  seed: number; // Deterministic seed for the client's procedural shoreline shape
+}
+
 // ── Structures ────────────────────────────────────────────────────────────────
 // Player-built objects placed into the world at runtime (unlike resources,
 // which the world generates, and lakes, which never change).
@@ -331,6 +346,7 @@ export interface GameState {
 export interface PreviewState extends GameState {
   focus: string;
   lakes: LakeState[];
+  islands: IslandState[];
 }
 
 /** Sent once when client successfully joins */
@@ -338,6 +354,7 @@ export interface JoinedPayload {
   id: string;
   mapSize: number;
   lakes: LakeState[];
+  islands: IslandState[];
 }
 
 /** Sent when a harvest action yields drops */

@@ -71,10 +71,12 @@ class ClientGame {
   }
 
   private setupNetwork(): void {
-    this.network.onJoined(({ mapSize, lakes }) => {
+    this.network.onJoined(({ mapSize, lakes, islands }) => {
       this.mapSize = mapSize;
       this.renderer.setLakes(lakes);
       this.hud.setLakes(lakes);
+      this.renderer.setIslands(islands);
+      this.hud.setIslands(islands);
       this.hideMenu();
       this.running = true;
       // The loop's already running (see the constructor) — no need to kick
@@ -96,6 +98,7 @@ class ClientGame {
       if (!this.previewLakesSet) {
         this.previewLakesSet = true;
         this.renderer.setLakes(snapshot.lakes);
+        this.renderer.setIslands(snapshot.islands);
       }
     });
 

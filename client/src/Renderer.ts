@@ -1,4 +1,4 @@
-import { GameState, PlayerState, ResourceState, StructureState, SpiderState, FoxState, BeetleState, LakeState, FishingState, FarmPlotState, PLAYER_RADIUS, FOX_RADIUS, BEETLE_RADIUS, GRID_CELL, TREE_SPAN, ROCK_SPAN, WHEAT_SPAN, GOLD_SPAN, DIAMOND_SPAN, HARVEST_RANGE, HARVEST_ANGLE, HARVEST_COOLDOWN, STRUCTURE_SPAN, PLACE_RANGE, CAMPFIRE_LIGHT_RADIUS, CAMPFIRE_BURNOUT_FADE, SPIDER_RADIUS, CAST_RANGE, FOX_AGGRO_RANGE, FOX_LOSE_INTEREST_RANGE, RECIPES_BY_ID, WOODEN_AXE_ID, WOODEN_PICKAXE_ID, WOODEN_SWORD_ID, STONE_AXE_ID, STONE_PICKAXE_ID, STONE_SWORD_ID, GOLD_AXE_ID, GOLD_PICKAXE_ID, GOLD_SWORD_ID, WOODEN_ARMOR_ID, STONE_ARMOR_ID, GOLD_ARMOR_ID, TORCH_LIGHT_RADIUS, CRAFTING_BENCH_ID, FISHING_ROD_ID, WOODEN_HOE_ID, WATERING_CAN_ID, FARM_PLOT_SPAN, FARM_PLOT_INTERACT_RADIUS, MAP_SIZE, DARK_FOREST_BAND, DARK_FOREST_TRANSITION, GOLD_TOP_BAND, FOREST_TREE_SCALE, FOREST_ROCK_SCALE, darkForestBandAt, DARK_FOREST_EDGE_AMPLITUDE, SEA_BAND, SEA_SAND_WIDTH, seaCoastAt, seaSandStartAt, SEA_EDGE_AMPLITUDE, DESERT_BAND, DESERT_TRANSITION, DESERT_EDGE_AMPLITUDE, desertBandAt, isInDesert, OASIS_VERTICAL_STRETCH, dayPhase, hashCell, clamp01, smoothstep, forestFactor, isForestTree, isForestRock, resourceCell, RESOURCE_SEED_SALT } from '@io-game/shared';
+import { GameState, PlayerState, ResourceState, StructureState, SpiderState, FoxState, BeetleState, LakeState, IslandState, FishingState, FarmPlotState, PLAYER_RADIUS, FOX_RADIUS, BEETLE_RADIUS, GRID_CELL, TREE_SPAN, ROCK_SPAN, WHEAT_SPAN, GOLD_SPAN, DIAMOND_SPAN, HARVEST_RANGE, HARVEST_ANGLE, HARVEST_COOLDOWN, STRUCTURE_SPAN, PLACE_RANGE, CAMPFIRE_LIGHT_RADIUS, CAMPFIRE_BURNOUT_FADE, SPIDER_RADIUS, CAST_RANGE, FOX_AGGRO_RANGE, FOX_LOSE_INTEREST_RANGE, RECIPES_BY_ID, WOODEN_AXE_ID, WOODEN_PICKAXE_ID, WOODEN_SWORD_ID, STONE_AXE_ID, STONE_PICKAXE_ID, STONE_SWORD_ID, GOLD_AXE_ID, GOLD_PICKAXE_ID, GOLD_SWORD_ID, WOODEN_ARMOR_ID, STONE_ARMOR_ID, GOLD_ARMOR_ID, TORCH_LIGHT_RADIUS, CRAFTING_BENCH_ID, FISHING_ROD_ID, WOODEN_HOE_ID, WATERING_CAN_ID, FARM_PLOT_SPAN, FARM_PLOT_INTERACT_RADIUS, MAP_SIZE, DARK_FOREST_BAND, DARK_FOREST_TRANSITION, GOLD_TOP_BAND, FOREST_TREE_SCALE, FOREST_ROCK_SCALE, darkForestBandAt, DARK_FOREST_EDGE_AMPLITUDE, SEA_BAND, SEA_SAND_WIDTH, seaCoastAt, seaSandStartAt, SEA_EDGE_AMPLITUDE, DESERT_BAND, DESERT_TRANSITION, DESERT_EDGE_AMPLITUDE, desertBandAt, isInDesert, OASIS_VERTICAL_STRETCH, dayPhase, hashCell, clamp01, smoothstep, forestFactor, isForestTree, isForestRock, resourceCell, RESOURCE_SEED_SALT, mulberry32, lakeHarmonics, lobeRadius, LakeHarmonic } from '@io-game/shared';
 import { Camera } from './Camera';
 
 import berryUrl from './assets/sprites/berry.png';
@@ -1093,29 +1093,12 @@ function wheatCells(seed: number): Cell[] {
 
 // ── Lakes ─────────────────────────────────────────────────────────────────────
 // A lake's outline isn't a jittered circle — its radius varies with angle
-// (a few random sine harmonics summed together), giving real coves, bays,
-// and inlets instead of just a bumpy circle. Water and shore share the same
-// harmonics (computed once per lake) so the sand ring hugs the water's
+// (lobeRadius/lakeHarmonics, shared with the server so gameplay's own water
+// checks agree with what's drawn here — see World.ts), giving real coves,
+// bays, and inlets instead of just a bumpy circle. Water and shore share the
+// same harmonics (computed once per lake) so the sand ring hugs the water's
 // actual irregular coastline at a roughly constant width, rather than being
 // its own independently-wobbly ring.
-
-export interface LakeHarmonic { freq: number; amp: number; phase: number }
-
-export function lakeHarmonics(seed: number): LakeHarmonic[] {
-  const rng = mulberry32(seed);
-  return [
-    { freq: 2 + Math.floor(rng() * 2), amp: 0.12 + rng() * 0.1, phase: rng() * Math.PI * 2 },
-    { freq: 3 + Math.floor(rng() * 3), amp: 0.07 + rng() * 0.06, phase: rng() * Math.PI * 2 },
-    { freq: 6 + Math.floor(rng() * 4), amp: 0.03 + rng() * 0.04, phase: rng() * Math.PI * 2 },
-  ];
-}
-
-/** Water's own radius at a given angle — the coastline before any shore is added. */
-export function lobeRadius(theta: number, baseRadius: number, harmonics: LakeHarmonic[]): number {
-  let r = baseRadius;
-  for (const h of harmonics) r += baseRadius * h.amp * Math.sin(h.freq * theta + h.phase);
-  return r;
-}
 
 /** Deep water at the center, shading to shallow near the coastline. */
 function lakeWaterCells(seed: number, radiusBlocks: number, harmonics: LakeHarmonic[]): Cell[] {
@@ -1177,6 +1160,81 @@ function lakeShoreCells(seed: number, waterRadiusBlocks: number, shoreWidthBlock
     }
   }
   return cells;
+}
+
+/**
+ * Packs a shore cell's (gx, gy) grid offset into one number, so drawSea can
+ * test "is this block part of some island's hole" with a plain Set lookup
+ * instead of a per-island distance-and-angle recheck for every visible block
+ * of sea. 4096 comfortably clears the largest reach any island's shore cells
+ * could produce (see islandShoreCells) with room to spare.
+ */
+function islandHoleKey(gx: number, gy: number): number {
+  return (gx + 4096) * 8192 + (gy + 4096);
+}
+
+/**
+ * An island's own beach — the same jagged-coastline math as lakeShoreCells,
+ * but with the blend on the opposite side. A lake's shore fades into grass
+ * on its *outer* edge (open water sits inside, at the center); an island's
+ * has water on the outside instead, so the hard edge belongs there — the
+ * mainland's own coast never blends into the sea either (see drawSea) — and
+ * the blend belongs on the *inner* edge instead, fading into the island's
+ * own grass. `hole` is every cell out to the water's edge, ring and blend
+ * speckle alike, PLUS the plain interior this never actually draws a sand
+ * color for: drawSea consults it to leave the whole footprint unpainted, and
+ * drawIslands only paints the ring on top, so the interior just shows
+ * whatever the ordinary plains ground/clutter pass already drew there (see
+ * drawGround/drawGroundClutter, both drawn before the sea) — the real
+ * multi-tone grass, not an imitation of it.
+ */
+function islandShoreCells(
+  seed: number,
+  landRadiusBlocks: number,
+  shoreWidthBlocks: number,
+  harmonics: LakeHarmonic[],
+): { shore: ShoreCell[]; hole: Set<number>; reach: number } {
+  const edgeRng = mulberry32(seed); // water-side edge jitter
+  const pebbleRng = mulberry32(seed + 1);
+  const blendRng = mulberry32(seed + 2); // grass-side fade-out speckle
+  const innerRng = mulberry32(seed + 3); // grass-side edge jitter — its own stream, so it doesn't echo the water edge's phase
+  const fineJitter = Math.max(1, shoreWidthBlocks * 0.25);
+  const blendWidth = Math.max(2, shoreWidthBlocks * 0.8); // how far the sand speckle fades into the grass
+  const reach = Math.ceil(landRadiusBlocks * 1.6 + shoreWidthBlocks + blendWidth);
+
+  const shore: ShoreCell[] = [];
+  const hole = new Set<number>();
+
+  for (let gy = -reach; gy <= reach; gy++) {
+    for (let gx = -reach; gx <= reach; gx++) {
+      const d = Math.hypot(gx, gy);
+      const landR = lobeRadius(Math.atan2(gy, gx), landRadiusBlocks, harmonics);
+      const waterEdge = landR + shoreWidthBlocks + (edgeRng() - 0.5) * fineJitter;
+      const pebbleRoll = pebbleRng();
+      const innerJitter = (innerRng() - 0.5) * fineJitter;
+      const blendRoll = blendRng();
+
+      if (d > waterEdge) continue; // open sea — a hard line, same as the mainland's own coast
+
+      hole.add(islandHoleKey(gx, gy));
+
+      const fromWater = waterEdge - d; // 0 at the waterline, growing toward the island's own interior
+      if (fromWater < shoreWidthBlocks) {
+        // Solid sand ring: wetter/darker right at the waterline, drier/lighter further up the beach.
+        const shade: Shade = fromWater < shoreWidthBlocks * 0.35 ? 'dark' : fromWater > shoreWidthBlocks * 0.75 ? 'light' : 'base';
+        shore.push({ gx, gy, shade, pebble: pebbleRoll < 0.06 });
+        continue;
+      }
+
+      // Past the solid ring: thin out sparse sand speckle over blendWidth,
+      // leaving the real grass ground showing through more as distance grows.
+      const t = (fromWater - shoreWidthBlocks - innerJitter) / blendWidth;
+      if (t > 1 || blendRoll > (1 - t) * 0.5) continue;
+      shore.push({ gx, gy, shade: 'light', pebble: false });
+    }
+  }
+
+  return { shore, hole, reach };
 }
 
 function drawShoreShape(ctx: CanvasRenderingContext2D, cells: ShoreCell[], sand: Palette3, pebbleColor: string, block: number): void {
@@ -2804,13 +2862,42 @@ const SEA_FISH_COUNT = 46;
 /** Fixed seed — the sea's fish aren't keyed off any server-sent id the way lake fish are (see setLakes), so this alone has to make them stable across reloads. */
 const SEA_FISH_SEED = 8172311;
 
-function buildSeaFish(): SeaFish[] {
+/**
+ * Furthest an island's own coastline can bulge from its center — the same
+ * 1.6x/1.8x lobe-bulge proportions islandShoreCells' own `reach` uses,
+ * converted back out of "blocks" into plain world units (the ratio is the
+ * same either way, so BLOCK cancels out).
+ */
+function islandVisualReach(island: IslandState): number {
+  return island.radius * 1.6 + island.shoreWidth * 1.8;
+}
+
+/**
+ * Sea fish wander around a fixed anchor (see buildSeaFish) — keeping every
+ * anchor at least `clearance` past an island's own visual reach guarantees
+ * the fish's whole wander range around it stays clear too, without the
+ * per-frame steering-around behavior a lake fish's containment doesn't need.
+ */
+function isNearIsland(x: number, y: number, clearance: number, islands: IslandState[]): boolean {
+  for (const island of islands) {
+    if (Math.hypot(x - island.x, y - island.y) < islandVisualReach(island) + clearance) return true;
+  }
+  return false;
+}
+
+function buildSeaFish(islands: IslandState[]): SeaFish[] {
   const rng = mulberry32(SEA_FISH_SEED);
   const margin = 150;
   const fish: SeaFish[] = [];
-  for (let i = 0; i < SEA_FISH_COUNT; i++) {
+  let attempts = 0;
+  while (fish.length < SEA_FISH_COUNT && attempts < SEA_FISH_COUNT * 60) {
+    attempts++;
+    const drift = 40 + rng() * 50;
     const ax = margin + rng() * (MAP_SIZE - margin * 2);
     const ay = seaCoastAt(ax) + 60 + rng() * 220; // a little way out past the coastline
+    // Reject anchors close enough to an island that its own drift-driven
+    // wander could carry it up onto dry land — see isNearIsland.
+    if (isNearIsland(ax, ay, drift + 20, islands)) continue;
     fish.push({
       ax,
       ay,
@@ -2818,7 +2905,7 @@ function buildSeaFish(): SeaFish[] {
       y: ay,
       angle: rng() * Math.PI * 2,
       speed: 10 + rng() * 8,
-      drift: 40 + rng() * 50,
+      drift,
       color: FISH_COLORS[Math.floor(rng() * FISH_COLORS.length)],
       wakeTimer: rng() * 0.4,
     });
@@ -3100,6 +3187,17 @@ export class Renderer {
   private lakes: LakeState[] = [];
   private readonly lakeShapes = new Map<string, { water: Cell[]; shore: ShoreCell[] }>();
 
+  // Islands are static for the whole session too (set once via setIslands),
+  // same reasoning as lakeShapes. `hole` is every cell (gx, gy offset from
+  // the island's own center) out to the water's edge, keyed for O(1) lookup
+  // — drawSea consults it to leave the island's whole footprint unpainted
+  // (see drawSea and islandHoleKey), interior included, so drawIslands' own
+  // ring (and, under the interior, the ordinary plains ground already
+  // painted before the sea's own pass ran) shows through cleanly instead of
+  // open water covering it.
+  private islands: IslandState[] = [];
+  private readonly islandShapes = new Map<string, { shore: ShoreCell[]; hole: Set<number>; holeReach: number; gx0: number; gy0: number }>();
+
   // Fish (and their ripples) are purely decorative and simulated locally —
   // not synced from the server, since they don't affect gameplay and don't
   // need to match between clients.
@@ -3109,10 +3207,12 @@ export class Renderer {
 
   // Sea fish (see the "Sea fish" section above) — same local-only ambiance
   // as the lake fish, but their positions come from MAP_SIZE alone (the
-  // coastline is a pure function of x, not random per-session like a lake),
-  // so they can be seeded up front the same way the fireflies are rather
-  // than waiting on setLakes.
-  private readonly seaFish: SeaFish[] = buildSeaFish();
+  // coastline is a pure function of x, not random per-session like a lake).
+  // Unlike the fireflies, they can't just be seeded up front: keeping them
+  // off the sea's own islands means buildSeaFish needs the island list,
+  // which only arrives with setIslands — so this starts empty and gets
+  // (re)built there instead.
+  private seaFish: SeaFish[] = [];
   private readonly seaRipples: Ripple[] = [];
 
   // Dark forest fireflies — same deal as the fish: local-only ambiance, with
@@ -3299,6 +3399,31 @@ export class Renderer {
       }
       this.lakeFish.set(lake.id, fish);
     }
+  }
+
+  /** Islands are static for the session too — called once, right after joining (see setLakes). */
+  setIslands(islands: IslandState[]): void {
+    this.islands = islands;
+    this.islandShapes.clear();
+    for (const island of islands) {
+      const landRadiusBlocks = Math.max(1, Math.round(island.radius / BLOCK));
+      const shoreWidthBlocks = Math.max(1, Math.round(island.shoreWidth / BLOCK));
+      const harmonics = lakeHarmonics(island.seed);
+      const { shore, hole, reach } = islandShoreCells(island.seed + 3000, landRadiusBlocks, shoreWidthBlocks, harmonics);
+
+      this.islandShapes.set(island.id, {
+        shore,
+        hole,
+        holeReach: reach * BLOCK, // converted to world units
+        gx0: Math.round(island.x / BLOCK),
+        gy0: Math.round(island.y / BLOCK),
+      });
+    }
+
+    // The sea's ambient fish need to know where the islands are to steer
+    // clear of them (see buildSeaFish) — rebuilt here rather than kept
+    // seeded from the constructor, same reason lake fish wait for setLakes.
+    this.seaFish = buildSeaFish(islands);
   }
 
   /** Advances every lake's fish — gentle wander, steering back in before they reach the coastline — and their ripples. */
@@ -4144,6 +4269,7 @@ export class Renderer {
     this.drawGroundClutter(W / zoom, H / zoom);
     this.drawForestFloor(W / zoom, H / zoom);
     this.drawSea(W / zoom, H / zoom);
+    this.drawIslands();
     this.drawBeachClutter(W / zoom, H / zoom);
     this.drawDesertGround(W / zoom, H / zoom);
     this.drawDesertClutter(W / zoom, H / zoom);
@@ -4494,6 +4620,59 @@ export class Renderer {
   /** Densest that fringe speckle gets, right at the solid sand edge (lakeShoreCells uses the same 0.5-ish ballpark). */
   private static readonly SEA_BLEND_MAX = 0.55;
 
+  /**
+   * True when the sea block at global grid (gx, gy)/world (wx, wy) falls
+   * inside some island's precomputed hole (see setIslands) — a cheap
+   * distance reject against each island's holeReach before ever touching the
+   * Set, since most of the sea isn't near any of the map's three islands.
+   */
+  private isInIslandHole(gx: number, gy: number, wx: number, wy: number): boolean {
+    for (const island of this.islands) {
+      const shapes = this.islandShapes.get(island.id);
+      if (!shapes) continue;
+      if (Math.hypot(wx - island.x, wy - island.y) > shapes.holeReach) continue;
+      if (shapes.hole.has(islandHoleKey(gx - shapes.gx0, gy - shapes.gy0))) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Islands' own beach ring — drawn after the sea (which leaves each one's
+   * whole footprint unpainted, see isInIslandHole) so this is the only thing
+   * covering that hole besides whatever's already underneath it. Unlike
+   * drawLakes there's no land fill on top: islandShoreCells never generates
+   * a cell for the true interior in the first place, so it's left exactly as
+   * drawGround/drawGroundClutter painted it before the sea's own pass ran —
+   * the same multi-tone plains grass as everywhere else, not an imitation of
+   * it (see islandShoreCells' own doc comment).
+   */
+  private drawIslands(): void {
+    const { ctx, camera } = this;
+    for (const island of this.islands) {
+      const shapes = this.islandShapes.get(island.id);
+      if (!shapes) continue;
+
+      // Anchored on the island's own rounded (gx0, gy0) grid point (the same
+      // one isInIslandHole keys its Set lookups against) rather than
+      // island.x/y themselves, offset by half a block on top of that. The
+      // two halves need different anchors because drawShoreShape/
+      // drawBlockShape center a cell of local index n on n*BLOCK (spanning
+      // n*BLOCK ± BLOCK/2), while drawSea's own water-fill rects are left-
+      // aligned (a cell at world x spans [x, x+BLOCK)) — two grids offset
+      // from each other by exactly half a block. Without correcting for
+      // that, a shore cell and the sea cell it's meant to blot out cover
+      // different halves of the same seam, leaving a sliver where neither
+      // draws anything and the original grass pattern shows through. The
+      // extra BLOCK/2 here re-centers the shore's cells onto the sea's own
+      // grid instead.
+      const { sx, sy } = camera.toScreen(shapes.gx0 * BLOCK + BLOCK / 2, shapes.gy0 * BLOCK + BLOCK / 2);
+      ctx.save();
+      ctx.translate(sx, sy);
+      drawShoreShape(ctx, shapes.shore, SAND_PALETTE, P.pebble, BLOCK);
+      ctx.restore();
+    }
+  }
+
   private drawSea(W: number, H: number): void {
     const { ctx, camera } = this;
 
@@ -4525,6 +4704,11 @@ export class Renderer {
         const px = wx - camera.x;
 
         if (wobbledY >= coast) {
+          // An island's own footprint — leave it unpainted so drawIslands'
+          // land/shore fill (drawn afterward) shows through instead of open
+          // water covering it. See setIslands' `hole`.
+          if (this.isInIslandHole(gx, gy, wx, wy)) continue;
+
           // Water, shading from shallow (light) near the coastline to deep
           // (dark) further out — same three-band idea lakeWaterCells uses.
           const depth = clamp01((wobbledY - coast) / Renderer.SEA_DEPTH_SHADE_RANGE);
@@ -6248,16 +6432,6 @@ export class Renderer {
   }
 }
 
-// ── Seeded RNG (Mulberry32) ───────────────────────────────────────────────────
-function mulberry32(seed: number): () => number {
-  return () => {
-    seed |= 0;
-    seed = (seed + 0x6d2b79f5) | 0;
-    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
 
 // ── Chat bubble ───────────────────────────────────────────────────────────────
 
