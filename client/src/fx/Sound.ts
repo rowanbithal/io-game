@@ -30,7 +30,8 @@ export type SfxName =
   | 'click'
   | 'stepGrass'
   | 'stepSand'
-  | 'stepWater';
+  | 'stepWater'
+  | 'thunder';
 
 /** What the ambience reacts to — fed every frame by the game loop. */
 export interface AmbienceInput {
@@ -172,6 +173,43 @@ class SoundEngine {
     osc.stop(t + dur + 0.05);
   }
 
+  /**
+   * A long, low roll of noise — thunder's body. Unlike noiseHit it loops the
+   * noise buffer (a roll outlasts the 2s buffer), swells in over a beat
+   * rather than snapping on, sweeps its lowpass down as it fades (the
+   * rumble gets duller as it dies away), and wobbles in level on a slow
+   * LFO so it rolls instead of hissing evenly.
+   */
+  private rumble(freq: number, dur: number, vol: number, delay = 0): void {
+    const ctx = this.ctx!;
+    const t = ctx.currentTime + delay;
+    const src = ctx.createBufferSource();
+    src.buffer = this.noise;
+    src.loop = true;
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.setValueAtTime(freq, t);
+    filter.frequency.exponentialRampToValueAtTime(freq * 0.45, t + dur);
+    filter.Q.value = 0.7;
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.0001, t);
+    gain.gain.exponentialRampToValueAtTime(vol, t + 0.12);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    // Level wobble: an LFO added on top of a fixed gain of 1.
+    const wobble = ctx.createGain();
+    wobble.gain.value = 1;
+    const lfo = ctx.createOscillator();
+    lfo.frequency.value = 2.5 + Math.random() * 3;
+    const depth = ctx.createGain();
+    depth.gain.value = 0.45;
+    lfo.connect(depth).connect(wobble.gain);
+    src.connect(filter).connect(gain).connect(wobble).connect(this.master!);
+    src.start(t, Math.random() * 1.5);
+    lfo.start(t);
+    src.stop(t + dur + 0.05);
+    lfo.stop(t + dur + 0.05);
+  }
+
   // ── One-shot effects ───────────────────────────────────────────────────────
 
   /** Plays a named effect at `volume` (0..1 — callers scale it by distance). */
@@ -244,6 +282,15 @@ class SoundEngine {
         break;
       case 'stepWater':
         this.noiseHit('lowpass', 1300 * jitter, 1, 0.14, 0.14 * v, 0, 500);
+        break;
+      case 'thunder':
+        // A dull crack up front, then overlapping low rolls that tail off
+        // over a few seconds — each starting a little later and lower, the
+        // echo of the strike coming back off distant ground.
+        this.noiseHit('lowpass', 1400 * jitter, 0.6, 0.4, 0.3 * v, 0, 250);
+        this.rumble(170 * jitter, 3.4, 0.8 * v, 0.04);
+        this.rumble(95 * jitter, 2.8, 0.7 * v, 0.35);
+        this.rumble(240 * jitter, 1.6, 0.3 * v, 0.9);
         break;
     }
   }

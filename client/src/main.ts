@@ -546,6 +546,7 @@ class ClientGame {
         null,
       );
     }
+    this.renderer.setOpenChest(this.hud.getOpenChestId());
     this.renderer.render(snapshot, this.mapSize);
     if (snapshot.cameraMode) {
       this.renderer.renderCameraOverview(snapshot, this.cachedCameraResources, this.mapSize, this.overviewCamera);

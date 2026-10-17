@@ -34,6 +34,9 @@ export class ServerStructure {
   /** Treasure chests only: seconds until it refills after being looted, 0 while full. */
   refillRemaining = 0;
 
+  /** Seconds since this was placed — sent for walls so the client can weather them (see StructureState.age). */
+  private age = 0;
+
   constructor(type: StructureType, x: number, y: number, ownerId: string) {
     this.id = `s${nextId++}`;
     this.type = type;
@@ -51,6 +54,7 @@ export class ServerStructure {
 
   /** Returns true when this structure's time runs out this frame. */
   update(dt: number): boolean {
+    this.age += dt;
     if (this.refillRemaining > 0) this.refillRemaining = Math.max(0, this.refillRemaining - dt);
     if (this.life === null) return false;
     this.life -= dt;
@@ -60,6 +64,8 @@ export class ServerStructure {
   toState(): StructureState {
     const state: StructureState = { id: this.id, type: this.type, x: this.x, y: this.y, life: this.life };
     if (this.type === 'treasure_chest') state.opened = this.looted;
+    // Whole seconds — walls only, the one structure that visibly weathers.
+    if (this.type === 'wall') state.age = Math.floor(this.age);
     return state;
   }
 }

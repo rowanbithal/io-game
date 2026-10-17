@@ -94,6 +94,12 @@ export interface StructureState {
   life: number | null;
   /** Treasure chests only: true while looted and waiting to refill — drawn with the lid open. */
   opened?: boolean;
+  /**
+   * Walls only: whole seconds since it was placed. Walls stand until their
+   * owner dies, so the client weathers them with age — cracks, then moss
+   * (see Renderer's WALL_WEAR_* constants). Purely cosmetic.
+   */
+  age?: number;
 }
 
 // ── Spiders ───────────────────────────────────────────────────────────────────

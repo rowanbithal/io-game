@@ -3,6 +3,7 @@ import { Camera } from './Camera';
 import { Effects } from './fx/Effects';
 import { Atmosphere } from './fx/Atmosphere';
 import { isHigh } from './fx/quality';
+import { WIND_X, WIND_Y } from './fx/Atmosphere';
 
 import berryUrl from './assets/sprites/berry.png';
 import mushroomUrl from './assets/sprites/mushroom.png';
@@ -2050,12 +2051,138 @@ const WALL_CELLS: Cell[] = (() => {
   return cells;
 })();
 
+// ── Wall wear ────────────────────────────────────────────────────────────────
+// Walls stand until their owner dies, so an old one weathers: after
+// WALL_WEAR_START seconds a few splits start to run out from the pith along
+// the grain, and later moss creeps in from the rim — thickest on the
+// north-west, the side the sun reaches least. Driven by the wall's age
+// (StructureState.age, from the server) and seeded by its id, so each wall
+// weathers in its own pattern but every client sees the same one.
+
+/** Seconds a wall stands before it shows any wear — about one day/night cycle. */
+const WALL_WEAR_START = 240;
+/** Seconds after WALL_WEAR_START until it's fully weathered. */
+const WALL_WEAR_FULL = 1500;
+/** Wear is quantized into this many stages, so it changes in a few distinct steps (and caches well). */
+const WALL_WEAR_STEPS = 5;
+/** Stage moss starts at — cracks come first. */
+const WALL_MOSS_FROM_STEP = 2;
+/** Most of the wall's face moss ever covers, 0..1-ish (a score threshold, see wallWearCells). */
+const WALL_MOSS_MAX = 0.5;
+const WALL_CRACK_COLOR = '#4a2d16';
+const WALL_MOSS_PALETTE: Palette3 = { light: '#7f9c48', base: '#5c7d36', dark: '#41602a' };
+
+/** 0..WALL_WEAR_STEPS: how weathered a wall of `age` seconds looks. */
+function wallWearStep(age: number): number {
+  if (age < WALL_WEAR_START) return 0;
+  return Math.min(WALL_WEAR_STEPS, 1 + Math.floor(((age - WALL_WEAR_START) / WALL_WEAR_FULL) * WALL_WEAR_STEPS));
+}
+
+/** A stable numeric seed from a structure id. */
+function idSeed(id: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < id.length; i++) h = Math.imul(h ^ id.charCodeAt(i), 16777619);
+  return h >>> 0;
+}
+
+// Keyed `${seed}:${step}` — a wall only ever moves through WALL_WEAR_STEPS
+// stages, so this holds a handful of entries per wall at most. Cleared
+// wholesale if it ever grows large (walls come and go with their owners).
+const wallWearCache = new Map<string, { cracks: Cell[]; moss: Cell[] }>();
+const WALL_WEAR_CACHE_MAX = 4000;
+
+function wallWearCells(seed: number, step: number): { cracks: Cell[]; moss: Cell[] } {
+  const key = `${seed}:${step}`;
+  const cached = wallWearCache.get(key);
+  if (cached) return cached;
+  if (wallWearCache.size > WALL_WEAR_CACHE_MAX) wallWearCache.clear();
+
+  // Every random draw happens up front, in the same order whatever the
+  // stage, so a wall's cracks only ever grow and its moss only ever spreads
+  // — later stages extend the earlier ones rather than reshuffling them.
+  const rng = mulberry32(seed);
+  const half = WALL_HALF_BLOCKS;
+  const crackRays = [0, 1, 2].map(() => ({ angle: rng() * Math.PI * 2, reach: 0.45 + rng() * 0.4, bends: [rng(), rng(), rng(), rng()] }));
+  const LATTICE = 7;
+  const lattice = Array.from({ length: LATTICE * LATTICE }, () => rng());
+  const patch = (gx: number, gy: number): number => {
+    // Smooth value noise over the wall's face — moss grows in clumps, not speckles.
+    const x = ((gx + half) / (half * 2 + 1)) * (LATTICE - 1);
+    const y = ((gy + half) / (half * 2 + 1)) * (LATTICE - 1);
+    const x0 = Math.min(LATTICE - 2, Math.floor(x));
+    const y0 = Math.min(LATTICE - 2, Math.floor(y));
+    const fx = smoothstep(x - x0);
+    const fy = smoothstep(y - y0);
+    const at = (i: number, j: number): number => lattice[j * LATTICE + i];
+    const a = at(x0, y0) + (at(x0 + 1, y0) - at(x0, y0)) * fx;
+    const b = at(x0, y0 + 1) + (at(x0 + 1, y0 + 1) - at(x0, y0 + 1)) * fx;
+    return a + (b - a) * fy;
+  };
+
+  const t = step / WALL_WEAR_STEPS;
+  const maxR = half + 0.4;
+
+  // Cracks: splits running out from near the pith along a slightly bending
+  // line, stopping short of the bark rim. Longer with every stage.
+  const cracks: Cell[] = [];
+  const seen = new Set<number>();
+  for (const ray of crackRays) {
+    const len = (maxR - 2.5) * ray.reach * t;
+    let angle = ray.angle;
+    for (let r = 1.5; r <= 1.5 + len; r += 0.7) {
+      angle += (ray.bends[Math.floor(r) % 4] - 0.5) * 0.25;
+      const gx = Math.round(Math.cos(angle) * r);
+      const gy = Math.round(Math.sin(angle) * r);
+      const k = (gy + 64) * 128 + gx + 64;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      cracks.push({ gx, gy, shade: 'dark' });
+    }
+  }
+
+  // Moss: cells whose clump-noise score falls under a threshold that rises
+  // with each stage. Biased toward the rim (moss takes the weathered bark
+  // first) and the north-west (the shaded side).
+  const moss: Cell[] = [];
+  if (step >= WALL_MOSS_FROM_STEP) {
+    const amount = ((step - WALL_MOSS_FROM_STEP + 1) / (WALL_WEAR_STEPS - WALL_MOSS_FROM_STEP + 1)) * WALL_MOSS_MAX;
+    for (let gy = -half; gy <= half; gy++) {
+      for (let gx = -half; gx <= half; gx++) {
+        const d = Math.hypot(gx, gy);
+        if (d > maxR) continue;
+        const n = patch(gx, gy);
+        const inner = 1 - d / maxR; // 0 at the rim
+        const sunny = (gx + gy + half * 2) / (half * 4); // 0 at the north-west, 1 at the south-east
+        const score = n * 0.6 + inner * 0.25 + sunny * 0.25;
+        if (score >= amount) continue;
+        // Lighter where the clump is thickest, darker at its fringes.
+        const depth = (amount - score) / amount;
+        moss.push({ gx, gy, shade: depth > 0.55 ? 'light' : depth > 0.2 ? 'base' : 'dark' });
+      }
+    }
+  }
+
+  const cells = { cracks, moss };
+  wallWearCache.set(key, cells);
+  return cells;
+}
+
 /**
  * Draws a wooden wall centred on the current origin. Exported so the HUD can
- * reuse the real sprite as its icon, same as the campfire/bench.
+ * reuse the real sprite as its icon, same as the campfire/bench. `age`
+ * (seconds since placed) and `seed` (see idSeed) weather it — leave them
+ * out for a fresh wall, as the HUD icon does.
  */
-export function drawWallSprite(ctx: CanvasRenderingContext2D, block: number = BLOCK): void {
+export function drawWallSprite(ctx: CanvasRenderingContext2D, block: number = BLOCK, age = 0, seed = 0): void {
   drawBlockShape(ctx, WALL_CELLS, LOG_PALETTE, block);
+  const step = wallWearStep(age);
+  if (step === 0) return;
+  const wear = wallWearCells(seed, step);
+  const cracks = new Path2D();
+  for (const { gx, gy } of wear.cracks) cracks.rect(gx * block - block / 2, gy * block - block / 2, block, block);
+  ctx.fillStyle = WALL_CRACK_COLOR;
+  ctx.fill(cracks);
+  if (wear.moss.length > 0) drawBlockShape(ctx, wear.moss, WALL_MOSS_PALETTE, block);
 }
 
 /** Half-width of the wall sprite, in blocks — used to size HUD icons. */
@@ -2083,9 +2210,33 @@ function chestCells(halfW: number, halfH: number): Cell[] {
 const CHEST_CELLS = chestCells(3, 2);
 const TREASURE_CELLS = chestCells(4, 3);
 
-/** A player's storage chest, centred on the current origin. Exported for the HUD icon too. */
-export function drawChestSprite(ctx: CanvasRenderingContext2D, block: number = BLOCK): void {
+/**
+ * A player's storage chest, centred on the current origin. Exported for the
+ * HUD icon too. `open` = the local player has it open (see
+ * Renderer.setOpenChest): lid thrown back, insides showing.
+ */
+export function drawChestSprite(ctx: CanvasRenderingContext2D, block: number = BLOCK, open = false): void {
+  if (open) {
+    // The lid, flipped back behind the box — its plank underside showing,
+    // the stone latch now on its far (north) edge.
+    ctx.fillStyle = P.logDark;
+    ctx.fillRect(-block * 3.5, -block * 5.5, block * 7, block * 3);
+    ctx.fillStyle = P.log;
+    ctx.fillRect(-block * 2.5, -block * 4.5, block * 5, block);
+    ctx.fillStyle = P.rockShadow;
+    ctx.fillRect(-block * 0.6, -block * 6.2, block * 1.2, block * 1.2);
+  }
   drawBlockShape(ctx, CHEST_CELLS, LOG_PALETTE, block);
+  if (open) {
+    // Dark interior inside the rim, with a hint of whatever's stored.
+    ctx.fillStyle = '#2a1a0e';
+    ctx.fillRect(-block * 2.5, -block * 1.5, block * 5, block * 3);
+    ctx.fillStyle = P.rock;
+    ctx.fillRect(-block * 1.5, -block * 0.5, block, block);
+    ctx.fillStyle = P.logLight;
+    ctx.fillRect(block * 0.5, -block * 1.5, block, block);
+    return;
+  }
   // Stone latch on the front edge.
   ctx.fillStyle = P.rockShadow;
   ctx.fillRect(-block * 0.6, block * 1.6, block * 1.2, block * 1.2);
@@ -2120,6 +2271,148 @@ export function drawTreasureChestSprite(ctx: CanvasRenderingContext2D, opened: b
   }
 }
 export const TREASURE_SPRITE_HALF_BLOCKS = 4.6;
+
+// ── Campfire smoke ───────────────────────────────────────────────────────────
+// A column of chunky puffs rising off each lit fire and leaning downwind
+// (the same wind the clouds drift on, see Atmosphere's WIND_X/WIND_Y),
+// growing and paling as they rise until they fade out. Each fire keeps its
+// own short puff list, capped, and spawns more slowly as it burns out.
+// Local and decorative — nobody else needs to see the same puffs.
+
+interface SmokePuff {
+  x: number;
+  y: number;
+  age: number;
+  life: number;
+  /** Starting size, in blocks. */
+  size: number;
+  /** The fire's burnFade when this puff left it — a guttering fire's smoke is thin. */
+  strength: number;
+  /** Per-puff offset for the side-to-side wobble. */
+  phase: number;
+}
+
+interface CampfireSmoke {
+  puffs: SmokePuff[];
+  /** Seconds until the next puff. */
+  spawnIn: number;
+}
+
+/** Seconds between puffs from a fully lit fire (doubled on low quality). */
+const SMOKE_INTERVAL = 0.3;
+/** Most puffs a single fire has in the air at once. */
+const SMOKE_MAX_HIGH = 12;
+const SMOKE_MAX_LOW = 5;
+/** World units per second a puff rises. */
+const SMOKE_RISE = 28;
+/** Seconds a puff lasts (± a little). */
+const SMOKE_LIFE = 3.8;
+/** Fraction of the wind a puff picks up once it's clear of the fire. */
+const SMOKE_WIND = 0.9;
+/** Peak opacity of a fresh puff. */
+const SMOKE_ALPHA = 0.5;
+/** Smoke color from just above the flames (sooty) to high up (pale). */
+const SMOKE_LOW = [110, 108, 112];
+const SMOKE_HIGH = [200, 200, 206];
+
+// ── Map edge ─────────────────────────────────────────────────────────────────
+// Instead of the world stopping at a hard line, its last EDGE_FADE_DEPTH
+// units dissolve into a dark misty void — deep water along the south edge,
+// which is already sea. The fade is baked into one low-res strip per side
+// (one pixel per world block, scaled up nearest-neighbour), stepped into
+// EDGE_FADE_ALPHAS bands whose boundaries wander along the edge so it reads
+// as fog curling in rather than a ruled border.
+
+/** World units the fade reaches in from each edge. */
+const EDGE_FADE_DEPTH = 220;
+/** Alpha of each band, outermost (at the map's edge) first. */
+const EDGE_FADE_ALPHAS = [0.97, 0.9, 0.78, 0.62, 0.45, 0.29, 0.15, 0.06];
+/** How far (blocks) the band boundaries wander in and out along the edge. */
+const EDGE_FADE_WOBBLE = 10;
+/** Outermost band's color, and the innermost (misty) band's — banded colors blend between them. */
+const EDGE_VOID = [12, 15, 23];
+const EDGE_MIST = [72, 82, 98];
+const EDGE_SEA_VOID = [6, 22, 40];
+const EDGE_SEA_MIST = [34, 70, 100];
+/** Strength of the second, lighter pass drawn over everything standing near the edge (see drawEdgeMist). */
+const EDGE_MIST_ALPHA = 0.5;
+
+interface EdgeFadeStrips {
+  north: HTMLCanvasElement;
+  south: HTMLCanvasElement;
+  west: HTMLCanvasElement;
+  east: HTMLCanvasElement;
+  /** Strip depth in world units (a whole number of blocks). */
+  depth: number;
+}
+
+/**
+ * Builds one side's fade strip. `side` decides the orientation: the strip is
+ * `len` pixels along the edge and `depth` pixels in from it, with pixel row
+ * (or column) 0 on the map's own edge. `isSea(u)` picks the deep-water
+ * palette for a pixel `u` blocks along the edge.
+ */
+function buildEdgeStrip(side: 'north' | 'south' | 'west' | 'east', len: number, depth: number, seed: number, isSea: (u: number) => boolean): HTMLCanvasElement {
+  const across = side === 'north' || side === 'south';
+  const c = document.createElement('canvas');
+  c.width = across ? len : depth;
+  c.height = across ? depth : len;
+  const g = c.getContext('2d')!;
+  const img = g.createImageData(c.width, c.height);
+
+  // Wobble along the edge: a broad wave plus a finer one, from two value-
+  // noise lattices.
+  const rng = mulberry32(seed);
+  const coarse = Array.from({ length: Math.ceil(len / 14) + 2 }, () => rng());
+  const fine = Array.from({ length: Math.ceil(len / 4) + 2 }, () => rng());
+  const lerpNoise = (v: number[], x: number): number => {
+    const i = Math.floor(x);
+    return v[i] + (v[i + 1] - v[i]) * smoothstep(x - i);
+  };
+
+  const bands = EDGE_FADE_ALPHAS.length;
+  const bandW = (depth - EDGE_FADE_WOBBLE) / bands;
+  for (let u = 0; u < len; u++) {
+    const wobble = (lerpNoise(coarse, u / 14) * 0.7 + lerpNoise(fine, u / 4) * 0.3) * EDGE_FADE_WOBBLE;
+    const sea = isSea(u);
+    for (let d = 0; d < depth; d++) {
+      const band = Math.floor(Math.max(0, d - wobble) / bandW);
+      if (band >= bands) break;
+      const k = bands > 1 ? band / (bands - 1) : 0;
+      const from = sea ? EDGE_SEA_VOID : EDGE_VOID;
+      const to = sea ? EDGE_SEA_MIST : EDGE_MIST;
+      let x: number;
+      let y: number;
+      if (side === 'north') [x, y] = [u, d];
+      else if (side === 'south') [x, y] = [u, depth - 1 - d];
+      else if (side === 'west') [x, y] = [d, u];
+      else [x, y] = [depth - 1 - d, u];
+      const p = (y * c.width + x) * 4;
+      img.data[p] = from[0] + (to[0] - from[0]) * k;
+      img.data[p + 1] = from[1] + (to[1] - from[1]) * k;
+      img.data[p + 2] = from[2] + (to[2] - from[2]) * k;
+      img.data[p + 3] = Math.round(EDGE_FADE_ALPHAS[band] * 255);
+    }
+  }
+  g.putImageData(img, 0, 0);
+  return c;
+}
+
+function buildEdgeFade(mapSize: number): EdgeFadeStrips {
+  const len = Math.ceil(mapSize / BLOCK);
+  const depth = Math.ceil(EDGE_FADE_DEPTH / BLOCK);
+  // The west and east edges run down into the sea at their southern ends —
+  // switch them to the deep-water palette below the coast there.
+  const westCoast = seaCoastAt(0) / BLOCK;
+  const eastCoast = seaCoastAt(mapSize) / BLOCK;
+  return {
+    north: buildEdgeStrip('north', len, depth, 101, () => false),
+    south: buildEdgeStrip('south', len, depth, 202, () => true),
+    west: buildEdgeStrip('west', len, depth, 303, (u) => u > westCoast),
+    east: buildEdgeStrip('east', len, depth, 404, (u) => u > eastCoast),
+    depth: depth * BLOCK,
+  };
+}
 
 // ── Armor ────────────────────────────────────────────────────────────────────
 // Worn rather than held (see PlayerState.armor) — reuses the exact same
@@ -3252,6 +3545,16 @@ export class Renderer {
   // resources when the whole map's in view).
   private simplifyOverview = false;
 
+  /** The storage chest the local player has open — drawn lid-up (see setOpenChest). */
+  private openChestId: string | null = null;
+
+  /** Rising smoke per campfire id (see drawCampfireSmoke), pruned as fires go out or leave view. */
+  private readonly campfireSmoke = new Map<string, CampfireSmoke>();
+  private lastSmokeTime = 0;
+
+  /** The map edge's fade-to-void strips, one per side, baked once per map size (see buildEdgeFade). */
+  private edgeFade: { mapSize: number; strips: EdgeFadeStrips } | null = null;
+
   /**
    * 0 in broad daylight, 1 in the dead of night. Shared by every effect that
    * only belongs to the night — fireflies and the forest fog — so they fade
@@ -3460,6 +3763,11 @@ export class Renderer {
   /** The pending till/water/plant action, if any — see farmActionTarget. */
   setFarmActionTarget(target: FarmActionTarget | null): void {
     this.farmActionTarget = target;
+  }
+
+  /** The storage chest the local player has open (HUD.getOpenChestId), drawn with its lid up — null when none is. */
+  setOpenChest(id: string | null): void {
+    this.openChestId = id;
   }
 
   /** Lakes are static for the session — called once, right after joining. */
@@ -4356,7 +4664,7 @@ export class Renderer {
     const viewW = this.canvas.width / this.camera.zoom;
     const viewH = this.canvas.height / this.camera.zoom;
     this.fx.update(dt, state, viewW, viewH);
-    this.atmosphere.update(dt, state.tick, state.rainOverride, this.camera, viewW, viewH, this.fx);
+    this.atmosphere.update(dt, state.tick, state.rainOverride, this.camera, viewW, viewH, this.fx, state.dayTime);
   }
 
   /**
@@ -4467,6 +4775,7 @@ export class Renderer {
       for (const p of state.players) this.drawFishingLine(p, now);
       this.drawFishSplashes(now);
       this.drawSandParticles(W / zoom, H / zoom);
+      this.drawCampfireSmoke(state.structures, now);
 
       // Debris/dust/leaves, then the sky's own contributions over the whole
       // scene — cloud shadows and rain — all still before the night tint so
@@ -4474,6 +4783,9 @@ export class Renderer {
       this.fx.drawWorld(ctx);
       this.atmosphere.drawClouds(ctx, this.camera, W / zoom, H / zoom, this.sunHeight);
       this.atmosphere.drawRain(ctx, this.camera);
+      this.atmosphere.drawFog(ctx, this.camera, W / zoom, H / zoom);
+      // The map edge's haze, over everything standing near it (see drawEdgeMist).
+      this.drawEdgeMist(mapSize, W / zoom, H / zoom);
     }
 
     ctx.restore();
@@ -4516,6 +4828,7 @@ export class Renderer {
     if (!this.simplifyOverview) {
       // Screen-space finishing: damage numbers, then the lens vignette last
       // so it frames everything (numbers included).
+      this.atmosphere.drawLightning(ctx, W, H);
       this.fx.drawNumbers(ctx);
       this.atmosphere.drawVignette(ctx, W, H, this.nightness, this.fx.hurt);
     }
@@ -5114,19 +5427,45 @@ export class Renderer {
     }
   }
 
+  /**
+   * The world's edge, fading into a dark misty void (deep water along the
+   * sea) over its last EDGE_FADE_DEPTH units rather than stopping at a hard
+   * line — see buildEdgeFade. The camera never shows past the map, so the
+   * fade has to happen inside it. This full-strength pass covers the ground
+   * only (it's drawn under resources and structures); drawEdgeMist lays a
+   * lighter one over everything standing out there afterwards.
+   */
   private drawMapBorder(mapSize: number): void {
+    // No culling here — this also runs for the full-map overview inset,
+    // where all four edges are in view anyway.
+    this.drawEdgeStrips(mapSize, 1, Infinity, Infinity);
+  }
+
+  /**
+   * The edge fade again, lighter (EDGE_MIST_ALPHA), over trees, structures,
+   * mobs and players near the edge, so they recede into the haze too
+   * instead of standing out crisply against the void behind them.
+   */
+  private drawEdgeMist(mapSize: number, viewW: number, viewH: number): void {
+    this.drawEdgeStrips(mapSize, EDGE_MIST_ALPHA, viewW, viewH);
+  }
+
+  /** Draws whichever of the edge-fade strips are near the view, at `alpha`. */
+  private drawEdgeStrips(mapSize: number, alpha: number, viewW: number, viewH: number): void {
     const { ctx, camera } = this;
+    if (!this.edgeFade || this.edgeFade.mapSize !== mapSize) this.edgeFade = { mapSize, strips: buildEdgeFade(mapSize) };
+    const { north, south, west, east, depth } = this.edgeFade.strips;
     const { sx, sy } = camera.toScreen(0, 0);
-    ctx.strokeStyle = '#1a2e1a';
-    ctx.lineWidth = BLOCK;
-    ctx.strokeRect(sx, sy, mapSize, mapSize);
-    // Danger fringe
-    const fringeW = BLOCK * 14;
-    ctx.fillStyle = 'rgba(0,0,0,0.18)';
-    ctx.fillRect(sx - fringeW, sy - fringeW, mapSize + fringeW * 2, fringeW);
-    ctx.fillRect(sx - fringeW, sy + mapSize, mapSize + fringeW * 2, fringeW);
-    ctx.fillRect(sx - fringeW, sy, fringeW, mapSize);
-    ctx.fillRect(sx + mapSize, sy, fringeW, mapSize);
+    const len = Math.ceil(mapSize / BLOCK) * BLOCK;
+
+    ctx.save();
+    ctx.imageSmoothingEnabled = false;
+    ctx.globalAlpha = alpha;
+    if (camera.y < depth) ctx.drawImage(north, sx, sy, len, depth);
+    if (camera.y + viewH > mapSize - depth) ctx.drawImage(south, sx, sy + mapSize - depth, len, depth);
+    if (camera.x < depth) ctx.drawImage(west, sx, sy, depth, len);
+    if (camera.x + viewW > mapSize - depth) ctx.drawImage(east, sx + mapSize - depth, sy, depth, len);
+    ctx.restore();
   }
 
   // ── Lakes ──────────────────────────────────────────────────────────────────
@@ -5705,8 +6044,96 @@ export class Renderer {
     const shadow = s.type === 'wall' ? SHADOW_PROFILE.wall : SHADOW_PROFILE.campfire;
     this.drawShadow(ctx, shadow.width, shadow.length);
     if (s.type === 'treasure_chest') drawTreasureChestSprite(this.ctx, !!s.opened);
+    // The chest the local player is looking into, lid up (see setOpenChest).
+    else if (s.type === CHEST_ID && s.id === this.openChestId) drawChestSprite(this.ctx, BLOCK, true);
+    // Walls weather with age (see wallWearCells), each in its own pattern.
+    else if (s.type === 'wall') drawWallSprite(this.ctx, BLOCK, s.age ?? 0, idSeed(s.id));
     else this.drawStructureSprite(s.type, now);
     ctx.restore();
+  }
+
+  /**
+   * Smoke rising off every lit campfire (see SmokePuff). Steps its own puffs
+   * off `now` rather than the shared frame delta, so it stays a single hook
+   * in drawWorld. Drawn in world space before the night layer, so it darkens
+   * with the scene — the firelight pass then lights its lowest puffs.
+   */
+  private drawCampfireSmoke(structures: StructureState[], now: number): void {
+    const { ctx, camera } = this;
+    const dt = this.lastSmokeTime ? Math.min((now - this.lastSmokeTime) / 1000, 0.1) : 0;
+    this.lastSmokeTime = now;
+    const high = isHigh();
+    const cap = high ? SMOKE_MAX_HIGH : SMOKE_MAX_LOW;
+    const interval = SMOKE_INTERVAL * (high ? 1 : 2);
+    const live = new Set<string>();
+
+    for (const s of structures) {
+      if (s.type !== 'campfire') continue;
+      live.add(s.id);
+      let smoke = this.campfireSmoke.get(s.id);
+      if (!smoke) {
+        smoke = { puffs: [], spawnIn: Math.random() * interval };
+        this.campfireSmoke.set(s.id, smoke);
+      }
+
+      // Rise, then lean downwind once clear of the fire, with a slow sway.
+      const puffs = smoke.puffs;
+      for (let i = puffs.length - 1; i >= 0; i--) {
+        const p = puffs[i];
+        p.age += dt;
+        if (p.age >= p.life) {
+          puffs.splice(i, 1);
+          continue;
+        }
+        const lean = Math.min(1, p.age / 1.2) * SMOKE_WIND;
+        p.x += (WIND_X * lean + Math.sin(p.age * 2.1 + p.phase) * 5) * dt;
+        p.y += (WIND_Y * lean - SMOKE_RISE) * dt;
+      }
+
+      // A dying fire puffs less often and thinner (see burnFade).
+      const fade = Renderer.burnFade(s);
+      smoke.spawnIn -= dt;
+      if (fade > 0.05 && smoke.spawnIn <= 0 && puffs.length < cap) {
+        puffs.push({
+          x: s.x + (Math.random() - 0.5) * BLOCK * 1.5,
+          y: s.y - BLOCK * 2,
+          age: 0,
+          life: SMOKE_LIFE * (0.8 + Math.random() * 0.4),
+          size: 2 + Math.round(Math.random()),
+          strength: fade,
+          phase: Math.random() * Math.PI * 2,
+        });
+        smoke.spawnIn = (interval / Math.max(fade, 0.25)) * (0.7 + Math.random() * 0.6);
+      }
+
+      // Each puff: a chunky "plus" of blocks (a square with its corners
+      // knocked off), snapped to the world block grid, growing and paling as
+      // it rises. Opacity steps in tenths rather than easing smoothly.
+      for (const p of puffs) {
+        const t = p.age / p.life;
+        const fadeIn = Math.min(1, p.age / 0.25);
+        const alpha = Math.round(SMOKE_ALPHA * p.strength * fadeIn * (1 - t) * 10) / 10;
+        if (alpha <= 0) continue;
+        const n = Math.round(p.size + t * 4);
+        const x = Math.round(p.x / BLOCK - n / 2) * BLOCK - camera.x;
+        const y = Math.round(p.y / BLOCK - n / 2) * BLOCK - camera.y;
+        const k = Math.min(1, t * 1.6);
+        const r = SMOKE_LOW[0] + (SMOKE_HIGH[0] - SMOKE_LOW[0]) * k;
+        const g = SMOKE_LOW[1] + (SMOKE_HIGH[1] - SMOKE_LOW[1]) * k;
+        const b = SMOKE_LOW[2] + (SMOKE_HIGH[2] - SMOKE_LOW[2]) * k;
+        ctx.fillStyle = `rgba(${r | 0},${g | 0},${b | 0},${alpha.toFixed(2)})`;
+        const size = n * BLOCK;
+        if (n >= 3) {
+          ctx.fillRect(x + BLOCK, y, size - BLOCK * 2, size);
+          ctx.fillRect(x, y + BLOCK, BLOCK, size - BLOCK * 2);
+          ctx.fillRect(x + size - BLOCK, y + BLOCK, BLOCK, size - BLOCK * 2);
+        } else {
+          ctx.fillRect(x, y, size, size);
+        }
+      }
+    }
+
+    for (const id of this.campfireSmoke.keys()) if (!live.has(id)) this.campfireSmoke.delete(id);
   }
 
   /** Body of a structure, in already-translated local space. */
