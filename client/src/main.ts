@@ -1,4 +1,4 @@
-import { TICK_RATE, DAY_DURATION, seaCoastAt, isInDesert, forestFactor, DiedPayload, RECIPES_BY_ID, FISHING_ROD_ID, WOODEN_HOE_ID, WATERING_CAN_ID, BERRY_SEED_ID, WHEAT_SEED_ID, PreviewState, ResourceState } from '@io-game/shared';
+import { TICK_RATE, seaCoastAt, isInDesert, forestFactor, DiedPayload, RECIPES_BY_ID, FISHING_ROD_ID, WOODEN_HOE_ID, WATERING_CAN_ID, BERRY_SEED_ID, WHEAT_SEED_ID, PreviewState, ResourceState } from '@io-game/shared';
 import { Network } from './Network';
 import { Input } from './Input';
 import { Camera } from './Camera';
@@ -50,8 +50,14 @@ class ClientGame {
   // Set when C is pressed on an island treasure chest, so the loot's harvest
   // event that follows plays the treasure fanfare instead of a plain pickup.
   private expectTreasureUntil = 0;
-  // Set on 'joined', cleared by the first snapshot after it — which shows the
-  // "Day N" title card (see showTitleCard), since only a snapshot knows the tick.
+  // The "Day N" title card counts the days *this player* has lived: Day 1 on
+  // joining (and again after each death), then the next day at every dawn
+  // they survive. `lastIsDay` is the previous snapshot's isDay, so a
+  // night → day flip can be spotted; null until the first snapshot.
+  private daysLived = 1;
+  private lastIsDay: boolean | null = null;
+  // Set on 'joined', cleared by the first snapshot after it — so the Day 1
+  // card waits for the world to actually be on screen.
   private titleCardPending = false;
 
   constructor() {
@@ -98,6 +104,7 @@ class ClientGame {
       this.renderer.setIslands(islands);
       this.hud.setIslands(islands);
       this.hideMenu();
+      this.daysLived = 1;
       this.titleCardPending = true;
       this.running = true;
       // The loop's already running (see the constructor) — no need to kick
@@ -105,11 +112,15 @@ class ClientGame {
     });
 
     this.network.onState((snapshot) => {
-      // The first snapshot after joining is what knows the day number.
       if (this.titleCardPending) {
         this.titleCardPending = false;
-        this.showTitleCard(Math.floor(snapshot.tick / TICK_RATE / DAY_DURATION) + 1);
+        this.showTitleCard(this.daysLived);
+      } else if (this.lastIsDay === false && snapshot.isDay && this.running && !snapshot.spectating && !this.death.active) {
+        // Dawn, and they're still alive — another day survived.
+        this.daysLived++;
+        this.showTitleCard(this.daysLived);
       }
+      this.lastIsDay = snapshot.isDay;
       if (snapshot.cameraResources) this.cachedCameraResources = snapshot.cameraResources;
       this.state.push(snapshot);
       // Raw (un-interpolated) snapshots are what hit/kill detection diffs —
@@ -673,11 +684,15 @@ class ClientGame {
     document.getElementById('death-time')!.textContent = m > 0 ? `${m}m ${s}s` : `${s}s`;
     overlay.style.display = 'flex';
 
+    // A death starts the count over — Day 1 again, shown as the player
+    // steps back into the world.
+    this.daysLived = 1;
     const hide = (): void => {
       overlay.style.display = 'none';
       clearTimeout(timer);
       window.removeEventListener('keydown', hide);
       overlay.removeEventListener('pointerdown', hide);
+      this.showTitleCard(this.daysLived);
     };
     const timer = setTimeout(hide, 8000);
     // Armed a beat late, so a key held at the moment of death doesn't skip it.

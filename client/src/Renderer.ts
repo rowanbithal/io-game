@@ -1386,13 +1386,13 @@ const GOLD_PALETTE: Palette3 = { light: P.goldHighlight, base: P.gold, dark: P.g
 const DIAMOND_PALETTE: Palette3 = { light: P.diamondLight, base: P.diamond, dark: P.diamondDark };
 /**
  * Damage cracks over a boulder (see boulderCrackCells): 'dark' is the crack
- * itself — a step darker than the boulder's own shadow face, so it still
- * reads on that face — and 'base' is the hairline tip, which reuses the
- * boulder's own shadow tone. 'light' is unused.
+ * itself and 'base' is the hairline tip — both kept only a little darker
+ * than the boulder's own shadow face, so cracks read as fine fractures in
+ * the stone rather than black gashes. 'light' is unused.
  */
-const ROCK_CRACK_PALETTE: Palette3 = { light: P.rockHighlight, base: P.rockShadow, dark: '#3a3a3a' };
-const GOLD_CRACK_PALETTE: Palette3 = { light: P.goldHighlight, base: P.goldShadow, dark: '#5c4406' };
-const DIAMOND_CRACK_PALETTE: Palette3 = { light: P.diamondLight, base: P.diamondDark, dark: '#2b6c80' };
+const ROCK_CRACK_PALETTE: Palette3 = { light: P.rockHighlight, base: '#6a6a6a', dark: '#4e4e4e' };
+const GOLD_CRACK_PALETTE: Palette3 = { light: P.goldHighlight, base: '#a07c1a', dark: '#77580c' };
+const DIAMOND_CRACK_PALETTE: Palette3 = { light: P.diamondLight, base: '#5fb4cc', dark: '#3d8aa2' };
 const CRACK_PALETTES: Partial<Record<GridResourceType, Palette3>> = {
   rock: ROCK_CRACK_PALETTE,
   gold: GOLD_CRACK_PALETTE,
@@ -1827,27 +1827,35 @@ interface ResourceRecoil {
 }
 
 // ── Wind sway ────────────────────────────────────────────────────────────────
-// Tree crowns, wheat and flowers lean and bob in the wind. It's one shared
-// travelling wave rather than an independent wobble per plant: each crest
-// rolls across the map downwind, so a forest ripples like a gust is moving
-// through it instead of every tree pumping in lockstep (or, just as bad,
-// every tree doing its own unrelated thing). A small per-plant phase jitter
-// on top keeps neighbors from moving as one rigid sheet.
+// Trees, wheat and flowers move in the wind along one shared axis (east,
+// with the wind). One travelling wave drives it all: each gust rolls across
+// the map with the wind, so a forest ripples as the gust passes through it
+// rather than every tree pumping in lockstep.
 //
-// Everything is snapped to whole world units at the end (see windSway) —
-// the body steps between whole positions rather than gliding through
-// sub-unit ones, so the pixel grid never smears. Shadows stay planted: only
-// the body moves, the same split the harvest recoil already uses.
+// Tree crowns keep their shape and swing back and forth as one piece (see
+// treeSway). Low plants — wheat and flowers — *bend* instead, leaning only
+// downwind (see drawSwayedShape): the bottom row of a shape stays put and
+// each row above shifts further downwind.
+//
+// None of it is snapped to the pixel grid — positions glide continuously,
+// so movement reads as smooth swaying rather than hopping. Shadows stay
+// planted, the same split the harvest recoil already uses.
 
-/** Unit vector the wind blows toward — east-south-east, matching Atmosphere's WIND_X/WIND_Y cloud and rain drift (13, 5). */
-const WIND_DIR_X = 13 / Math.hypot(13, 5);
-const WIND_DIR_Y = 5 / Math.hypot(13, 5);
-/** Peak crown offset in calm weather, world units — a breath of movement, not a cartoon wobble. */
-const TREE_SWAY = 2.2;
-/** Peak wheat head offset in calm weather — stems bend about half that (see drawSwayedShape). */
-const WHEAT_SWAY = 1.5;
-/** Peak flower offset — tiny, these sit right on the ground. */
-const FLOWER_SWAY = 0.8;
+/** Unit vector the wind blows toward, along x — east, matching Atmosphere's WIND_X drift. */
+const WIND_DIR_X = 1;
+const WIND_DIR_Y = 0;
+/**
+ * Peak swing of a tree crown in calm weather, in world units. Unlike wheat
+ * and flowers, a crown doesn't bend — it keeps its shape and sways as one
+ * piece, back and forth along the wind (see treeSway).
+ */
+const TREE_SWAY = 3.5;
+/** How far a tree's swing is biased downwind, 0 (even both ways) .. 1 (never upwind). */
+const TREE_SWAY_BIAS = 0.2;
+/** Peak lean of a wheat clump's top row (the grain heads), in blocks. */
+const WHEAT_SWAY = 1.2;
+/** Peak lean of a flower's top cell, in blocks — enough for the bloom to nod over its stem. */
+const FLOWER_SWAY = 1;
 /** Extra amplitude at full rain, as a multiple of the calm amplitude (so 1.3 → 2.3x in a downpour). */
 const SWAY_RAIN_BOOST = 1.3;
 /** Extra wave speed at full rain, same convention — a storm's gusts come quicker, not just harder. */
@@ -1870,7 +1878,7 @@ const SWAY_LEAN = 0.35;
 // is lurking in there).
 
 /** Crown opacity while a player is underneath it. */
-const CANOPY_FADE_ALPHA = 0.35;
+const CANOPY_FADE_ALPHA = 0.6;
 /** Seconds to fade fully out (or back in) — eased, so it never snaps. */
 const CANOPY_FADE_TIME = 0.2;
 /**
@@ -2044,27 +2052,54 @@ function getTreeChips(seed: number): Cell[] {
 }
 
 /**
- * Draws a plant shape bending in the wind rather than sliding rigidly: the
- * 'dark' cells (stems, lower blades — see wheatCells/WHEAT_ICON_CELLS) move
- * only half as far as the 'base'/'light' ones (grain heads, upper blades),
- * so the tops lean further than the roots. Both offsets are whole units
- * (see windSway), and the half is re-rounded, so every cell still lands on
- * the pixel grid.
+ * Draws a plant shape bent over by the wind: the bottom row stays rooted and
+ * each row above shifts downwind by a growing share of `lean` (the top row's
+ * lean, in blocks — see windSway). Each row moves as one unit, so nothing
+ * tears apart, and the shift is continuous rather than snapped to the block
+ * grid — the bend flows smoothly as a gust builds and passes instead of
+ * stepping between positions.
+ *
+ * `rowsFrom` sets which cells define the bottom/top rows — pass the full,
+ * undamaged shape when drawing part of one (a damaged crown's leaves and
+ * bare branches), so both parts bend as one plant.
  */
-const swaySplitCache = new WeakMap<Cell[], { low: Cell[]; high: Cell[] }>();
+const swayRowCache = new WeakMap<Cell[], { min: number; max: number }>();
 
-function drawSwayedShape(ctx: CanvasRenderingContext2D, cells: Cell[], palette: Palette3, block: number, dx: number, dy: number): void {
-  if (dx === 0 && dy === 0) {
+function shapeRows(cells: Cell[]): { min: number; max: number } {
+  let rows = swayRowCache.get(cells);
+  if (!rows) {
+    let min = Infinity;
+    let max = -Infinity;
+    for (const c of cells) {
+      if (c.gy < min) min = c.gy;
+      if (c.gy > max) max = c.gy;
+    }
+    rows = { min, max };
+    swayRowCache.set(cells, rows);
+  }
+  return rows;
+}
+
+function drawSwayedShape(ctx: CanvasRenderingContext2D, cells: Cell[], palette: Palette3, block: number, lean: number, rowsFrom: Cell[] = cells): void {
+  if (Math.abs(lean) < 0.01) {
     drawBlockShape(ctx, cells, palette, block);
     return;
   }
-  let split = swaySplitCache.get(cells);
-  if (!split) {
-    split = { low: cells.filter((c) => c.shade === 'dark'), high: cells.filter((c) => c.shade !== 'dark') };
-    swaySplitCache.set(cells, split);
+  const { min, max } = shapeRows(rowsFrom);
+  const span = Math.max(1, max - min);
+  // Group cells by row — every cell in a row shifts by the same amount, so
+  // it's one fill pass per row.
+  const groups = new Map<number, Cell[]>();
+  for (const c of cells) {
+    const t = (max - c.gy) / span; // 0 on the bottom (rooted) row, 1 on the top
+    const shift = lean * t;
+    let g = groups.get(shift);
+    if (!g) groups.set(shift, (g = []));
+    g.push(c);
   }
-  drawBlockShape(ctx, split.low, palette, block, Math.round(dx / 2), Math.round(dy / 2));
-  drawBlockShape(ctx, split.high, palette, block, dx, dy);
+  for (const [shift, group] of groups) {
+    drawBlockShape(ctx, group, palette, block, shift * block * WIND_DIR_X, shift * block * WIND_DIR_Y);
+  }
 }
 
 // Low bushes/fungi that everything else (trees, rocks, wheat, gold) should
@@ -5468,11 +5503,11 @@ export class Renderer {
         const jy = (blockRandom(gx, gy, CLUTTER_SALT + 2) - 0.5) * CLUTTER_CELL * 0.8;
         const { sx, sy } = camera.toScreen(wx + jx, wy + jy);
         // Flowers nod in the same wind as the trees and wheat (see windSway).
-        const sway = this.windSway(wx + jx, wy + jy, FLOWER_SWAY, blockRandom(gx, gy, CLUTTER_SALT + 3) * 2);
+        const lean = this.windSway(wx + jx, wy + jy, FLOWER_SWAY);
 
         ctx.save();
-        ctx.translate(sx + sway.dx, sy + sway.dy);
-        drawBlockShape(ctx, piece.cells, piece.palette, CLUTTER_BLOCK);
+        ctx.translate(sx, sy);
+        drawSwayedShape(ctx, piece.cells, piece.palette, CLUTTER_BLOCK, lean);
         ctx.restore();
       }
     }
@@ -6477,22 +6512,39 @@ export class Renderer {
   }
 
   /**
-   * How far a plant at (x, y) is blown off its rest position right now, in
-   * whole world units — see the "Wind sway" block for the wave itself.
-   * `amp` is the calm-weather peak (TREE_SWAY etc.), boosted by the current
-   * rain; `jitter` is a stable per-plant phase nudge (radians). Zero in the
-   * overview inset (see simplifyOverview), which draws everything static.
+   * How far a plant at (x, y) leans downwind right now — the top row's
+   * shift in blocks, unrounded (drawSwayedShape rounds per row). See the
+   * "Wind sway" block for the wave itself. `amp` is the calm-weather peak
+   * (TREE_SWAY etc.), boosted by the current rain. Always ≥ 0: plants only
+   * ever bend with the wind, never back into it. Zero in the overview inset
+   * (see simplifyOverview), which draws everything static.
    */
-  private windSway(x: number, y: number, amp: number, jitter: number): { dx: number; dy: number } {
-    if (this.simplifyOverview) return { dx: 0, dy: 0 };
+  /**
+   * A tree crown's sideways offset right now, in world units, along the wind
+   * axis: a swing both ways around a slight downwind lean (TREE_SWAY_BIAS),
+   * rather than the one-way lean the low plants get. Deliberately *not*
+   * snapped to the pixel grid, so the crown glides smoothly instead of
+   * hopping between positions. Same travelling wave as windSway, so gusts
+   * still roll through a forest.
+   */
+  private treeSway(x: number, y: number): number {
+    if (this.simplifyOverview) return 0;
+    const strength = TREE_SWAY * (1 + this.atmosphere.rain * SWAY_RAIN_BOOST);
+    const along = x * WIND_DIR_X + y * WIND_DIR_Y;
+    const phase = (along / SWAY_WAVELENGTH - this.windClock) * Math.PI * 2;
+    const wave = 0.75 * Math.sin(phase) + 0.25 * Math.sin(phase * 0.47 + 1.3); // -1..1
+    return (TREE_SWAY_BIAS + (1 - TREE_SWAY_BIAS) * wave) * strength;
+  }
+
+  private windSway(x: number, y: number, amp: number): number {
+    if (this.simplifyOverview) return 0;
     const strength = amp * (1 + this.atmosphere.rain * SWAY_RAIN_BOOST);
     const along = x * WIND_DIR_X + y * WIND_DIR_Y;
-    const phase = (along / SWAY_WAVELENGTH - this.windClock) * Math.PI * 2 + jitter;
-    // A main swell plus a faster, smaller flutter on top, so the motion
-    // doesn't read as a perfect metronome.
-    const wave = 0.7 * Math.sin(phase) + 0.3 * Math.sin(phase * 2.3 + jitter * 3);
-    const s = (SWAY_LEAN + (1 - SWAY_LEAN) * wave) * strength;
-    return { dx: Math.round(WIND_DIR_X * s), dy: Math.round(WIND_DIR_Y * s) };
+    const phase = (along / SWAY_WAVELENGTH - this.windClock) * Math.PI * 2;
+    // A main swell plus a gentler, slower-beating second one, so the motion
+    // doesn't read as a perfect metronome — normalized to 0..1.
+    const wave = 0.5 + 0.5 * (0.75 * Math.sin(phase) + 0.25 * Math.sin(phase * 0.47 + 1.3));
+    return (SWAY_LEAN + (1 - SWAY_LEAN) * wave) * strength;
   }
 
   /**
@@ -6596,18 +6648,16 @@ export class Renderer {
     ctx.translate(ox, oy);
 
     if (type === 'tree') {
-      // Per-tree phase jitter on top of the shared travelling wave (see
-      // windSway) — enough that neighbors don't move as one rigid sheet.
-      const sway = this.windSway(r.x, r.y, TREE_SWAY, (seed % 1000) / 1000 * 1.2);
+      // The crown sways as one rigid piece, keeping its shape (see treeSway).
+      const sway = this.treeSway(r.x, r.y);
       const alpha = this.canopyAlpha(r.id);
-      ctx.translate(sway.dx, sway.dy);
+      ctx.translate(sway * WIND_DIR_X, sway * WIND_DIR_Y);
       if (alpha < 1) ctx.globalAlpha *= alpha;
       const crown = getDamagedCrown(seed, cells, stage);
       if (crown.bare.length) drawBlockShape(ctx, crown.bare, forest ? FOREST_TREE_BARE_PALETTE : TREE_BARE_PALETTE, block);
       drawBlockShape(ctx, crown.leaves, palette, block);
     } else if (type === 'wheat') {
-      const sway = this.windSway(r.x, r.y, WHEAT_SWAY, (seed % 1000) / 1000 * 1.5);
-      drawSwayedShape(ctx, cells, palette, block, sway.dx, sway.dy);
+      drawSwayedShape(ctx, cells, palette, block, this.windSway(r.x, r.y, WHEAT_SWAY));
     } else {
       drawBlockShape(ctx, cells, palette, block);
       // Boulder cracks, each stage's on top of the last's (see boulderCrackCells).
@@ -6663,8 +6713,7 @@ export class Renderer {
     if (plot.crop === 'wheat') {
       // Same wind as the wild wheat (see windSway) — the soil stays put,
       // only the crop bends.
-      const sway = this.windSway(plot.x, plot.y, WHEAT_SWAY, ((plot.x * 7 + plot.y * 13) % 100) / 100 * 1.5);
-      this.drawWheatCrop(plot.growth, plot.mature, sway.dx, sway.dy);
+      this.drawWheatCrop(plot.growth, plot.mature, this.windSway(plot.x, plot.y, WHEAT_SWAY));
     }
     else if (plot.crop === 'berry') this.drawBerryCrop(plot);
     ctx.restore();
@@ -6690,19 +6739,19 @@ export class Renderer {
   private static readonly WHEAT_SPROUT_BLOCK: [number, number] = [1.6, 2.6];
   private static readonly WHEAT_MATURE_BLOCK: [number, number] = [2.4, 4.2];
 
-  /** (swayX, swayY) is the wind's whole-unit offset for the heads — see drawSwayedShape. */
-  private drawWheatCrop(growth: number, mature: boolean, swayX = 0, swayY = 0): void {
+  /** `lean` is the wind's lean for the top row, in blocks — see drawSwayedShape. */
+  private drawWheatCrop(growth: number, mature: boolean, lean = 0): void {
     const { ctx } = this;
     if (growth < 0.3) {
       const [from, to] = Renderer.WHEAT_SPROUT_BLOCK;
       const block = from + (growth / 0.3) * (to - from);
-      drawSwayedShape(ctx, SPROUT_CELLS, SPROUT_PALETTE, block, Math.round(swayX / 2), Math.round(swayY / 2));
+      drawSwayedShape(ctx, SPROUT_CELLS, SPROUT_PALETTE, block, lean / 2);
       return;
     }
     const t = (growth - 0.3) / 0.7;
     const [from, to] = Renderer.WHEAT_MATURE_BLOCK;
     const block = from + t * (to - from);
-    drawSwayedShape(ctx, WHEAT_ICON_CELLS, mature ? WHEAT_PALETTE : SPROUT_PALETTE, block, swayX, swayY);
+    drawSwayedShape(ctx, WHEAT_ICON_CELLS, mature ? WHEAT_PALETTE : SPROUT_PALETTE, block, lean);
   }
 
   /**
