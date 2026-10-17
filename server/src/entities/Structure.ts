@@ -66,6 +66,8 @@ export class ServerStructure {
     if (this.type === 'treasure_chest') state.opened = this.looted;
     // Whole seconds — walls only, the one structure that visibly weathers.
     if (this.type === 'wall') state.age = Math.floor(this.age);
+    // Flagged for its first second so clients can pop it into place.
+    if (this.age < 1) state.fresh = true;
     return state;
   }
 }

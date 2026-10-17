@@ -14,6 +14,8 @@ export interface ResourceState {
   y: number;
   hp: number;
   maxHp: number;
+  /** Set for about a second after it respawns — the client plays its "pop" back in (see Renderer's pop animation). */
+  fresh?: true;
 }
 
 // ── Farming ──────────────────────────────────────────────────────────────────
@@ -94,6 +96,8 @@ export interface StructureState {
   life: number | null;
   /** Treasure chests only: true while looted and waiting to refill — drawn with the lid open. */
   opened?: boolean;
+  /** Set for about a second after it's placed — the client plays its "pop" into place. */
+  fresh?: true;
   /**
    * Walls only: whole seconds since it was placed. Walls stand until their
    * owner dies, so the client weathers them with age — cracks, then moss

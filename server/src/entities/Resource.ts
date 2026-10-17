@@ -1,5 +1,8 @@
 import { ResourceState, ResourceType, resourceSizeScale } from '@io-game/shared';
 
+/** How long after respawning a resource is sent as `fresh` (see toState). */
+const FRESH_MS = 1000;
+
 // ── Config tables ────────────────────────────────────────────────────────────
 
 const RESOURCE_HP: Record<ResourceType, number> = {
@@ -78,6 +81,8 @@ export class ServerResource {
   readonly maxHp: number;
   isDead = false;
   private respawnTimer = 0;
+  /** When it last came back from the dead — 0 for one that's stood since world generation (see toState's `fresh`). */
+  private respawnedAt = 0;
 
   /**
    * Sub-unit yield carried between strikes, per drop type. Harvesting pays
@@ -163,6 +168,7 @@ export class ServerResource {
       }
       this.isDead = false;
       this.hp = this.maxHp;
+      this.respawnedAt = Date.now();
       // A respawned resource is worth its full yield again, so the harvest
       // ledger resets with it.
       this.paidFraction = 0;
@@ -173,7 +179,7 @@ export class ServerResource {
   }
 
   toState(): ResourceState {
-    return {
+    const state: ResourceState = {
       id: this.id,
       type: this.type,
       x: this.x,
@@ -181,5 +187,9 @@ export class ServerResource {
       hp: this.hp,
       maxHp: this.maxHp,
     };
+    // Flagged for a moment after a respawn so clients can pop it back in,
+    // rather than having it simply reappear.
+    if (Date.now() - this.respawnedAt < FRESH_MS) state.fresh = true;
+    return state;
   }
 }

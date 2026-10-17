@@ -6,6 +6,8 @@ import { Camera } from './Camera';
 import { Effects } from './fx/Effects';
 import { Atmosphere } from './fx/Atmosphere';
 import { isHigh } from './fx/quality';
+import { Birds } from './fx/Birds';
+import { sound } from './fx/Sound';
 import { WIND_X, WIND_Y } from './fx/Atmosphere';
 
 import berryUrl from './assets/sprites/berry.png';
@@ -1876,6 +1878,17 @@ const SWAY_LEAN = 0.35;
 // a tree, not on top of it. A crown with a player beneath it fades to
 // CANOPY_FADE_ALPHA so nobody ever loses sight of themselves (or of whoever
 // is lurking in there).
+
+// ── Pop into place ───────────────────────────────────────────────────────────
+
+/** Milliseconds a pop-into-place takes. */
+const POP_MS = 380;
+/** Scale a pop starts from. */
+const POP_FROM = 0.25;
+/** How long a pop is remembered — past the server's one-second `fresh` window, so it can't retrigger. */
+const POP_FORGET_MS = 1500;
+/** Dust kicked up when something pops in. */
+const POP_DUST = ['#c9b48a', '#a8956c', '#e0d2ae'];
 
 /** Crown opacity while a player is underneath it. */
 const CANOPY_FADE_ALPHA = 0.6;
@@ -4083,6 +4096,16 @@ export class Renderer {
   readonly fx: Effects;
   /** Color grade, clouds, rain, vignette — see fx/Atmosphere. */
   readonly atmosphere = new Atmosphere();
+  /** Flocks flying overhead by day — see fx/Birds. */
+  private readonly birds = new Birds();
+  /**
+   * Resources and structures popping into place: id → performance.now() the
+   * pop started. Triggered by the server's `fresh` flag (a respawn or a
+   * placement in the last second), so something merely scrolling into view
+   * never pops. Entries outlive the pop itself so the flag's remaining
+   * second can't retrigger it.
+   */
+  private readonly pops = new Map<string, number>();
   // Which way the sun is going (true from noon through midnight), so dusk
   // and dawn can be graded differently even though they share a sun height.
   private sunSetting = true;
@@ -5248,6 +5271,8 @@ export class Renderer {
     const viewH = this.canvas.height / this.camera.zoom;
     this.fx.update(dt, state, viewW, viewH);
     this.atmosphere.update(dt, state.tick, state.rainOverride, this.camera, viewW, viewH, this.fx, state.dayTime);
+    this.birds.update(dt, this.camera, viewW, viewH, this.daylight, this.atmosphere.rain);
+    this.updatePops(state, now);
   }
 
   /**
@@ -5366,6 +5391,8 @@ export class Renderer {
       // player underneath (see CANOPY_*). Placement/cast/farm previews come
       // after, so aiming one under a tree is never hidden by its leaves.
       this.drawTreeCanopy(sorted);
+      // Birds fly over everything, treetops included.
+      this.birds.draw(ctx, this.camera, W / zoom, H / zoom, this.sunAngle, this.daylight);
 
       if (me) {
         this.drawPlacementGhost(me, now);
@@ -6646,6 +6673,7 @@ export class Renderer {
     }
 
     ctx.translate(ox, oy);
+    this.applyPop(r.id);
 
     if (type === 'tree') {
       // The crown sways as one rigid piece, keeping its shape (see treeSway).
@@ -6691,6 +6719,7 @@ export class Renderer {
     ctx.translate(sx, sy);
     this.drawShadow(ctx, shadow.width, shadow.length);
     ctx.translate(ox, oy);
+    this.applyPop(r.id);
     ctx.scale(s, s);
     ctx.drawImage(img, -def.anchorX * BLOCK, -def.anchorY * BLOCK, w, h);
     ctx.restore();
@@ -6800,6 +6829,7 @@ export class Renderer {
     // own (see SHADOW_PROFILE.wall).
     const shadow = s.type === 'wall' ? SHADOW_PROFILE.wall : SHADOW_PROFILE.campfire;
     this.drawShadow(ctx, shadow.width, shadow.length);
+    this.applyPop(s.id);
     if (s.type === 'treasure_chest') drawTreasureChestSprite(this.ctx, !!s.opened);
     // The chest the local player is looking into, lid up (see setOpenChest).
     else if (s.type === CHEST_ID && s.id === this.openChestId) drawChestSprite(this.ctx, BLOCK, true);
@@ -8165,6 +8195,46 @@ export class Renderer {
       const lenFactor = clamp01(1 - this.sunHeight);
       this.drawShadowShape(ctx, width, length, this.sunAngle, lenFactor, `rgba(10,18,12,${((0.22 + lenFactor * 0.1) * strength).toFixed(3)})`);
     }
+  }
+
+  /** 0 at night, 1 in full daylight — gates the birds and their shadows. */
+  private get daylight(): number {
+    return smoothstep(clamp01((this.sunHeight + 0.05) / 0.35));
+  }
+
+  // ── Pop into place ──────────────────────────────────────────────────────────
+
+  /** Starts a pop for anything the server says just respawned or was placed, with a puff of dust and a soft pop sound. */
+  private updatePops(state: GameState, now: number): void {
+    if (this.simplifyOverview) return;
+    const start = (id: string, x: number, y: number): void => {
+      if (this.pops.has(id)) return;
+      this.pops.set(id, now);
+      this.fx.burst(x, y, POP_DUST, 6, 40, 'puff');
+      const { sx, sy } = this.camera.toScreen(x, y);
+      const onScreen = sx > 0 && sy > 0 && sx * this.camera.zoom < this.canvas.width && sy * this.camera.zoom < this.canvas.height;
+      if (onScreen) sound.play('pop', 0.7);
+    };
+    for (const r of state.resources) if (r.fresh) start(r.id, r.x, r.y);
+    for (const st of state.structures) if (st.fresh) start(st.id, st.x, st.y);
+    for (const [id, t] of this.pops) if (now - t > POP_FORGET_MS) this.pops.delete(id);
+  }
+
+  /**
+   * Scales the current (already-translated) drawing about its base for an
+   * active pop: up from small, overshooting a little, settling at full size
+   * — an ease-out-back curve. A no-op once the pop is done.
+   */
+  private applyPop(id: string): void {
+    const t0 = this.pops.get(id);
+    if (t0 === undefined) return;
+    const u = (performance.now() - t0) / POP_MS;
+    if (u >= 1) return;
+    const c1 = 1.9;
+    const c3 = c1 + 1;
+    const e = 1 + c3 * Math.pow(u - 1, 3) + c1 * Math.pow(u - 1, 2); // 0 → overshoot → 1
+    const k = POP_FROM + (1 - POP_FROM) * e;
+    this.ctx.scale(k, k);
   }
 
   /**

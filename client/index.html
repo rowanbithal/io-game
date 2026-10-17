@@ -47,6 +47,14 @@
     #menu > :nth-child(2) { animation-delay: 0.08s; }
     #menu > :nth-child(3) { animation-delay: 0.16s; }
     #menu > :nth-child(4) { animation-delay: 0.24s; }
+    #menu > :nth-child(5) { animation-delay: 0.32s; }
+
+    /* Title, name/Play and hints sit centred in the space above the
+       character picker, which is pinned to the bottom of the screen: the two
+       auto margins split the free space, one above the title and one above
+       the picker. */
+    .menu-title-wrap { margin-top: auto; }
+    .menu-look { margin-top: auto; }
 
     /* The title drifts gently up and down, its glow breathing out of step. */
     @keyframes title-float {
@@ -79,7 +87,7 @@
       margin-bottom: 1.8em;
     }
 
-    /* The card holding the look picker, name and Play — one tidy dark panel. */
+    /* A tidy dark panel — holds the name and Play, and (as .menu-look) the character picker at the bottom. */
     .menu-card {
       display: flex;
       flex-direction: column;
@@ -348,16 +356,6 @@
     </div>
 
     <div class="menu-card">
-      <!-- Look picker — rows filled in by ui/LookPicker.ts -->
-      <div class="look">
-        <div class="look-preview-frame"><canvas id="look-preview"></canvas></div>
-        <div class="look-rows">
-          <div class="look-row"><span class="look-label">Hair</span><div class="look-options" id="look-hair"></div></div>
-          <div class="look-row"><span class="look-label">Skin</span><div class="look-options" id="look-skin"></div></div>
-          <div class="look-row"><span class="look-label">Hat</span><div class="look-options" id="look-hat"></div></div>
-        </div>
-      </div>
-
       <div class="menu-join">
         <input id="name-input" type="text" placeholder="Enter your name…" maxlength="16" autocomplete="off" />
         <button id="play-btn">▶ Play</button>
@@ -368,6 +366,18 @@
       <div class="menu-hint"><span class="icon">🌲</span>Gather resources</div>
       <div class="menu-hint"><span class="icon">🌙</span>Survive the night</div>
       <div class="menu-hint"><span class="icon">🍖</span>Don't starve</div>
+    </div>
+
+    <!-- Character picker, pinned to the bottom of the screen — rows filled in by ui/LookPicker.ts -->
+    <div class="menu-card menu-look">
+      <div class="look">
+        <div class="look-preview-frame"><canvas id="look-preview"></canvas></div>
+        <div class="look-rows">
+          <div class="look-row"><span class="look-label">Hair</span><div class="look-options" id="look-hair"></div></div>
+          <div class="look-row"><span class="look-label">Skin</span><div class="look-options" id="look-skin"></div></div>
+          <div class="look-row"><span class="look-label">Hat</span><div class="look-options" id="look-hat"></div></div>
+        </div>
+      </div>
     </div>
   </div>
 

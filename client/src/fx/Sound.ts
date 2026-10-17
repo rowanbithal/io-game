@@ -28,6 +28,7 @@ export type SfxName =
   | 'treasure'
   | 'death'
   | 'click'
+  | 'pop'
   | 'stepGrass'
   | 'stepSand'
   | 'stepWater'
@@ -273,6 +274,11 @@ class SoundEngine {
         break;
       case 'click':
         this.tone('square', 1200, 0.03, 0.05 * v);
+        break;
+      case 'pop':
+        // Something springing into place: a quick upward bloop with a soft thud under it.
+        this.tone('sine', 300 * jitter, 0.1, 0.18 * v, 0, 700);
+        this.noiseHit('lowpass', 600, 1, 0.06, 0.15 * v);
         break;
       case 'stepGrass':
         this.noiseHit('bandpass', 1800 * jitter, 0.8, 0.05, 0.08 * v);

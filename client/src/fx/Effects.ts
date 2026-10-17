@@ -65,6 +65,31 @@ interface Tracked {
   type: Target;
 }
 
+// ── Footprints ───────────────────────────────────────────────────────────────
+// Players, foxes and beetles leave a trail of prints that fades within a few
+// seconds — alternating left/right of their path, tinted for whatever ground
+// they're crossing (darker in sand and on the forest floor, faint on grass,
+// none in water).
+
+/** Seconds a footprint takes to fade out completely. */
+const FOOTPRINT_LIFE = 3;
+/** World units walked between prints. */
+const FOOTPRINT_STRIDE = 13;
+/** How far either side of the path the left/right prints sit. */
+const FOOTPRINT_SPREAD = 4;
+const FOOTPRINT_SAND = 'rgba(95,70,38,0.7)';
+const FOOTPRINT_DIRT = 'rgba(25,16,8,0.7)';
+const FOOTPRINT_GRASS = 'rgba(18,34,12,0.5)';
+
+interface Footprint {
+  x: number;
+  y: number;
+  life: number;
+  color: string;
+  /** Paw prints (foxes, beetles) are smaller than boots. */
+  size: number;
+}
+
 const MAX_PARTICLES_HIGH = 900;
 const MAX_PARTICLES_LOW = 240;
 
@@ -110,6 +135,9 @@ const rand = (lo: number, hi: number): number => lo + Math.random() * (hi - lo);
 export class Effects {
   private readonly particles: Particle[] = [];
   private readonly numbers: DamageNumber[] = [];
+  private readonly prints: Footprint[] = [];
+  /** Per-walker distance since its last print, and which foot is next. */
+  private readonly strides = new Map<string, { x: number; y: number; dist: number; left: boolean }>();
 
   /** id → seconds of white flash remaining. */
   private readonly flashes = new Map<string, number>();
@@ -313,6 +341,7 @@ export class Effects {
     }
 
     this.spawnFootsteps(state.players, dt);
+    this.spawnFootprints(state, dt);
     this.spawnEmbers(state, dt);
     this.spawnAmbient(dt, viewW, viewH, state.isDay);
 
@@ -400,6 +429,55 @@ export class Effects {
     if (this.stepTimers.size > players.length + 16) {
       const live = new Set(players.map((p) => p.id));
       for (const id of this.stepTimers.keys()) if (!live.has(id)) this.stepTimers.delete(id);
+    }
+  }
+
+  /** Drops a print every FOOTPRINT_STRIDE units walked, and ages the existing ones. */
+  private spawnFootprints(state: GameState, dt: number): void {
+    for (let i = this.prints.length - 1; i >= 0; i--) {
+      this.prints[i].life -= dt;
+      if (this.prints[i].life <= 0) this.prints.splice(i, 1);
+    }
+
+    const walkers: { id: string; x: number; y: number; size: number; inWater: boolean }[] = [];
+    for (const p of state.players) walkers.push({ id: p.id, x: p.x, y: p.y, size: 3, inWater: p.air < MAX_AIR - 0.01 });
+    for (const f of state.foxes) walkers.push({ id: f.id, x: f.x, y: f.y, size: 2.2, inWater: false });
+    for (const b of state.beetles) walkers.push({ id: b.id, x: b.x, y: b.y, size: 2.2, inWater: false });
+
+    const seen = new Set<string>();
+    for (const w of walkers) {
+      seen.add(w.id);
+      const st = this.strides.get(w.id);
+      if (!st) {
+        this.strides.set(w.id, { x: w.x, y: w.y, dist: 0, left: false });
+        continue;
+      }
+      const dx = w.x - st.x;
+      const dy = w.y - st.y;
+      const moved = Math.hypot(dx, dy);
+      st.x = w.x;
+      st.y = w.y;
+      // A teleport (respawn) isn't a step.
+      if (moved > 60 || moved < 0.01) continue;
+      st.dist += moved;
+      if (st.dist < FOOTPRINT_STRIDE) continue;
+      st.dist = 0;
+      st.left = !st.left;
+      if (w.inWater) continue;
+
+      const color = isInDesert(w.x, w.y) || (w.y >= seaSandStartAt(w.x) && w.y < seaCoastAt(w.x))
+        ? FOOTPRINT_SAND
+        : forestFactor(w.x, w.y) > 0.6
+          ? FOOTPRINT_DIRT
+          : FOOTPRINT_GRASS;
+      // Offset to the left or right of the direction of travel.
+      const nx = -dy / moved;
+      const ny = dx / moved;
+      const side = st.left ? 1 : -1;
+      this.prints.push({ x: w.x + nx * FOOTPRINT_SPREAD * side, y: w.y + ny * FOOTPRINT_SPREAD * side, life: FOOTPRINT_LIFE, color, size: w.size });
+    }
+    if (this.strides.size > seen.size + 16) {
+      for (const id of this.strides.keys()) if (!seen.has(id)) this.strides.delete(id);
     }
   }
 
@@ -581,6 +659,13 @@ export class Effects {
    */
   drawGround(ctx: CanvasRenderingContext2D): void {
     const { camera } = this;
+    // Footprints first — flat on the ground, under any ripple.
+    for (const f of this.prints) {
+      ctx.globalAlpha = clamp01(f.life / FOOTPRINT_LIFE);
+      ctx.fillStyle = f.color;
+      ctx.fillRect(f.x - camera.x - f.size / 2, f.y - camera.y - f.size * 0.7, f.size, f.size * 1.4);
+    }
+    ctx.globalAlpha = 1;
     ctx.lineWidth = 1.2;
     for (const p of this.particles) {
       if (p.kind !== 'ring') continue;
