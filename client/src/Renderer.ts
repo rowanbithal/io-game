@@ -1,4 +1,7 @@
 import { GameState, PlayerState, ResourceState, StructureState, SpiderState, FoxState, BeetleState, LakeState, IslandState, FishingState, FarmPlotState, PLAYER_RADIUS, FOX_RADIUS, BEETLE_RADIUS, GRID_CELL, TREE_SPAN, ROCK_SPAN, WHEAT_SPAN, GOLD_SPAN, DIAMOND_SPAN, HARVEST_RANGE, HARVEST_ANGLE, HARVEST_COOLDOWN, STRUCTURE_SPAN, PLACE_RANGE, CAMPFIRE_LIGHT_RADIUS, CAMPFIRE_BURNOUT_FADE, SPIDER_RADIUS, CAST_RANGE, FOX_AGGRO_RANGE, FOX_LOSE_INTEREST_RANGE, RECIPES_BY_ID, WOODEN_AXE_ID, WOODEN_PICKAXE_ID, WOODEN_SWORD_ID, STONE_AXE_ID, STONE_PICKAXE_ID, STONE_SWORD_ID, GOLD_AXE_ID, GOLD_PICKAXE_ID, GOLD_SWORD_ID, DIAMOND_AXE_ID, DIAMOND_PICKAXE_ID, DIAMOND_SWORD_ID, WOODEN_ARMOR_ID, STONE_ARMOR_ID, GOLD_ARMOR_ID, DIAMOND_ARMOR_ID, CHEST_ID, TORCH_LIGHT_RADIUS, CRAFTING_BENCH_ID, FISHING_ROD_ID, WOODEN_HOE_ID, WATERING_CAN_ID, FARM_PLOT_SPAN, FARM_PLOT_INTERACT_RADIUS, MAP_SIZE, DARK_FOREST_BAND, DARK_FOREST_TRANSITION, GOLD_TOP_BAND, FOREST_TREE_SCALE, FOREST_ROCK_SCALE, darkForestBandAt, DARK_FOREST_EDGE_AMPLITUDE, SEA_BAND, SEA_SAND_WIDTH, seaCoastAt, seaSandStartAt, SEA_EDGE_AMPLITUDE, DESERT_BAND, DESERT_TRANSITION, DESERT_EDGE_AMPLITUDE, desertBandAt, isInDesert, OASIS_VERTICAL_STRETCH, dayPhase, hashCell, clamp01, smoothstep, forestFactor, isForestTree, isForestRock, resourceCell, RESOURCE_SEED_SALT, mulberry32, lakeHarmonics, lobeRadius, LakeHarmonic } from '@io-game/shared';
+// Player appearance (hair/skin/hat) — its own import line rather than more
+// names on the long one above, purely to keep it easy to spot.
+import { HAIR_COLORS, SKIN_COLORS, HATS, DEFAULT_LOOK, PlayerLook } from '@io-game/shared';
 import { Camera } from './Camera';
 import { Effects } from './fx/Effects';
 import { Atmosphere } from './fx/Atmosphere';
@@ -2156,6 +2159,143 @@ const HEAD_RADIUS_BLOCKS = PLAYER_RADIUS_BLOCKS;
 const PLAYER_HEAD = blockCircle(HEAD_RADIUS_BLOCKS);
 const HAIR_PALETTE: Palette3 = { light: P.playerHairLight, base: P.playerHair, dark: P.playerHairDark };
 
+// ── Player appearance ────────────────────────────────────────────────────────
+// What each player picked on the main menu (see shared/appearance.ts),
+// resolved from the indices on PlayerState.look. The palettes themselves
+// live in shared so the menu's picker and this renderer can never disagree;
+// here they're just reshaped into Palette3s once up front. HAIR_PALETTE and
+// SKIN_PALETTE (the original fixed colors, identical to index 0 of each
+// list) stay as the fallback for anything out of range.
+const HAIR_PALETTES: Palette3[] = HAIR_COLORS.map(({ palette }) => ({ light: palette.light, base: palette.base, dark: palette.dark }));
+const SKIN_PALETTES: Palette3[] = SKIN_COLORS.map(({ color }) => ({ light: color, base: color, dark: color }));
+
+type HatId = (typeof HATS)[number]['id'];
+
+/** One single-palette piece of a hat sprite. A hat is a few of these, drawn in order. */
+interface HatPart {
+  cells: Cell[];
+  palette: Palette3;
+}
+
+const CAP_PALETTE: Palette3 = { light: '#e8705e', base: '#c8402f', dark: '#8e2a20' };
+const BEANIE_PALETTE: Palette3 = { light: '#72d2c6', base: '#3fa596', dark: '#2a7268' };
+const POMPOM_PALETTE: Palette3 = { light: '#ffffff', base: '#f1ede2', dark: '#c9c3b2' };
+const CROWN_PALETTE: Palette3 = { light: '#fff2a0', base: '#f2c635', dark: '#b8891a' };
+const CROWN_GEM_PALETTE: Palette3 = { light: '#ff8a8a', base: '#e0283c', dark: '#9a1426' };
+const PETAL_PALETTE: Palette3 = { light: '#ffd6ea', base: '#f58ab8', dark: '#c95a8a' };
+const FLOWER_HEART_PALETTE: Palette3 = { light: '#fff4a0', base: '#f6d044', dark: '#c99d1c' };
+const FLOWER_LEAF_PALETTE: Palette3 = { light: '#8ed46a', base: '#5aa83e', dark: '#3a7a28' };
+
+/**
+ * Shades a hat's dome front-to-back rather than blockCircle's fixed
+ * top/middle/bottom bands: hats are drawn in the facing-rotated frame (+x =
+ * forward, like ARMOR_HELMET), so lighting the front edge keeps the brim
+ * side bright whichever way the player turns, the same choice the helmet's
+ * stripes make.
+ */
+function hatDome(radiusBlocks: number): Cell[] {
+  return blockCircle(radiusBlocks).map(({ gx, gy }) => ({
+    gx,
+    gy,
+    shade: gx >= Math.round(radiusBlocks * 0.4) ? 'light' : gx <= -Math.round(radiusBlocks * 0.5) ? 'dark' : 'base',
+  }));
+}
+
+/**
+ * Every hat as seen from directly above, in the facing-rotated frame (+x =
+ * forward, +y = the player's right), sized against the head's own
+ * HEAD_RADIUS_BLOCKS circle so each sits on the hair rather than past it
+ * (only the cap's bill pokes out, out front, which is the point of it).
+ */
+const HAT_SPRITES: Record<HatId, HatPart[]> = {
+  none: [],
+  // A dome a little smaller than the head (a rim of hair still shows round
+  // the back and sides), a stiff bill sticking out the front, and a button
+  // on top.
+  cap: [
+    {
+      palette: CAP_PALETTE,
+      cells: [
+        ...hatDome(2.6),
+        ...[-2, -1, 0, 1, 2].map((gy) => ({ gx: 3, gy, shade: 'base' as Shade })),
+        ...[-1, 0, 1].map((gy) => ({ gx: 4, gy, shade: 'dark' as Shade })),
+        { gx: 0, gy: 0, shade: 'dark' },
+      ],
+    },
+  ],
+  // Knit cap pulled down over nearly the whole head: an outer ribbed band
+  // whose shade alternates block by block round the ring, and a pom-pom on
+  // top.
+  beanie: [
+    {
+      palette: BEANIE_PALETTE,
+      cells: blockCircle(3).map(({ gx, gy }) => {
+        const r = Math.hypot(gx, gy);
+        const rib = Math.round((Math.atan2(gy, gx) / Math.PI) * 6) & 1;
+        const shade: Shade = r >= 2.3 ? (rib ? 'dark' : 'base') : gx > 0 ? 'light' : 'base';
+        return { gx, gy, shade };
+      }),
+    },
+    { palette: POMPOM_PALETTE, cells: blockCircle(1).map((c) => ({ ...c, shade: c.gx > 0 || c.gy < 0 ? 'light' : c.shade })) },
+  ],
+  // A gold band round the crown of the head — hair still showing through
+  // the middle — with five brighter points standing up off it and a ruby
+  // set at the front.
+  crown: [
+    {
+      palette: CROWN_PALETTE,
+      cells: (() => {
+        const cells: Cell[] = [];
+        for (let gy = -3; gy <= 3; gy++) {
+          for (let gx = -3; gx <= 3; gx++) {
+            const r = Math.hypot(gx, gy);
+            if (r < 1.6 || r > 3.0) continue;
+            // Points: the cells nearest five evenly spaced spokes.
+            const a = Math.atan2(gy, gx);
+            const spoke = Math.abs(((a / ((Math.PI * 2) / 5)) % 1 + 1) % 1 - 0.5) > 0.38;
+            const shade: Shade = spoke && r > 2.2 ? 'light' : r < 2.2 ? 'dark' : 'base';
+            cells.push({ gx, gy, shade });
+          }
+        }
+        return cells;
+      })(),
+    },
+    { palette: CROWN_GEM_PALETTE, cells: [{ gx: 2, gy: 0, shade: 'base' }, { gx: 3, gy: 0, shade: 'light' }] },
+  ],
+  // A single flower tucked behind the right ear — petals, a yellow heart
+  // and a couple of leaves — rather than anything covering the head.
+  flower: [
+    {
+      palette: FLOWER_LEAF_PALETTE,
+      cells: [
+        { gx: -2, gy: 3, shade: 'base' },
+        { gx: -3, gy: 2, shade: 'dark' },
+      ],
+    },
+    {
+      palette: PETAL_PALETTE,
+      cells: [
+        { gx: 0, gy: 1, shade: 'light' },
+        { gx: 1, gy: 2, shade: 'base' },
+        { gx: 0, gy: 3, shade: 'dark' },
+        { gx: -1, gy: 2, shade: 'base' },
+      ],
+    },
+    { palette: FLOWER_HEART_PALETTE, cells: [{ gx: 0, gy: 2, shade: 'base' }] },
+  ],
+};
+
+/** Resolves a (possibly missing) PlayerState.look to concrete palettes and a hat, falling back to DEFAULT_LOOK. */
+function resolveLook(look: PlayerLook | undefined): { hair: Palette3; skin: Palette3; hat: HatPart[] } {
+  const l = look ?? DEFAULT_LOOK;
+  const hatId = HATS[l.hat]?.id ?? 'none';
+  return {
+    hair: HAIR_PALETTES[l.hair] ?? HAIR_PALETTE,
+    skin: SKIN_PALETTES[l.skin] ?? SKIN_PALETTE,
+    hat: HAT_SPRITES[hatId] ?? [],
+  };
+}
+
 // Overall player draw scale — bumps up arm reach, shadow, and label
 // placement slightly without touching the real gameplay PLAYER_RADIUS.
 const PLAYER_VISUAL_SCALE = 1.15;
@@ -2855,7 +2995,122 @@ interface GaitAnim {
   lastY: number;
   phase: number;
   amp: number;
+  /** Last seen facing and health fraction — what a corpse is posed from if this mob's id vanishes (see detectMobDeaths). */
+  angle: number;
+  hpFrac: number;
+  /** Last seen attackSeq (see SpiderState.attackSeq); a change means it just bit, and starts a lunge. */
+  attackSeq: number;
+  /** performance.now() the current/last lunge began, or -Infinity if it never has. */
+  lungeAt: number;
+  /** performance.now() a spider started climbing out of the ground, or -Infinity — see SPIDER_EMERGE_SECONDS. */
+  emergeAt: number;
 }
+
+/** A fresh GaitAnim for a mob seen for the first time — nothing playing yet. */
+function newGaitAnim(x: number, y: number, angle: number, hpFrac: number, attackSeq: number | undefined): GaitAnim {
+  return { lastX: x, lastY: y, phase: 0, amp: 0, angle, hpFrac, attackSeq: attackSeq ?? 0, lungeAt: -Infinity, emergeAt: -Infinity };
+}
+
+// ── Mob attack lunge / death / emergence ─────────────────────────────────────
+// The server never tells the client "this mob just bit" or "this mob just
+// died" as an event — it only sends snapshots. A bite shows up as the mob's
+// attackSeq counter ticking over (see SpiderState.attackSeq); a death shows
+// up as its id simply being gone from the next snapshot. Both are turned
+// into short client-only animations here, layered on top of the gait anims.
+
+/** Seconds a bite lunge takes — a quick jab out, then a slower settle back. */
+const MOB_LUNGE_SECONDS = 0.24;
+/** Fraction of MOB_LUNGE_SECONDS spent jabbing out; the rest eases back. */
+const MOB_LUNGE_OUT = 0.3;
+// How far forward each mob's body jabs at the peak of a bite, in world units.
+const SPIDER_LUNGE_DIST = BLOCK * 1.6;
+const FOX_LUNGE_DIST = BLOCK * 1.8;
+const BEETLE_LUNGE_DIST = BLOCK * 1.2;
+
+/** 0..1..0 lunge envelope at `t` seconds after a bite: fast out, eased back. */
+function lungeCurve(t: number): number {
+  const u = t / MOB_LUNGE_SECONDS;
+  if (u < 0 || u >= 1) return 0;
+  if (u < MOB_LUNGE_OUT) return smoothstep(u / MOB_LUNGE_OUT);
+  return 1 - smoothstep((u - MOB_LUNGE_OUT) / (1 - MOB_LUNGE_OUT));
+}
+
+/**
+ * A mob only leaves a corpse when its id vanishes while it was this badly
+ * hurt (fraction of maxHp) *and* this close to some player — i.e. it was
+ * almost certainly just killed. Anything else that drops out of the
+ * snapshot (wandered out of view, despawned idle, a healthy spider melting
+ * away at dawn) just disappears as before.
+ */
+const MOB_DEATH_HP_FRACTION = 0.4;
+const MOB_DEATH_PLAYER_RANGE = 140;
+/** Seconds a corpse topples and fades before it's gone. */
+const MOB_CORPSE_SECONDS = 0.8;
+/** Alpha steps a corpse fades through — stepped rather than smooth, so the fade reads as pixel-art frames. */
+const MOB_CORPSE_FADE_STEPS = 5;
+
+/**
+ * Extra transform a mob is drawn with on top of its heading rotation (+x =
+ * forward): pushed forward by `forward`, rolled by `roll`, then scaled —
+ * `scaleY` squashes it across its width (negative = flipped onto its back).
+ * `curl` (0..1) pulls legs/paws in toward the body.
+ */
+interface MobPose {
+  forward: number;
+  roll: number;
+  scaleX: number;
+  scaleY: number;
+  curl: number;
+}
+
+const NEUTRAL_POSE: MobPose = { forward: 0, roll: 0, scaleX: 1, scaleY: 1, curl: 0 };
+
+type MobKind = 'spider' | 'fox' | 'beetle';
+
+/** A mob that just died — drawn where it fell for MOB_CORPSE_SECONDS, then dropped. */
+interface MobCorpse {
+  kind: MobKind;
+  x: number;
+  y: number;
+  angle: number;
+  phase: number;
+  /** performance.now() it died. */
+  start: number;
+  /** Which way it topples, ±1 — picked from its id so it's stable but varied. */
+  side: number;
+}
+
+/**
+ * Seconds a newly spawned spider takes to climb out of the ground at night.
+ * Only spiders whose server-reported `age` (see SpiderState.age) is still
+ * under this the first time the client sees them get the anim — one that
+ * has existed a while and merely scrolls into view just appears, as before.
+ */
+const SPIDER_EMERGE_SECONDS = 0.6;
+/** Scale a spider starts at as it breaks the surface, growing to 1. */
+const SPIDER_EMERGE_START_SCALE = 0.3;
+
+/**
+ * Ring of churned-up dirt clods a spider pushes aside as it climbs out —
+ * a ragged annulus of blocks, gaps knocked out of it by hashCell so it
+ * reads as clumps rather than a neat donut. Drawn expanding and fading over
+ * the emergence (see drawSpiderEmergeDirt).
+ */
+const SPIDER_EMERGE_DIRT: Cell[] = (() => {
+  const cells: Cell[] = [];
+  for (let gy = -5; gy <= 5; gy++) {
+    for (let gx = -5; gx <= 5; gx++) {
+      const r = Math.hypot(gx, gy);
+      if (r < 2.6 || r > 4.4) continue;
+      const h = hashCell(gx, gy, 313);
+      if (h < 0.3) continue;
+      const shade: Shade = h < 0.55 ? 'dark' : gx + gy < 0 ? 'light' : 'base';
+      cells.push({ gx, gy, shade });
+    }
+  }
+  return cells;
+})();
+const EMERGE_DIRT_PALETTE: Palette3 = { light: P.dirtLight, base: P.dirt, dark: P.dirtDark };
 
 const SPIDER_SCUTTLE_SPEED = 0.22; // radians of phase per world-unit moved — faster than the player's gait
 
@@ -3038,6 +3293,30 @@ const GLOW_BANDS = 5;
 const WALK_SWING_SPEED = 0.12; // radians of phase per world-unit moved
 const WALK_EASE = 0.22; // per-frame ease toward the moving/idle walk amplitude
 const STRIKE_WINDOW = 0.34; // seconds — how long a harvest swing takes: wind-up, sweep, recover
+
+// Idle breathing: a standing player bobs by up to PLAYER_BREATH_PX world
+// units (rounded, so it steps a whole pixel at a time rather than
+// shimmering), hands easing out and in with the same breath. Each player
+// gets their own phase (see breathPhase) so a crowd doesn't breathe in
+// lockstep. Fades out as the walk cycle fades in.
+const PLAYER_BREATH_PERIOD = 3; // seconds per breath
+const PLAYER_BREATH_PX = 1;
+
+// While the tool arm swings, the off hand pulls back (and a touch in toward
+// the body) to counterbalance it — as fractions of the layout radius R,
+// scaled by how far round the swing is.
+const OFF_HAND_COUNTER_BACK = 0.35;
+const OFF_HAND_COUNTER_IN = 0.12;
+// …and during the wind-up (the swing briefly going negative) it nudges
+// forward instead, the arms scissoring the other way.
+const OFF_HAND_WINDUP_FORWARD = 0.25;
+
+/** A stable per-player breathing phase in [0, 2π), hashed from their id. */
+function breathPhase(id: string): number {
+  let h = 0;
+  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) | 0;
+  return ((h >>> 0) % 1000) / 1000 * Math.PI * 2;
+}
 
 /**
  * How far round the tool arm has swung at `u` (0..1 through STRIKE_WINDOW),
@@ -3532,6 +3811,9 @@ export class Renderer {
 
   /** Per-beetle scuttle state, pruned as beetles die or leave view. */
   private readonly beetleAnim = new Map<string, GaitAnim>();
+
+  /** Mobs that just died, toppling and fading where they fell — see detectMobDeaths/drawMobCorpses. */
+  private mobCorpses: MobCorpse[] = [];
 
   /** Per-resource harvest recoil, pruned as resources leave view. */
   private readonly resourceRecoil = new Map<string, ResourceRecoil>();
@@ -4599,6 +4881,8 @@ export class Renderer {
     this.sunSetting = phase < 0.5;
 
     this.prunePlayerAnim(state.players);
+    // Before the mob prunes below, which discard the last-known state a corpse is posed from.
+    this.detectMobDeaths(state);
     this.pruneSpiderAnim(state.spiders);
     this.pruneFoxAnim(state.foxes);
     this.pruneBeetleAnim(state.beetles);
@@ -4707,6 +4991,8 @@ export class Renderer {
     for (const f of state.foxes) this.withFlash(f.id, () => this.drawFox(this.fx.held(f)));
 
     for (const b of state.beetles) this.withFlash(b.id, () => this.drawBeetle(this.fx.held(b)));
+
+    this.drawMobCorpses();
 
     const me = state.players.find((p) => p.isMe);
     if (this.simplifyOverview) {
@@ -6541,15 +6827,143 @@ export class Renderer {
     }
   }
 
+  // ── Mob attack lunge / death / emergence ───────────────────────────────────
+
+  /** Notes a mob's latest facing/health (for a possible corpse) and starts a lunge if its attackSeq just ticked over. */
+  private trackMobAttack(anim: GaitAnim, m: { angle: number; hp: number; maxHp: number; attackSeq?: number }): void {
+    anim.angle = m.angle;
+    anim.hpFrac = m.hp / m.maxHp;
+    if (m.attackSeq !== undefined && m.attackSeq !== anim.attackSeq) {
+      anim.attackSeq = m.attackSeq;
+      anim.lungeAt = this.lastFrameTime;
+    }
+  }
+
+  /** The pose a living mob is drawn in right now — a bite lunge if one's playing, otherwise neutral. Always neutral in the overview inset. */
+  private liveMobPose(anim: GaitAnim, lungeDist: number): MobPose {
+    if (this.simplifyOverview) return NEUTRAL_POSE;
+    const l = lungeCurve((this.lastFrameTime - anim.lungeAt) / 1000);
+    if (l <= 0) return NEUTRAL_POSE;
+    // Whole units, so the jab steps along the pixel grid.
+    return { ...NEUTRAL_POSE, forward: Math.round(l * lungeDist) };
+  }
+
+  /** Applies a MobPose on top of the heading rotation already on `ctx`. */
+  private applyMobPose(pose: MobPose): void {
+    const { ctx } = this;
+    if (pose.roll) ctx.rotate(pose.roll);
+    if (pose.forward) ctx.translate(pose.forward, 0);
+    if (pose.scaleX !== 1 || pose.scaleY !== 1) ctx.scale(pose.scaleX, pose.scaleY);
+  }
+
+  /**
+   * Turns any mob that just dropped out of the snapshot while badly hurt
+   * and next to a player into a corpse (see MOB_DEATH_HP_FRACTION). Has to
+   * run before the prune*Anim calls, which throw that last-known state away.
+   */
+  private detectMobDeaths(state: GameState): void {
+    const now = this.lastFrameTime;
+    const check = (kind: MobKind, anims: Map<string, GaitAnim>, live: { id: string }[]): void => {
+      if (anims.size === 0) return;
+      const liveIds = new Set(live.map((m) => m.id));
+      for (const [id, anim] of anims) {
+        if (liveIds.has(id) || anim.hpFrac > MOB_DEATH_HP_FRACTION) continue;
+        const nearPlayer = state.players.some((p) => Math.hypot(p.x - anim.lastX, p.y - anim.lastY) <= MOB_DEATH_PLAYER_RANGE);
+        if (!nearPlayer) continue;
+        this.mobCorpses.push({
+          kind,
+          x: anim.lastX,
+          y: anim.lastY,
+          angle: anim.angle,
+          phase: anim.phase,
+          start: now,
+          side: id.charCodeAt(id.length - 1) % 2 ? 1 : -1,
+        });
+      }
+    };
+    check('spider', this.spiderAnim, state.spiders);
+    check('fox', this.foxAnim, state.foxes);
+    check('beetle', this.beetleAnim, state.beetles);
+    this.mobCorpses = this.mobCorpses.filter((c) => now - c.start < MOB_CORPSE_SECONDS * 1000);
+  }
+
+  /**
+   * Draws every corpse toppling over and fading out where it fell: it rolls
+   * to one side while squashing across its width, past flat and onto its
+   * back (scaleY going negative mirrors it — that's the flip), legs/paws
+   * curling in, darkening once its underside is showing, and fading through
+   * a few stepped alpha frames.
+   */
+  private drawMobCorpses(): void {
+    if (this.simplifyOverview || this.mobCorpses.length === 0) return;
+    const { ctx, camera } = this;
+    for (const c of this.mobCorpses) {
+      const t = clamp01((this.lastFrameTime - c.start) / (MOB_CORPSE_SECONDS * 1000));
+      const topple = smoothstep(clamp01(t / 0.55));
+      const fade = 1 - smoothstep(clamp01((t - 0.3) / 0.7));
+      const alpha = Math.ceil(fade * MOB_CORPSE_FADE_STEPS) / MOB_CORPSE_FADE_STEPS;
+      if (alpha <= 0) continue;
+      const pose: MobPose = {
+        forward: 0,
+        roll: c.side * 0.45 * topple,
+        scaleX: 1 + 0.1 * topple,
+        scaleY: 1 - 1.55 * topple,
+        curl: clamp01(t * 2.5),
+      };
+
+      const { sx, sy } = camera.toScreen(c.x, c.y);
+      ctx.save();
+      ctx.globalAlpha *= alpha;
+      ctx.translate(sx, sy);
+      const shadow = SHADOW_PROFILE[c.kind];
+      this.drawShadow(ctx, shadow.width, shadow.length);
+      ctx.rotate(c.angle);
+      this.applyMobPose(pose);
+      // Belly-up once it's flipped past flat — a plain darken rather than
+      // separate underside art. (ctx.filter is a no-op where unsupported,
+      // which just skips the darkening.)
+      if (pose.scaleY < 0) ctx.filter = 'brightness(0.65)';
+      if (c.kind === 'spider') this.drawSpiderBody(c.phase, 0, pose.curl);
+      else if (c.kind === 'fox') this.drawFoxBody(c.phase, 0, pose.curl);
+      else this.drawBeetleBody(c.phase, 0, pose.curl);
+      ctx.restore();
+    }
+  }
+
+  /**
+   * The churned-dirt ring round a spider climbing out of the ground, `e`
+   * (0..1) through its emergence: it starts tight against the spider and
+   * spreads outward as it rises, fading through stepped alpha. Cells are
+   * re-rounded onto the grid at each spread rather than scaled, so the clods
+   * stay crisp blocks. Drawn in the un-rotated frame — dirt doesn't turn
+   * with the spider.
+   */
+  private drawSpiderEmergeDirt(e: number): void {
+    const { ctx } = this;
+    const spread = 1 + 0.4 * e;
+    const cells = SPIDER_EMERGE_DIRT.map((c) => ({ gx: Math.round(c.gx * spread), gy: Math.round(c.gy * spread), shade: c.shade }));
+    ctx.save();
+    ctx.globalAlpha *= Math.ceil((1 - e) * 4) / 4;
+    drawBlockShape(ctx, cells, EMERGE_DIRT_PALETTE, BLOCK);
+    ctx.restore();
+  }
+
   // ── Spiders ────────────────────────────────────────────────────────────────
 
   /** Advances a spider's scuttle phase from distance moved, like the player's walk cycle. */
   private updateSpiderAnim(s: SpiderState): GaitAnim {
     let anim = this.spiderAnim.get(s.id);
     if (!anim) {
-      anim = { lastX: s.x, lastY: s.y, phase: 0, amp: 0 };
+      anim = newGaitAnim(s.x, s.y, s.angle, s.hp / s.maxHp, s.attackSeq);
+      // Only a spider the server says is brand new climbs out of the ground —
+      // one first seen with a bigger age has just scrolled into view. Its
+      // emergence is backdated by that age so it finishes on the server's
+      // clock, not a snapshot late. (Spiders only ever spawn after dark —
+      // see Game.updateSpiders — so `age` alone already means "at night".)
+      if (s.age !== undefined && s.age < SPIDER_EMERGE_SECONDS) anim.emergeAt = this.lastFrameTime - s.age * 1000;
       this.spiderAnim.set(s.id, anim);
     }
+    this.trackMobAttack(anim, s);
 
     const dist = Math.hypot(s.x - anim.lastX, s.y - anim.lastY);
     anim.lastX = s.x;
@@ -6573,39 +6987,36 @@ export class Renderer {
     const { ctx, camera } = this;
     const { sx, sy } = camera.toScreen(s.x, s.y);
     const anim = this.updateSpiderAnim(s);
+    const pose = this.liveMobPose(anim, SPIDER_LUNGE_DIST);
+
+    // 0..1 through climbing out of the ground (see SPIDER_EMERGE_SECONDS),
+    // or 1 once done / for a spider that never emerged on screen.
+    const emerge = this.simplifyOverview ? 1 : clamp01((this.lastFrameTime - anim.emergeAt) / (SPIDER_EMERGE_SECONDS * 1000));
 
     ctx.save();
     ctx.translate(sx, sy);
-    this.drawShadow(ctx, SHADOW_PROFILE.spider.width, SHADOW_PROFILE.spider.length);
+    if (emerge < 1) {
+      // Rising out of a hole: dirt kicked out round it, the spider growing
+      // from a small hunched shape to full size (ease-out, so it pops up
+      // fast then settles) with its legs unfolding as it comes, and its
+      // shadow only spreading out as it clears the ground.
+      this.drawSpiderEmergeDirt(emerge);
+      const rise = SPIDER_EMERGE_START_SCALE + (1 - SPIDER_EMERGE_START_SCALE) * (1 - (1 - emerge) * (1 - emerge));
+      this.drawShadow(ctx, SHADOW_PROFILE.spider.width * rise, SHADOW_PROFILE.spider.length * rise);
+      ctx.save();
+      ctx.rotate(s.angle);
+      ctx.scale(rise, rise);
+      this.drawSpiderBody(anim.phase, anim.amp, 1 - emerge);
+      ctx.restore();
+    } else {
+      this.drawShadow(ctx, SHADOW_PROFILE.spider.width, SHADOW_PROFILE.spider.length);
 
-    ctx.save();
-    ctx.rotate(s.angle);
-
-    // Legs first, so the body sits on top of where they meet it. Each pair
-    // sweeps in opposite phase, which reads as an alternating scuttle.
-    ctx.fillStyle = P.spiderDark;
-    SPIDER_LEG_ANGLES.forEach((base, i) => {
-      const swing = Math.sin(anim.phase + i * 0.8) * anim.amp * SPIDER_LEG_SWING;
-      for (const side of [-1, 1]) {
-        // Legs splay out sideways (±90°) then fan fore/aft by `base`.
-        const a = side * (Math.PI / 2) + base * side + swing * side;
-        ctx.save();
-        ctx.rotate(a);
-        ctx.fillRect(0, -SPIDER_LEG_THICKNESS / 2, SPIDER_LEG_LENGTH, SPIDER_LEG_THICKNESS);
-        ctx.restore();
-      }
-    });
-
-    drawBlockShape(ctx, SPIDER_ABDOMEN, SPIDER_PALETTE, BLOCK);
-    drawBlockShape(ctx, SPIDER_THORAX, SPIDER_PALETTE, BLOCK);
-
-    // A pair of eyes on the front segment — the only warm colour on it, so
-    // you can tell at a glance which way it's coming at you in the dark.
-    ctx.fillStyle = P.spiderEye;
-    ctx.fillRect(BLOCK * 2.6, -BLOCK * 1.1, BLOCK * 0.7, BLOCK * 0.7);
-    ctx.fillRect(BLOCK * 2.6, BLOCK * 0.4, BLOCK * 0.7, BLOCK * 0.7);
-
-    ctx.restore();
+      ctx.save();
+      ctx.rotate(s.angle);
+      this.applyMobPose(pose);
+      this.drawSpiderBody(anim.phase, anim.amp, pose.curl);
+      ctx.restore();
+    }
     ctx.restore();
 
     // HP bar, only once it's been hurt — avoids cluttering the night with
@@ -6625,15 +7036,51 @@ export class Renderer {
     }
   }
 
+  /**
+   * The spider's legs, body and eyes in its own frame (+x = forward), at the
+   * current origin. `curl` (0..1) folds the legs in — shorter and swept in
+   * toward the body, like a dead (or just-hatched) spider's.
+   */
+  private drawSpiderBody(phase: number, amp: number, curl: number): void {
+    const { ctx } = this;
+    const legLength = Math.round(SPIDER_LEG_LENGTH * (1 - 0.55 * curl));
+
+    // Legs first, so the body sits on top of where they meet it. Each pair
+    // sweeps in opposite phase, which reads as an alternating scuttle.
+    ctx.fillStyle = P.spiderDark;
+    SPIDER_LEG_ANGLES.forEach((base, i) => {
+      const swing = Math.sin(phase + i * 0.8) * amp * SPIDER_LEG_SWING;
+      for (const side of [-1, 1]) {
+        // Legs splay out sideways (±90°) then fan fore/aft by `base`;
+        // curling pulls every leg's fan back in toward straight out.
+        const a = side * (Math.PI / 2) + base * side * (1 - 0.6 * curl) + swing * side;
+        ctx.save();
+        ctx.rotate(a);
+        ctx.fillRect(0, -SPIDER_LEG_THICKNESS / 2, legLength, SPIDER_LEG_THICKNESS);
+        ctx.restore();
+      }
+    });
+
+    drawBlockShape(ctx, SPIDER_ABDOMEN, SPIDER_PALETTE, BLOCK);
+    drawBlockShape(ctx, SPIDER_THORAX, SPIDER_PALETTE, BLOCK);
+
+    // A pair of eyes on the front segment — the only warm colour on it, so
+    // you can tell at a glance which way it's coming at you in the dark.
+    ctx.fillStyle = P.spiderEye;
+    ctx.fillRect(BLOCK * 2.6, -BLOCK * 1.1, BLOCK * 0.7, BLOCK * 0.7);
+    ctx.fillRect(BLOCK * 2.6, BLOCK * 0.4, BLOCK * 0.7, BLOCK * 0.7);
+  }
+
   // ── Foxes ──────────────────────────────────────────────────────────────────
 
   /** Advances a fox's trot phase from distance moved, same as the spider's scuttle. */
   private updateFoxAnim(f: FoxState): GaitAnim {
     let anim = this.foxAnim.get(f.id);
     if (!anim) {
-      anim = { lastX: f.x, lastY: f.y, phase: 0, amp: 0 };
+      anim = newGaitAnim(f.x, f.y, f.angle, f.hp / f.maxHp, f.attackSeq);
       this.foxAnim.set(f.id, anim);
     }
+    this.trackMobAttack(anim, f);
 
     const dist = Math.hypot(f.x - anim.lastX, f.y - anim.lastY);
     anim.lastX = f.x;
@@ -6657,6 +7104,7 @@ export class Renderer {
     const { ctx, camera } = this;
     const { sx, sy } = camera.toScreen(f.x, f.y);
     const anim = this.updateFoxAnim(f);
+    const pose = this.liveMobPose(anim, FOX_LUNGE_DIST);
 
     ctx.save();
     ctx.translate(sx, sy);
@@ -6664,36 +7112,8 @@ export class Renderer {
 
     ctx.save();
     ctx.rotate(f.angle);
-
-    // Paws first, so the body sits on top of where they meet it.
-    ctx.fillStyle = P.foxPaw;
-    for (const paw of FOX_PAWS) {
-      const swing = Math.sin(anim.phase + paw.phase) * anim.amp * FOX_PAW_SWING;
-      ctx.fillRect(
-        (paw.x + swing) * BLOCK - FOX_PAW_SIZE / 2,
-        paw.side * FOX_PAW_SPREAD * BLOCK - FOX_PAW_SIZE / 2,
-        FOX_PAW_SIZE,
-        FOX_PAW_SIZE,
-      );
-    }
-
-    // Tail (behind) before the body, so the body overlaps where it joins.
-    drawBlockShape(ctx, FOX_TAIL, FOX_PALETTE, BLOCK);
-    drawBlockShape(ctx, FOX_TAIL_TIP, FOX_CREAM_PALETTE, BLOCK);
-
-    drawBlockShape(ctx, FOX_BODY, FOX_PALETTE, BLOCK);
-    drawBlockShape(ctx, FOX_CHEST, FOX_CREAM_PALETTE, BLOCK);
-    drawBlockShape(ctx, FOX_EARS, FOX_PALETTE, BLOCK);
-    drawBlockShape(ctx, FOX_HEAD, FOX_PALETTE, BLOCK);
-    drawBlockShape(ctx, FOX_SNOUT, FOX_CREAM_PALETTE, BLOCK);
-
-    // Nose and eyes — small dark marks that give the head a facing.
-    ctx.fillStyle = P.foxPaw;
-    ctx.fillRect(BLOCK * 5.4, -BLOCK * 0.4, BLOCK * 0.8, BLOCK * 0.8);
-    ctx.fillStyle = P.foxEye;
-    ctx.fillRect(BLOCK * 3.5, -BLOCK * 1.3, BLOCK * 0.6, BLOCK * 0.6);
-    ctx.fillRect(BLOCK * 3.5, BLOCK * 0.7, BLOCK * 0.6, BLOCK * 0.6);
-
+    this.applyMobPose(pose);
+    this.drawFoxBody(anim.phase, anim.amp, pose.curl);
     ctx.restore();
     ctx.restore();
 
@@ -6726,15 +7146,54 @@ export class Renderer {
     ctx.restore();
   }
 
+  /**
+   * The fox's paws, tail, body and head in its own frame (+x = forward), at
+   * the current origin. `curl` (0..1) tucks the paws in under the body.
+   */
+  private drawFoxBody(phase: number, amp: number, curl: number): void {
+    const { ctx } = this;
+    const spread = FOX_PAW_SPREAD * (1 - 0.45 * curl);
+
+    // Paws first, so the body sits on top of where they meet it.
+    ctx.fillStyle = P.foxPaw;
+    for (const paw of FOX_PAWS) {
+      const swing = Math.sin(phase + paw.phase) * amp * FOX_PAW_SWING;
+      ctx.fillRect(
+        (paw.x + swing) * BLOCK - FOX_PAW_SIZE / 2,
+        paw.side * spread * BLOCK - FOX_PAW_SIZE / 2,
+        FOX_PAW_SIZE,
+        FOX_PAW_SIZE,
+      );
+    }
+
+    // Tail (behind) before the body, so the body overlaps where it joins.
+    drawBlockShape(ctx, FOX_TAIL, FOX_PALETTE, BLOCK);
+    drawBlockShape(ctx, FOX_TAIL_TIP, FOX_CREAM_PALETTE, BLOCK);
+
+    drawBlockShape(ctx, FOX_BODY, FOX_PALETTE, BLOCK);
+    drawBlockShape(ctx, FOX_CHEST, FOX_CREAM_PALETTE, BLOCK);
+    drawBlockShape(ctx, FOX_EARS, FOX_PALETTE, BLOCK);
+    drawBlockShape(ctx, FOX_HEAD, FOX_PALETTE, BLOCK);
+    drawBlockShape(ctx, FOX_SNOUT, FOX_CREAM_PALETTE, BLOCK);
+
+    // Nose and eyes — small dark marks that give the head a facing.
+    ctx.fillStyle = P.foxPaw;
+    ctx.fillRect(BLOCK * 5.4, -BLOCK * 0.4, BLOCK * 0.8, BLOCK * 0.8);
+    ctx.fillStyle = P.foxEye;
+    ctx.fillRect(BLOCK * 3.5, -BLOCK * 1.3, BLOCK * 0.6, BLOCK * 0.6);
+    ctx.fillRect(BLOCK * 3.5, BLOCK * 0.7, BLOCK * 0.6, BLOCK * 0.6);
+  }
+
   // ── Beetles ────────────────────────────────────────────────────────────────
 
   /** Advances a beetle's scuttle phase from distance moved, same as the spider's. */
   private updateBeetleAnim(b: BeetleState): GaitAnim {
     let anim = this.beetleAnim.get(b.id);
     if (!anim) {
-      anim = { lastX: b.x, lastY: b.y, phase: 0, amp: 0 };
+      anim = newGaitAnim(b.x, b.y, b.angle, b.hp / b.maxHp, b.attackSeq);
       this.beetleAnim.set(b.id, anim);
     }
+    this.trackMobAttack(anim, b);
 
     const dist = Math.hypot(b.x - anim.lastX, b.y - anim.lastY);
     anim.lastX = b.x;
@@ -6758,6 +7217,7 @@ export class Renderer {
     const { ctx, camera } = this;
     const { sx, sy } = camera.toScreen(b.x, b.y);
     const anim = this.updateBeetleAnim(b);
+    const pose = this.liveMobPose(anim, BEETLE_LUNGE_DIST);
 
     ctx.save();
     ctx.translate(sx, sy);
@@ -6765,16 +7225,45 @@ export class Renderer {
 
     ctx.save();
     ctx.rotate(b.angle);
+    this.applyMobPose(pose);
+    this.drawBeetleBody(anim.phase, anim.amp, pose.curl);
+    ctx.restore();
+    ctx.restore();
+
+    // HP bar, only once it's been hurt — same rule as the spider's/fox's.
+    if (b.hp < b.maxHp) {
+      const barW = 26;
+      const barH = 4;
+      const bx = sx - barW / 2;
+      const by = sy - BEETLE_RADIUS - 14;
+
+      ctx.fillStyle = 'rgba(0,0,0,0.4)';
+      ctx.fillRect(bx - 1, by - 1, barW + 2, barH + 2);
+      ctx.fillStyle = '#5c1f1f';
+      ctx.fillRect(bx, by, barW, barH);
+      ctx.fillStyle = '#c0392b';
+      ctx.fillRect(bx, by, barW * Math.max(0, b.hp / b.maxHp), barH);
+    }
+  }
+
+  /**
+   * The beetle's legs, antennae, shell and head in its own frame (+x =
+   * forward), at the current origin. `curl` (0..1) folds the legs in, same
+   * as drawSpiderBody.
+   */
+  private drawBeetleBody(phase: number, amp: number, curl: number): void {
+    const { ctx } = this;
+    const legLength = Math.round(BEETLE_LEG_LENGTH * (1 - 0.55 * curl));
 
     // Legs first, so the shell sits on top of where they meet it.
     ctx.fillStyle = P.beetleLeg;
     BEETLE_LEG_ANGLES.forEach((base, i) => {
-      const swing = Math.sin(anim.phase + i * 0.9) * anim.amp * BEETLE_LEG_SWING;
+      const swing = Math.sin(phase + i * 0.9) * amp * BEETLE_LEG_SWING;
       for (const side of [-1, 1]) {
-        const a = side * (Math.PI / 2) + base * side + swing * side;
+        const a = side * (Math.PI / 2) + base * side * (1 - 0.6 * curl) + swing * side;
         ctx.save();
         ctx.rotate(a);
-        ctx.fillRect(0, -BEETLE_LEG_THICKNESS / 2, BEETLE_LEG_LENGTH, BEETLE_LEG_THICKNESS);
+        ctx.fillRect(0, -BEETLE_LEG_THICKNESS / 2, legLength, BEETLE_LEG_THICKNESS);
         ctx.restore();
       }
     });
@@ -6793,24 +7282,6 @@ export class Renderer {
     ctx.fillStyle = P.beetleEye;
     ctx.fillRect(BLOCK * 3.1, -BLOCK * 0.55, BLOCK * 0.5, BLOCK * 0.5);
     ctx.fillRect(BLOCK * 3.1, BLOCK * 0.05, BLOCK * 0.5, BLOCK * 0.5);
-
-    ctx.restore();
-    ctx.restore();
-
-    // HP bar, only once it's been hurt — same rule as the spider's/fox's.
-    if (b.hp < b.maxHp) {
-      const barW = 26;
-      const barH = 4;
-      const bx = sx - barW / 2;
-      const by = sy - BEETLE_RADIUS - 14;
-
-      ctx.fillStyle = 'rgba(0,0,0,0.4)';
-      ctx.fillRect(bx - 1, by - 1, barW + 2, barH + 2);
-      ctx.fillStyle = '#5c1f1f';
-      ctx.fillRect(bx, by, barW, barH);
-      ctx.fillStyle = '#c0392b';
-      ctx.fillRect(bx, by, barW * Math.max(0, b.hp / b.maxHp), barH);
-    }
   }
 
   // ── Players ────────────────────────────────────────────────────────────────
@@ -6890,20 +7361,34 @@ export class Renderer {
     // tool-arm lunge toward whatever's being harvested is exactly the kind
     // of small, busy detail that isn't worth showing at full-map zoom.
     const strike = this.simplifyOverview ? 0 : this.harvestStrike(p);
+    const look = resolveLook(p.look);
+
+    // Idle breathing (see PLAYER_BREATH_PERIOD): -1..1, faded out by the
+    // walk cycle and held still mid-swing. `now` is frozen at 0 wherever
+    // animation is off (the overview inset), which leaves this constant.
+    const idle = (1 - anim.walkAmp) * (strike === 0 ? 1 : 0);
+    const breath = Math.sin((now / 1000) * ((Math.PI * 2) / PLAYER_BREATH_PERIOD) + breathPhase(p.id)) * idle;
+    // Whole units only, so it steps a pixel rather than smearing across one.
+    const breathPx = Math.round(breath * PLAYER_BREATH_PX);
 
     ctx.save();
     ctx.translate(sx, sy);
 
     this.drawShadow(ctx, SHADOW_PROFILE.player.width * PLAYER_VISUAL_SCALE, SHADOW_PROFILE.player.length * PLAYER_VISUAL_SCALE);
 
+    // Everything above the shadow rides the breath: a one-pixel bob, so the
+    // shadow staying put underneath is what sells it as the body rising.
+    ctx.translate(0, -breathPx);
+
     // Head, turning with the aim direction plus a fixed 90° offset. Worn
-    // armor swaps the base fill from hair to bare skin (see SKIN_PALETTE) —
-    // the helmet drawn over it just below is what then covers most of that
-    // skin back up, leaving only a visor-shaped strip of it showing.
+    // armor swaps the base fill from hair to bare skin (the player's chosen
+    // skin tone, see resolveLook) — the helmet drawn over it just below is
+    // what then covers most of that skin back up, leaving only a
+    // visor-shaped strip of it showing.
     const armorPalette = p.armor ? ARMOR_PALETTES[p.armor] : undefined;
     ctx.save();
     ctx.rotate(p.angle + Math.PI / 2);
-    drawBlockShape(ctx, PLAYER_HEAD, armorPalette ? SKIN_PALETTE : HAIR_PALETTE, BLOCK);
+    drawBlockShape(ctx, PLAYER_HEAD, armorPalette ? look.skin : look.hair, BLOCK);
     ctx.restore();
 
     // Backpack, if worn — drawn right after the head (on top of it rather
@@ -6914,6 +7399,18 @@ export class Renderer {
     // comment for the extra twist that requires.
     if (p.backpack) {
       drawWornBackpack(ctx, p.angle);
+    }
+
+    // Hat, on top of the hair (and the backpack's straps), turning with the
+    // facing like the helmet below. Only without armor: the helmet already
+    // is the headwear — a hat over it would hide the material colors that
+    // tell you at a glance what tier someone's wearing, and one tucked
+    // under it would never be seen anyway.
+    if (!armorPalette && look.hat.length > 0) {
+      ctx.save();
+      ctx.rotate(p.angle);
+      for (const part of look.hat) drawBlockShape(ctx, part.cells, part.palette, BLOCK);
+      ctx.restore();
     }
 
     // Helmet, if armor is worn — capping the head in the armor's material
@@ -6936,14 +7433,25 @@ export class Renderer {
 
     const walkSwing = Math.sin(anim.walkPhase) * anim.walkAmp * (R * 0.45);
     const armSize = BLOCK * 1.6;
-    const armSide = R * 1.3;
+    // Hands drift a pixel out from the body on each in-breath.
+    const armSide = R * 1.3 + breathPx;
     const armRest = R * 0.05;
 
+    // Off hand counterbalances the tool arm's swing (see
+    // OFF_HAND_COUNTER_BACK): pulled back and in as the swing comes round
+    // the front, nudged forward during its wind-up. Rounded to whole units
+    // so it stays on the pixel grid like everything else.
+    const swingFwd = Math.max(0, strike);
+    const swingBack = Math.max(0, -strike);
+    const counterX = Math.round((swingBack * OFF_HAND_WINDUP_FORWARD - swingFwd * OFF_HAND_COUNTER_BACK) * R);
+    const counterIn = Math.round(swingFwd * OFF_HAND_COUNTER_IN * R);
+
     // Armor is worn on the head only (see ARMOR_HELMET) — hands stay bare
-    // skin regardless.
-    const offArmX = armRest + walkSwing;
-    ctx.fillStyle = P.playerSkin;
-    ctx.fillRect(offArmX - armSize / 2, -armSide - armSize / 2, armSize, armSize);
+    // skin (in the player's chosen tone) regardless.
+    const offArmX = armRest + walkSwing + counterX;
+    const offArmY = -armSide + counterIn;
+    ctx.fillStyle = look.skin.base;
+    ctx.fillRect(offArmX - armSize / 2, offArmY - armSize / 2, armSize, armSize);
 
     // Torch, if worn — a third equip slot alongside `held`/armor (see
     // PlayerState.torch), so it renders in the off hand regardless of
@@ -6951,7 +7459,7 @@ export class Renderer {
     // block's own center (see drawHeldTorch's own comment on what its (x,y)
     // means), rather than offset off to one side of it.
     if (p.torch) {
-      drawHeldTorch(ctx, offArmX, -armSide, BLOCK, now);
+      drawHeldTorch(ctx, offArmX, offArmY, BLOCK, now);
     }
 
     // The swing pivots the whole tool arm (and the tool in its hand) round
@@ -6962,7 +7470,7 @@ export class Renderer {
     ctx.rotate(-strike);
     const swinging = strike !== 0;
     const toolArmX = armRest - (swinging ? 0 : walkSwing) + Math.max(0, strike) * R * 0.2;
-    ctx.fillStyle = P.playerSkin;
+    ctx.fillStyle = look.skin.base;
     ctx.fillRect(toolArmX - armSize / 2, armSide - armSize / 2, armSize, armSize);
 
     const toolX = toolArmX + armSize * 0.25;

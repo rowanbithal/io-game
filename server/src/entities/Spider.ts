@@ -14,11 +14,21 @@ export class ServerSpider {
   /** Seconds until this spider can bite again. */
   attackCooldown = 0;
 
+  /**
+   * Bites landed so far — bumped once per bite in Game.ts and sent as
+   * SpiderState.attackSeq, so the client can play a lunge the instant it
+   * changes (see Renderer's mob attack anim).
+   */
+  attackSeq = 0;
+
   /** Where an idle (untargeted) spider is currently ambling toward — see Game.ts's wanderSpider. Null until it first goes idle. */
   wanderTarget: { x: number; y: number } | null = null;
 
   /** Seconds until wanderTarget is replaced, even if not yet reached — keeps an idle spider from beelining forever. */
   wanderTimer = 0;
+
+  /** When this spider spawned (Date.now() ms) — sent as SpiderState.age so the client can play its emerge-from-the-ground anim. */
+  readonly spawnedAt = Date.now();
 
   constructor(x: number, y: number) {
     this.id = `sp${nextId++}`;
@@ -27,6 +37,15 @@ export class ServerSpider {
   }
 
   toState(): SpiderState {
-    return { id: this.id, x: this.x, y: this.y, angle: this.angle, hp: this.hp, maxHp: this.maxHp };
+    return {
+      id: this.id,
+      x: this.x,
+      y: this.y,
+      angle: this.angle,
+      hp: this.hp,
+      maxHp: this.maxHp,
+      attackSeq: this.attackSeq,
+      age: (Date.now() - this.spawnedAt) / 1000,
+    };
   }
 }
