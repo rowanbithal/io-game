@@ -191,6 +191,10 @@ export interface PlayerState {
   // into view mid-message still shows their bubble, and so the server owns
   // when it expires (see CHAT_BUBBLE_SECONDS).
   chat: string | null;
+  // Chosen hair/skin/hat (see shared/appearance.ts). Optional so bots and
+  // older code paths can leave it out — the renderer treats a missing look
+  // as DEFAULT_LOOK.
+  look?: import('./appearance').PlayerLook;
   isMe?: boolean; // Set client-side
 }
 

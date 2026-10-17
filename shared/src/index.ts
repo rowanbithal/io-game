@@ -5,4 +5,5 @@ export * from './crafting';
 export * from './fish';
 export * from './biome';
 export * from './weather';
+export * from './appearance';
 export * from './trade';
