@@ -30,6 +30,8 @@ import {
   Recipe,
   FishingState,
   WATERING_CAN_MAX_CHARGES,
+  PlayerLook,
+  sanitizeLook,
 } from '@io-game/shared';
 
 export class ServerPlayer {
@@ -44,6 +46,11 @@ export class ServerPlayer {
   // health against it, but the pool itself never changes mid-life.
   readonly maxHealth: number;
   health: number;
+
+  // Hair/skin/hat picked on the main menu (see shared/appearance.ts), already
+  // clamped to valid indices by sanitizeLook in the constructor. Fixed for
+  // the life of the connection — respawning keeps it.
+  readonly look: PlayerLook;
   hunger = MAX_HUNGER;
   temperature = 100;
   thirst = MAX_THIRST;
@@ -112,9 +119,10 @@ export class ServerPlayer {
   lastDamageCause = 'unknown causes';
   spawnedAt = Date.now();
 
-  constructor(id: string, name: string, maxHealth: number = MAX_HEALTH) {
+  constructor(id: string, name: string, maxHealth: number = MAX_HEALTH, look?: Partial<PlayerLook> | null) {
     this.id = id;
     this.name = name;
+    this.look = sanitizeLook(look);
     this.maxHealth = maxHealth;
     this.health = maxHealth;
     // Spawn in the safe middle band of the map
@@ -294,6 +302,7 @@ export class ServerPlayer {
       torch,
       backpack,
       chat: this.chat,
+      look: this.look,
       isMe,
     };
   }

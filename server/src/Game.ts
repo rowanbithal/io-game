@@ -4,6 +4,7 @@ import {
   ResourceState,
   PreviewState,
   PlayerInput,
+  PlayerLook,
   HarvestPayload,
   InventoryPayload,
   JoinedPayload,
@@ -583,9 +584,11 @@ export class Game {
 
   // ── Socket API ─────────────────────────────────────────────────────────────
 
-  addPlayer(socket: Socket, name: string): void {
+  addPlayer(socket: Socket, name: string, look?: Partial<PlayerLook> | null): void {
     const sanitised = (name || '').trim().slice(0, 16) || 'Anonymous';
-    const player = new ServerPlayer(socket.id, sanitised);
+    // The look is untrusted client input — ServerPlayer runs it through
+    // sanitizeLook, so out-of-range or missing fields fall back to defaults.
+    const player = new ServerPlayer(socket.id, sanitised, MAX_HEALTH, look);
     this.players.set(socket.id, player);
     this.inventories.set(socket.id, new Map());
 
@@ -2209,6 +2212,7 @@ export class Game {
         const reduction = victimInv ? this.armorReduction(nearest, victimInv) : 0;
         nearest.hurt(SPIDER_DAMAGE * (1 - reduction), 'a spider');
         spider.attackCooldown = SPIDER_ATTACK_COOLDOWN;
+        spider.attackSeq++;
       }
     } else {
       // Nobody in range/sight — amble around instead of standing frozen.
@@ -2421,6 +2425,7 @@ export class Game {
         const reduction = victimInv ? this.armorReduction(nearest, victimInv) : 0;
         nearest.hurt(FOX_DAMAGE * (1 - reduction), 'a fox');
         fox.attackCooldown = FOX_ATTACK_COOLDOWN;
+        fox.attackSeq++;
       }
       return;
     }
@@ -2656,6 +2661,7 @@ export class Game {
         const reduction = victimInv ? this.armorReduction(nearest, victimInv) : 0;
         nearest.hurt(BEETLE_DAMAGE * (1 - reduction), 'a beetle');
         beetle.attackCooldown = BEETLE_ATTACK_COOLDOWN;
+        beetle.attackSeq++;
       }
       return;
     }

@@ -15,6 +15,13 @@ export class ServerFox {
   attackCooldown = 0;
 
   /**
+   * Bites landed so far — bumped once per bite in Game.ts and sent as
+   * FoxState.attackSeq, so the client can play a lunge the instant it
+   * changes (see Renderer's mob attack anim).
+   */
+  attackSeq = 0;
+
+  /**
    * Remaining waypoints to its target, nearest first (see World.findPath).
    * Empty whenever the fox has a clear run at its target and is just steering
    * straight at it, which is the common case out in the open.
@@ -59,6 +66,7 @@ export class ServerFox {
       hp: this.hp,
       maxHp: this.maxHp,
       aggro: this.targetId !== null,
+      attackSeq: this.attackSeq,
     };
   }
 }

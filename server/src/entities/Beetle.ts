@@ -15,6 +15,13 @@ export class ServerBeetle {
   attackCooldown = 0;
 
   /**
+   * Bites landed so far — bumped once per bite in Game.ts and sent as
+   * BeetleState.attackSeq, so the client can play a lunge the instant it
+   * changes (see Renderer's mob attack anim).
+   */
+  attackSeq = 0;
+
+  /**
    * Player this beetle is currently hunting, if any. Held onto across ticks
    * so the chase is sticky: it keeps after this one until they escape
    * BEETLE_LOSE_INTEREST_RANGE rather than re-picking the nearest every tick.
@@ -36,6 +43,6 @@ export class ServerBeetle {
   }
 
   toState(): BeetleState {
-    return { id: this.id, x: this.x, y: this.y, angle: this.angle, hp: this.hp, maxHp: this.maxHp };
+    return { id: this.id, x: this.x, y: this.y, angle: this.angle, hp: this.hp, maxHp: this.maxHp, attackSeq: this.attackSeq };
   }
 }

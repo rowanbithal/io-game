@@ -3,7 +3,7 @@ import { createServer } from 'http';
 import { Server } from 'socket.io';
 import path from 'path';
 import { Game, LOBBY_ROOM } from './Game';
-import { PlayerInput, CraftRequest, PlaceRequest, CastRequest, TillRequest, PlantRequest, TradeRequest, EatRequest, EquipRequest, ChatRequest, ChestOpenRequest, ChestMoveRequest } from '@io-game/shared';
+import { PlayerInput, CraftRequest, PlaceRequest, CastRequest, TillRequest, PlantRequest, TradeRequest, EatRequest, EquipRequest, ChatRequest, ChestOpenRequest, ChestMoveRequest, JoinRequest } from '@io-game/shared';
 
 const app = express();
 const httpServer = createServer(app);
@@ -44,9 +44,12 @@ io.on('connection', (socket) => {
   // preview broadcast (see Game.ts's broadcastPreview) until it joins.
   socket.join(LOBBY_ROOM);
 
-  socket.on('join', ({ name }: { name: string }) => {
+  socket.on('join', (req: JoinRequest) => {
     socket.leave(LOBBY_ROOM);
-    game.addPlayer(socket, name);
+    // Shaped like JoinRequest ({ name, look? }), but it's still untrusted —
+    // a non-string name falls back to '' (→ 'Anonymous'), and the look is
+    // sanitized inside ServerPlayer.
+    game.addPlayer(socket, typeof req?.name === 'string' ? req.name : '', req?.look);
   });
 
   socket.on('input', (input: PlayerInput) => {

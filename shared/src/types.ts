@@ -107,6 +107,10 @@ export interface SpiderState {
   angle: number;
   hp: number;
   maxHp: number;
+  /** Bites landed so far — bumps by one per bite, so the client plays an attack lunge whenever it changes. Optional so older senders can leave it out. */
+  attackSeq?: number;
+  /** Seconds since this spider spawned — lets the client play its emerge-from-the-ground anim only for genuinely new spiders, not ones that merely scroll into view. */
+  age?: number;
 }
 
 // ── Foxes ─────────────────────────────────────────────────────────────────────
@@ -123,6 +127,8 @@ export interface FoxState {
   maxHp: number;
   /** True while locked onto a player (see ServerFox.targetId) — the client uses this to show the boosted FOX_LOSE_INTEREST_RANGE leash instead of the base FOX_AGGRO_RANGE. */
   aggro: boolean;
+  /** Bites landed so far — bumps by one per bite, so the client plays an attack lunge whenever it changes. Optional so older senders can leave it out. */
+  attackSeq?: number;
 }
 
 // ── Beetles ───────────────────────────────────────────────────────────────────
@@ -137,6 +143,8 @@ export interface BeetleState {
   angle: number;
   hp: number;
   maxHp: number;
+  /** Bites landed so far — bumps by one per bite, so the client plays an attack lunge whenever it changes. Optional so older senders can leave it out. */
+  attackSeq?: number;
 }
 
 // ── Fishing ───────────────────────────────────────────────────────────────────
