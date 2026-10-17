@@ -1,7 +1,8 @@
-import { TICK_RATE, MAP_SIZE, isInDesert, clamp01, smoothstep, mulberry32, naturalRainAt } from '@io-game/shared';
+import { TICK_RATE, MAP_SIZE, isInDesert, clamp01, smoothstep, mulberry32, naturalRainAt, morningFogAt, lightningSlotAt, lightningInSlot, LIGHTNING_MIN_RAIN } from '@io-game/shared';
 import { Camera } from '../Camera';
 import { Effects } from './Effects';
 import { isHigh } from './quality';
+import { sound } from './Sound';
 
 // ── Atmosphere ───────────────────────────────────────────────────────────────
 // Screen-wide mood: the color grade that moves through golden hour, dusk,
@@ -11,18 +12,44 @@ import { isHigh } from './quality';
 // Weather is a pure function of the server's tick counter (see the shared
 // naturalRainAt), so every client agrees on when it's raining without any
 // extra network traffic — unless someone's "/rain" is overriding it, which
-// arrives as GameState.rainOverride.
+// arrives as GameState.rainOverride. The same goes for morning fog (see
+// morningFogAt — keyed off which day it is) and a thunderstorm's lightning
+// (see lightningInSlot — keyed off game time, gated on heavy rain).
 
 /** Cloud-shadow texture: CLOUD_CELLS² cells of CLOUD_CELL world units, tiled. */
 const CLOUD_CELLS = 128;
 const CLOUD_CELL = 12;
 const CLOUD_TILE = CLOUD_CELLS * CLOUD_CELL;
-/** World units per second the cloud field drifts. */
-const WIND_X = 13;
-const WIND_Y = 5;
+/** World units per second the cloud field drifts — campfire smoke leans with it too (see Renderer). */
+export const WIND_X = 13;
+export const WIND_Y = 5;
 
 const RAIN_DROPS_HIGH = 320;
 const RAIN_DROPS_LOW = 110;
+
+/**
+ * Fog-bank texture: like the cloud shadows, a tileable low-res field scaled
+ * up nearest-neighbour, just coarser (bigger, softer banks) and drifting
+ * slower — fog hangs, it doesn't race along with the clouds.
+ */
+const FOG_CELLS = 96;
+const FOG_CELL = 24;
+const FOG_TILE = FOG_CELLS * FOG_CELL;
+const FOG_DRIFT = 0.45; // fraction of the wind speed the banks drift at
+const FOG_COLOR = [206, 214, 222];
+/** Peak alpha of the even wash over the whole view, at full fog. */
+const FOG_WASH_ALPHA = 0.2;
+/**
+ * Peak alpha of the drifting banks on top of the wash. Kept well short of
+ * opaque — fog should soften the morning, not hide the player's surroundings.
+ */
+const FOG_BANK_ALPHA = 0.36;
+
+/** Lightning flash: peak alpha of the pale screen-blended flash. */
+const LIGHTNING_FLASH_ALPHA = 0.6;
+const LIGHTNING_COLOR = [214, 224, 255];
+/** Don't replay a strike that happened longer ago than this (e.g. one that landed while the tab was loading). */
+const LIGHTNING_LATE = 0.6;
 
 interface Drop {
   x: number;
@@ -53,15 +80,30 @@ const RAIN_MULTIPLY = [150, 162, 180];
 export class Atmosphere {
   /** Current eased rain strength 0..1 — read by the grade, clouds, vignette and HUD. */
   rain = 0;
+  /** Current eased morning-fog strength 0..1. */
+  fog = 0;
 
   private readonly drops: Drop[] = [];
   private cloudTex: HTMLCanvasElement | null = null;
+  private fogTex: HTMLCanvasElement | null = null;
   private vignette: HTMLCanvasElement | null = null;
   private time = 0;
   private dryness = 1;
 
-  /** `rainOverride` is GameState.rainOverride — a "/rain" forcing rain on (true) or off (false). */
-  update(dt: number, tick: number, rainOverride: boolean | undefined, camera: Camera, viewW: number, viewH: number, effects: Effects): void {
+  // Lightning: the last slot already handled (see lightningInSlot), the
+  // current flash's age and flicker count, and the thunder still on its way.
+  private lastStrikeSlot = -1;
+  private flashAge = Infinity;
+  private flashFlickers: 1 | 2 = 1;
+  private thunderIn = -1;
+  private thunderVolume = 0;
+
+  /**
+   * `rainOverride` is GameState.rainOverride — a "/rain" forcing rain on
+   * (true) or off (false). `dayTime` is GameState.dayTime, for the morning
+   * fog; leave it out and there's no fog.
+   */
+  update(dt: number, tick: number, rainOverride: boolean | undefined, camera: Camera, viewW: number, viewH: number, effects: Effects, dayTime?: number): void {
     if (dt <= 0) return;
     this.time += dt;
 
@@ -75,7 +117,154 @@ export class Atmosphere {
     const target = natural * this.dryness;
     this.rain += (target - this.rain) * (1 - Math.exp(-dt * 0.6));
 
+    // Desert mornings are dry and clear too. Eased like the rain, so a
+    // morning's fog drifts in and thins out rather than popping.
+    const seconds = tick / TICK_RATE;
+    const fogTarget = dayTime === undefined ? 0 : morningFogAt(seconds, dayTime) * this.dryness;
+    this.fog += (fogTarget - this.fog) * (1 - Math.exp(-dt * 0.5));
+
+    this.updateLightning(dt, seconds);
     this.updateDrops(dt, camera, viewW, viewH, effects);
+  }
+
+  // ── Lightning ──────────────────────────────────────────────────────────────
+
+  /**
+   * Watches for the current slot's strike (see lightningInSlot) to come due,
+   * then flashes and queues its thunder. Only while it's pouring — this.rain
+   * already fades out over the desert, so there's never lightning there.
+   */
+  private updateLightning(dt: number, seconds: number): void {
+    this.flashAge += dt;
+
+    if (this.thunderIn >= 0) {
+      this.thunderIn -= dt;
+      if (this.thunderIn < 0) sound.play('thunder', this.thunderVolume);
+    }
+
+    const slot = lightningSlotAt(seconds);
+    if (slot === this.lastStrikeSlot) return;
+    const strike = lightningInSlot(slot);
+    if (strike && seconds < strike.time) return; // not due yet — check again next frame
+    this.lastStrikeSlot = slot;
+    if (!strike || seconds - strike.time > LIGHTNING_LATE || this.rain < LIGHTNING_MIN_RAIN) return;
+
+    this.flashAge = 0;
+    this.flashFlickers = strike.flickers;
+    // Farther strikes (a longer wait for the thunder) rumble quieter.
+    this.thunderIn = strike.thunderDelay;
+    this.thunderVolume = 1 - (strike.thunderDelay - 0.5) * 0.3;
+  }
+
+  /**
+   * The flash's brightness 0..1 at its current age: one or two hard flickers
+   * then a short tail, in a few flat steps rather than a smooth curve — it
+   * reads as lightning, and it fits the stepped look of everything else.
+   * ~0.3s in all.
+   */
+  private flashLevel(): number {
+    const a = this.flashAge;
+    if (a < 0.06) return 1;
+    if (a < 0.1) return 0.2;
+    if (this.flashFlickers === 2) {
+      if (a < 0.16) return 0.8;
+      if (a < 0.22) return 0.4;
+      if (a < 0.3) return 0.15;
+      return 0;
+    }
+    if (a < 0.18) return 0.35;
+    if (a < 0.26) return 0.12;
+    return 0;
+  }
+
+  /**
+   * The lightning flash, full screen and screen-space — drawn after the
+   * night layer and grade, so for an instant it lifts the darkness right
+   * off the scene ('screen' brightens without flattening what's under it
+   * the way an opaque white fill would).
+   */
+  drawLightning(ctx: CanvasRenderingContext2D, W: number, H: number): void {
+    const level = this.flashLevel();
+    if (level <= 0) return;
+    ctx.save();
+    ctx.globalCompositeOperation = 'screen';
+    ctx.fillStyle = rgba(LIGHTNING_COLOR, level * LIGHTNING_FLASH_ALPHA);
+    ctx.fillRect(0, 0, W, H);
+    ctx.restore();
+  }
+
+  // ── Morning fog ────────────────────────────────────────────────────────────
+
+  /** A tileable field of big soft fog banks, quantized to a few alpha steps like the cloud texture. */
+  private buildFogTexture(): HTMLCanvasElement {
+    const c = document.createElement('canvas');
+    c.width = FOG_CELLS;
+    c.height = FOG_CELLS;
+    const g = c.getContext('2d')!;
+    const img = g.createImageData(FOG_CELLS, FOG_CELLS);
+
+    // Periodic value noise, so the texture wraps seamlessly (same approach
+    // as buildCloudTexture, coarser lattices for broader banks).
+    const rng = mulberry32(9157);
+    const lattices = [3, 6, 12].map((n) => ({ n, v: Array.from({ length: n * n }, () => rng()) }));
+    const sample = (lat: { n: number; v: number[] }, u: number, v: number): number => {
+      const x = u * lat.n;
+      const y = v * lat.n;
+      const x0 = Math.floor(x);
+      const y0 = Math.floor(y);
+      const fx = smoothstep(x - x0);
+      const fy = smoothstep(y - y0);
+      const at = (i: number, j: number): number => lat.v[(((j % lat.n) + lat.n) % lat.n) * lat.n + (((i % lat.n) + lat.n) % lat.n)];
+      const a = at(x0, y0) + (at(x0 + 1, y0) - at(x0, y0)) * fx;
+      const b = at(x0, y0 + 1) + (at(x0 + 1, y0 + 1) - at(x0, y0 + 1)) * fx;
+      return a + (b - a) * fy;
+    };
+
+    for (let j = 0; j < FOG_CELLS; j++) {
+      for (let i = 0; i < FOG_CELLS; i++) {
+        const u = i / FOG_CELLS;
+        const v = j / FOG_CELLS;
+        const f = sample(lattices[0], u, v) * 0.55 + sample(lattices[1], u, v) * 0.3 + sample(lattices[2], u, v) * 0.15;
+        const raw = clamp01((f - 0.42) / 0.22);
+        // Four steps: clear, wisp, bank, thick bank.
+        const a = raw < 0.2 ? 0 : raw < 0.5 ? 0.35 : raw < 0.8 ? 0.7 : 1;
+        const k = (j * FOG_CELLS + i) * 4;
+        img.data[k] = FOG_COLOR[0];
+        img.data[k + 1] = FOG_COLOR[1];
+        img.data[k + 2] = FOG_COLOR[2];
+        img.data[k + 3] = Math.round(a * 255);
+      }
+    }
+    g.putImageData(img, 0, 0);
+    return c;
+  }
+
+  /**
+   * Morning fog: a light, even wash over the view plus big pale banks
+   * drifting slowly downwind. World space, before the night layer, so
+   * pre-dawn fog sits dim and blue and brightens with the sunrise.
+   */
+  drawFog(ctx: CanvasRenderingContext2D, camera: Camera, viewW: number, viewH: number): void {
+    if (this.fog <= 0.01) return;
+    if (!this.fogTex) this.fogTex = this.buildFogTexture();
+    const tex = this.fogTex;
+
+    ctx.save();
+    ctx.fillStyle = rgba(FOG_COLOR, this.fog * FOG_WASH_ALPHA);
+    ctx.fillRect(0, 0, viewW, viewH);
+
+    const ox = (((this.time * WIND_X * FOG_DRIFT) % FOG_TILE) + FOG_TILE) % FOG_TILE;
+    const oy = (((this.time * WIND_Y * FOG_DRIFT) % FOG_TILE) + FOG_TILE) % FOG_TILE;
+    const startX = Math.floor((camera.x - ox) / FOG_TILE) * FOG_TILE + ox;
+    const startY = Math.floor((camera.y - oy) / FOG_TILE) * FOG_TILE + oy;
+    ctx.imageSmoothingEnabled = false;
+    ctx.globalAlpha = this.fog * FOG_BANK_ALPHA;
+    for (let ty = startY; ty < camera.y + viewH; ty += FOG_TILE) {
+      for (let tx = startX; tx < camera.x + viewW; tx += FOG_TILE) {
+        ctx.drawImage(tex, Math.round(tx - camera.x), Math.round(ty - camera.y), FOG_TILE, FOG_TILE);
+      }
+    }
+    ctx.restore();
   }
 
   // ── Rain ─────────────────────────────────────────────────────────────────
