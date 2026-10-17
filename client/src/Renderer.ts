@@ -1380,6 +1380,20 @@ const ROCK_PALETTE: Palette3 = { light: P.rockHighlight, base: P.rock, dark: P.r
 /** Dark forest rocks render this much larger than plains ones (see isForestRock) — same color, just bigger. */
 const GOLD_PALETTE: Palette3 = { light: P.goldHighlight, base: P.gold, dark: P.goldShadow };
 const DIAMOND_PALETTE: Palette3 = { light: P.diamondLight, base: P.diamond, dark: P.diamondDark };
+/**
+ * Damage cracks over a boulder (see boulderCrackCells): 'dark' is the crack
+ * itself — a step darker than the boulder's own shadow face, so it still
+ * reads on that face — and 'base' is the hairline tip, which reuses the
+ * boulder's own shadow tone. 'light' is unused.
+ */
+const ROCK_CRACK_PALETTE: Palette3 = { light: P.rockHighlight, base: P.rockShadow, dark: '#3a3a3a' };
+const GOLD_CRACK_PALETTE: Palette3 = { light: P.goldHighlight, base: P.goldShadow, dark: '#5c4406' };
+const DIAMOND_CRACK_PALETTE: Palette3 = { light: P.diamondLight, base: P.diamondDark, dark: '#2b6c80' };
+const CRACK_PALETTES: Partial<Record<GridResourceType, Palette3>> = {
+  rock: ROCK_CRACK_PALETTE,
+  gold: GOLD_CRACK_PALETTE,
+  diamond: DIAMOND_CRACK_PALETTE,
+};
 const PEBBLE_PALETTE: Palette3 = { light: P.pebbleLight, base: P.pebble, dark: P.pebbleDark };
 const LEAF_PALETTE: Palette3 = { light: P.leafLight, base: P.leaf, dark: P.leafDark };
 /** Fallen leaves under a dark forest tree — same shape, much darker. See drawTreeLeafLitter. */
@@ -1806,6 +1820,247 @@ interface ResourceRecoil {
   t: number; // seconds into the bounce; >= RESOURCE_RECOIL_DURATION means settled
   dx: number; // unit vector pointing away from whoever struck it
   dy: number;
+}
+
+// ── Wind sway ────────────────────────────────────────────────────────────────
+// Tree crowns, wheat and flowers lean and bob in the wind. It's one shared
+// travelling wave rather than an independent wobble per plant: each crest
+// rolls across the map downwind, so a forest ripples like a gust is moving
+// through it instead of every tree pumping in lockstep (or, just as bad,
+// every tree doing its own unrelated thing). A small per-plant phase jitter
+// on top keeps neighbors from moving as one rigid sheet.
+//
+// Everything is snapped to whole world units at the end (see windSway) —
+// the body steps between whole positions rather than gliding through
+// sub-unit ones, so the pixel grid never smears. Shadows stay planted: only
+// the body moves, the same split the harvest recoil already uses.
+
+/** Unit vector the wind blows toward — east-south-east, matching Atmosphere's WIND_X/WIND_Y cloud and rain drift (13, 5). */
+const WIND_DIR_X = 13 / Math.hypot(13, 5);
+const WIND_DIR_Y = 5 / Math.hypot(13, 5);
+/** Peak crown offset in calm weather, world units — a breath of movement, not a cartoon wobble. */
+const TREE_SWAY = 2.2;
+/** Peak wheat head offset in calm weather — stems bend about half that (see drawSwayedShape). */
+const WHEAT_SWAY = 1.5;
+/** Peak flower offset — tiny, these sit right on the ground. */
+const FLOWER_SWAY = 0.8;
+/** Extra amplitude at full rain, as a multiple of the calm amplitude (so 1.3 → 2.3x in a downpour). */
+const SWAY_RAIN_BOOST = 1.3;
+/** Extra wave speed at full rain, same convention — a storm's gusts come quicker, not just harder. */
+const SWAY_RAIN_SPEEDUP = 0.8;
+/** World units between gust crests along the wind direction. */
+const SWAY_WAVELENGTH = 380;
+/** Gust crests passing any one point per second, in calm weather. */
+const SWAY_FREQ = 0.22;
+/**
+ * Fraction of the offset that's a steady downwind lean rather than
+ * oscillation — plants spend most of their time bent with the wind and bob
+ * around that, instead of swinging symmetrically upwind and downwind.
+ */
+const SWAY_LEAN = 0.35;
+
+// ── Canopy ───────────────────────────────────────────────────────────────────
+// Tree crowns draw over players and mobs (see drawWorld) — you walk *under*
+// a tree, not on top of it. A crown with a player beneath it fades to
+// CANOPY_FADE_ALPHA so nobody ever loses sight of themselves (or of whoever
+// is lurking in there).
+
+/** Crown opacity while a player is underneath it. */
+const CANOPY_FADE_ALPHA = 0.35;
+/** Seconds to fade fully out (or back in) — eased, so it never snaps. */
+const CANOPY_FADE_TIME = 0.2;
+/**
+ * How much of a player's own radius has to overlap the crown before it
+ * fades. Under 1 so brushing the very tips of the leaves doesn't trigger it,
+ * but well above 0 — trunk collision (TREE_COLLISION_RADIUS) keeps a player's
+ * center from ever getting very deep under a plains crown, so the fade has
+ * to catch them while they're still mostly on its edge.
+ */
+const CANOPY_FADE_OVERLAP = 0.75;
+
+/** Which layer of a resource to draw — see Renderer.drawResource. */
+type ResourcePart = 'all' | 'ground' | 'body';
+
+// ── Resource damage ──────────────────────────────────────────────────────────
+// A worn-down resource shows it: boulders (rock/gold/diamond) crack in three
+// progressive stages, and a tree's crown thins out with wood chips knocked
+// loose onto the ground around it. Purely a function of hp/maxHp — no new
+// server data — and every stage is a deterministic, cached function of the
+// resource's own seed, so a crack never crawls around between frames.
+
+/** hp fractions below which each successive damage stage shows (stage 1, 2, 3). */
+const DAMAGE_STAGE_HP = [0.75, 0.5, 0.25];
+/** Fraction of a crown's outer-ring leaf cells knocked out at each damage stage (index = stage). */
+const TREE_DAMAGE_EDGE_LOSS = [0, 0.16, 0.3, 0.46];
+/**
+ * Same for the crown's middle ring. A gap in there doesn't show ground — it
+ * shows a bare branch where the leaves were (see damagedCrownCells), which
+ * is what actually reads as "battered" against the crown's own dark edge.
+ */
+const TREE_DAMAGE_INNER_LOSS = [0, 0.06, 0.14, 0.24];
+/** Wood chips scattered on the ground around a damaged tree, per stage. */
+const TREE_CHIPS_PER_STAGE = 2;
+/** A wood chip's size, as a fraction of the crown's block. */
+const TREE_CHIP_BLOCK_RATIO = 0.6;
+
+/** 0 (pristine) .. 3 (nearly spent) — see DAMAGE_STAGE_HP. */
+function damageStage(hp: number, maxHp: number): number {
+  const frac = maxHp > 0 ? hp / maxHp : 1;
+  let stage = 0;
+  for (const threshold of DAMAGE_STAGE_HP) if (frac < threshold) stage++;
+  return stage;
+}
+
+/**
+ * Crack lines across a boulder, one array per damage stage (index 0 = the
+ * crack that appears at stage 1). Each is a short random walk over the
+ * boulder's own cells — stepping one cell at a time in one of the eight grid
+ * directions, occasionally kinking 45° — so it stays on the block grid and
+ * can never wander off the rock's silhouette. Later stages branch off an
+ * earlier crack (so the damage reads as spreading, not as unrelated
+ * scratches appearing) and run longer. The core of each crack is 'dark'
+ * (drawn in the crack color, darker than any face of the rock); its last
+ * cell is 'base', a fading hairline tip rather than an abrupt stop.
+ */
+function boulderCrackCells(seed: number, boulder: Cell[]): Cell[][] {
+  const rng = mulberry32(seed + 7); // own stream, independent of the boulder's shape and pebbles
+  const key = (gx: number, gy: number): string => `${gx},${gy}`;
+  const inside = new Set(boulder.map((c) => key(c.gx, c.gy)));
+  // Interior cells only for crack starts — a crack starting right on the
+  // silhouette's edge would read as a chip in the outline, not a crack.
+  const maxR = Math.max(...boulder.map((c) => Math.hypot(c.gx, c.gy)));
+  const interior = boulder.filter((c) => Math.hypot(c.gx, c.gy) < maxR * 0.45);
+  const DIRS: [number, number][] = [[1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1], [0, -1], [1, -1]];
+
+  const walk = (sx: number, sy: number, dir: number, len: number, out: Cell[]): void => {
+    let x = sx;
+    let y = sy;
+    for (let i = 0; i < len; i++) {
+      if (rng() < 0.35) dir = (dir + (rng() < 0.5 ? 1 : 7)) % 8;
+      x += DIRS[dir][0];
+      y += DIRS[dir][1];
+      if (!inside.has(key(x, y))) break;
+      out.push({ gx: x, gy: y, shade: 'dark' });
+    }
+    if (out.length) out[out.length - 1] = { ...out[out.length - 1], shade: 'base' };
+  };
+
+  const n = Math.max(4, Math.round(maxR * 2));
+  const stages: Cell[][] = [];
+  const all: Cell[] = [];
+  for (let stage = 0; stage < 3; stage++) {
+    const cells: Cell[] = [];
+    // Stage 1 starts near the middle; later stages fork off an existing crack.
+    const from = stage === 0 || all.length === 0 ? interior[Math.floor(rng() * interior.length)] ?? boulder[0] : all[Math.floor(rng() * all.length)];
+    if (stage === 0) cells.push({ gx: from.gx, gy: from.gy, shade: 'dark' });
+    const dir = Math.floor(rng() * 8);
+    const len = Math.round(n * (0.25 + stage * 0.1 + rng() * 0.15));
+    walk(from.gx, from.gy, dir, len, cells);
+    // Stage 1's crack runs both ways from its start, so it splits the face
+    // rather than radiating from a single point; later stages add a second,
+    // shorter fork instead.
+    walk(from.gx, from.gy, stage === 0 ? (dir + 4) % 8 : (dir + 2 + Math.floor(rng() * 4)) % 8, Math.max(2, Math.round(len * (stage === 0 ? 0.7 : 0.5))), cells);
+    stages.push(cells);
+    all.push(...cells.filter((c) => c.shade === 'dark'));
+  }
+  return stages;
+}
+
+// Keyed by the boulder's own (already cached, so identity-stable) cell
+// array rather than its seed — rock, gold and diamond seeds come from
+// different salts and could in principle collide across types.
+const crackCache = new WeakMap<Cell[], Cell[][]>();
+
+function getBoulderCracks(seed: number, boulder: Cell[]): Cell[][] {
+  let cracks = crackCache.get(boulder);
+  if (!cracks) { cracks = boulderCrackCells(seed, boulder); crackCache.set(boulder, cracks); }
+  return cracks;
+}
+
+/**
+ * A crown with its damage-stage worth of leaf cells knocked out — outer ring
+ * first (see TREE_DAMAGE_EDGE_LOSS), so a battered tree reads as ragged and
+ * thinned rather than shrunk. An outer-ring cell that goes just leaves a gap
+ * (ground shows through); a middle-ring one comes back in `bare` instead, a
+ * branch showing where its leaves were stripped. Each cell's roll is a fixed
+ * hash, and a stage removes every cell whose roll falls under its
+ * threshold, so the stages nest: a gap that opened at stage 1 is still
+ * there at stage 3.
+ */
+interface DamagedCrown { leaves: Cell[]; bare: Cell[] }
+
+function damagedCrownCells(seed: number, crown: Cell[], stage: number): DamagedCrown {
+  const leaves: Cell[] = [];
+  const bare: Cell[] = [];
+  crown.forEach((c, i) => {
+    const roll = hashCell(i, seed & 0xffff, 911) / 4294967295;
+    const loss = c.shade === 'dark' ? TREE_DAMAGE_EDGE_LOSS[stage] : c.shade === 'base' ? TREE_DAMAGE_INNER_LOSS[stage] : 0;
+    if (roll >= loss) leaves.push(c);
+    else if (c.shade === 'base') bare.push({ gx: c.gx, gy: c.gy, shade: 'base' });
+  });
+  return { leaves, bare };
+}
+
+// Per crown array (identity-stable, see getTreeCrown), one entry per stage.
+const damagedCrownCache = new WeakMap<Cell[], DamagedCrown[]>();
+
+function getDamagedCrown(seed: number, crown: Cell[], stage: number): DamagedCrown {
+  if (stage === 0) return { leaves: crown, bare: [] };
+  let stages = damagedCrownCache.get(crown);
+  if (!stages) { stages = []; damagedCrownCache.set(crown, stages); }
+  return (stages[stage] ??= damagedCrownCells(seed, crown, stage));
+}
+
+/** Bare branch showing through a damaged crown — plains and dark forest bark (see drawBranch). */
+const TREE_BARE_PALETTE: Palette3 = { light: P.treeBranch, base: P.treeBranch, dark: P.treeBranch };
+const FOREST_TREE_BARE_PALETTE: Palette3 = { light: P.forestTrunk, base: P.forestTrunk, dark: P.forestTrunk };
+
+/** Wood chips knocked off a tree, in crown-block units — scattered just outside the crown's edge. */
+function treeChipCells(seed: number): Cell[] {
+  const rng = mulberry32(seed + 13);
+  const ringR = ((TREE_PIXELS - 1) / 2) * 1.02;
+  const cells: Cell[] = [];
+  for (let i = 0; i < TREE_CHIPS_PER_STAGE * 3; i++) {
+    const angle = rng() * Math.PI * 2;
+    const r = ringR + rng() * 1.6;
+    const roll = rng();
+    const shade: Shade = roll < 0.3 ? 'light' : roll < 0.75 ? 'base' : 'dark';
+    // Rounded to the chip's own grid so they land on whole pixels.
+    cells.push({ gx: Math.round((Math.cos(angle) * r) / TREE_CHIP_BLOCK_RATIO), gy: Math.round((Math.sin(angle) * r) / TREE_CHIP_BLOCK_RATIO), shade });
+  }
+  return cells;
+}
+
+const treeChipCache = new Map<number, Cell[]>();
+
+function getTreeChips(seed: number): Cell[] {
+  let cells = treeChipCache.get(seed);
+  if (!cells) { cells = treeChipCells(seed); treeChipCache.set(seed, cells); }
+  return cells;
+}
+
+/**
+ * Draws a plant shape bending in the wind rather than sliding rigidly: the
+ * 'dark' cells (stems, lower blades — see wheatCells/WHEAT_ICON_CELLS) move
+ * only half as far as the 'base'/'light' ones (grain heads, upper blades),
+ * so the tops lean further than the roots. Both offsets are whole units
+ * (see windSway), and the half is re-rounded, so every cell still lands on
+ * the pixel grid.
+ */
+const swaySplitCache = new WeakMap<Cell[], { low: Cell[]; high: Cell[] }>();
+
+function drawSwayedShape(ctx: CanvasRenderingContext2D, cells: Cell[], palette: Palette3, block: number, dx: number, dy: number): void {
+  if (dx === 0 && dy === 0) {
+    drawBlockShape(ctx, cells, palette, block);
+    return;
+  }
+  let split = swaySplitCache.get(cells);
+  if (!split) {
+    split = { low: cells.filter((c) => c.shade === 'dark'), high: cells.filter((c) => c.shade !== 'dark') };
+    swaySplitCache.set(cells, split);
+  }
+  drawBlockShape(ctx, split.low, palette, block, Math.round(dx / 2), Math.round(dy / 2));
+  drawBlockShape(ctx, split.high, palette, block, dx, dy);
 }
 
 // Low bushes/fungi that everything else (trees, rocks, wheat, gold) should
@@ -3280,6 +3535,14 @@ export class Renderer {
 
   /** Per-resource harvest recoil, pruned as resources leave view. */
   private readonly resourceRecoil = new Map<string, ResourceRecoil>();
+  // Wind wave position, in gust crests (see windSway). Accumulated per frame
+  // rather than derived from the clock, so a storm speeding the gusts up
+  // (SWAY_RAIN_SPEEDUP) changes their rate smoothly instead of jumping every
+  // plant to a new phase the instant the rain starts easing in.
+  private windClock = 0;
+  // Per-tree canopy fade, 0 (solid) .. 1 (fully faded to CANOPY_FADE_ALPHA),
+  // keyed by resource id — only trees mid-fade or faded are present.
+  private readonly canopyFade = new Map<string, number>();
 
   // Lakes are static for the whole session (set once via setLakes), so their
   // shoreline shapes are precomputed once rather than rebuilt every frame.
@@ -4352,6 +4615,7 @@ export class Renderer {
     this.updateSandParticles(dt);
     this.updateFishSplashes(state.players, now);
     this.updateResourceRecoil(state.resources, state.players, dt);
+    this.updateFoliage(state.resources, state.players, dt);
 
     const viewW = this.canvas.width / this.camera.zoom;
     const viewH = this.canvas.height / this.camera.zoom;
@@ -4425,8 +4689,14 @@ export class Renderer {
 
     // Resources (sorted by Y so overlapping looks natural, with berries/
     // mushrooms always layered under everything else — see resourceDrawOrder)
+    // Outside the overview inset, a tree only puts its ground layer
+    // (shadow, wood chips) down here — its crown is drawn later as a canopy
+    // over mobs and players (see drawTreeCanopy below). The inset has no
+    // character sprites to walk under anything, so it keeps the simple
+    // single pass.
     const sorted = [...resources].sort(resourceDrawOrder);
-    for (const r of sorted) this.drawResource(r);
+    const canopy = !this.simplifyOverview;
+    for (const r of sorted) this.drawResource(r, canopy && r.type === 'tree' ? 'ground' : 'all');
 
     for (const s of state.structures) this.drawStructure(s, now);
 
@@ -4454,11 +4724,21 @@ export class Renderer {
         ctx.fill();
       }
     } else {
-      // Other players then self on top
-      for (const p of state.players) if (!p.isMe) this.withFlash(p.id, () => this.drawPlayer(this.fx.held(p), hideChrome, now));
+      // Other players then self on top — bodies only here; their name tags,
+      // HP bars and chat bubbles wait for drawPlayerChrome below, so they
+      // stay readable over the tree canopy drawn in between.
+      for (const p of state.players) if (!p.isMe) this.withFlash(p.id, () => this.drawPlayer(this.fx.held(p), true, now));
       if (me) {
         this.drawReachGrid(me);
-        this.withFlash(me.id, () => this.drawPlayer(me, hideChrome, now));
+        this.withFlash(me.id, () => this.drawPlayer(me, true, now));
+      }
+
+      // Tree crowns over everyone walking beneath them, fading out over any
+      // player underneath (see CANOPY_*). Placement/cast/farm previews come
+      // after, so aiming one under a tree is never hidden by its leaves.
+      this.drawTreeCanopy(sorted);
+
+      if (me) {
         this.drawPlacementGhost(me, now);
         this.drawCastPreview(me);
         this.drawFarmActionGhost(me, state.farmPlots);
@@ -4467,6 +4747,11 @@ export class Renderer {
       for (const p of state.players) this.drawFishingLine(p, now);
       this.drawFishSplashes(now);
       this.drawSandParticles(W / zoom, H / zoom);
+
+      if (!hideChrome) {
+        for (const p of state.players) if (!p.isMe) this.drawPlayerChrome(this.fx.held(p));
+        if (me) this.drawPlayerChrome(me);
+      }
 
       // Debris/dust/leaves, then the sky's own contributions over the whole
       // scene — cloud shadows and rain — all still before the night tint so
@@ -4583,9 +4868,11 @@ export class Renderer {
         const jx = (blockRandom(gx, gy, CLUTTER_SALT + 1) - 0.5) * CLUTTER_CELL * 0.8;
         const jy = (blockRandom(gx, gy, CLUTTER_SALT + 2) - 0.5) * CLUTTER_CELL * 0.8;
         const { sx, sy } = camera.toScreen(wx + jx, wy + jy);
+        // Flowers nod in the same wind as the trees and wheat (see windSway).
+        const sway = this.windSway(wx + jx, wy + jy, FLOWER_SWAY, blockRandom(gx, gy, CLUTTER_SALT + 3) * 2);
 
         ctx.save();
-        ctx.translate(sx, sy);
+        ctx.translate(sx + sway.dx, sy + sway.dy);
         drawBlockShape(ctx, piece.cells, piece.palette, CLUTTER_BLOCK);
         ctx.restore();
       }
@@ -5509,10 +5796,102 @@ export class Renderer {
     return { ox: rec.dx * k * RESOURCE_RECOIL_DIST, oy: rec.dy * k * RESOURCE_RECOIL_DIST };
   }
 
-  private drawResource(r: ResourceState): void {
+  // ── Wind & canopy ──────────────────────────────────────────────────────────
+
+  /**
+   * Advances the shared wind wave and eases every tree's canopy fade toward
+   * whether a player is currently under it (see CANOPY_*). Lives in
+   * updateAnimations, not the draw pass, for the same reason the recoil
+   * does: renderCameraOverview draws the world a second time per frame and
+   * mustn't double-advance either.
+   */
+  private updateFoliage(resources: ResourceState[], players: PlayerState[], dt: number): void {
+    this.windClock += dt * SWAY_FREQ * (1 + this.atmosphere.rain * SWAY_RAIN_SPEEDUP);
+
+    const step = dt / CANOPY_FADE_TIME;
+    const overlap = PLAYER_RADIUS * PLAYER_VISUAL_SCALE * CANOPY_FADE_OVERLAP;
+    // Largest any crown can reach — lets most trees skip the seed hash in
+    // crownRadius entirely when nobody is anywhere near them.
+    const maxReach = (TREE_SPAN / 2) * FOREST_TREE_SCALE + overlap;
+    const live = new Set<string>();
+    for (const r of resources) {
+      if (r.type !== 'tree') continue;
+      const near = players.filter((p) => Math.hypot(p.x - r.x, p.y - r.y) < maxReach);
+      const reach = near.length ? this.crownRadius(r) + overlap : 0;
+      const under = near.some((p) => Math.hypot(p.x - r.x, p.y - r.y) < reach);
+      const prev = this.canopyFade.get(r.id) ?? 0;
+      const next = under ? Math.min(1, prev + step) : Math.max(0, prev - step);
+      if (next > 0) {
+        this.canopyFade.set(r.id, next);
+        live.add(r.id);
+      }
+    }
+    for (const id of this.canopyFade.keys()) {
+      if (!live.has(id)) this.canopyFade.delete(id);
+    }
+  }
+
+  /**
+   * A tree crown's nominal radius in world units — half its span, scaled up
+   * for a dark forest tree. The crown's real silhouette is jittered per tree
+   * (see treeCrownCells), but the canopy fade only needs "is a player
+   * meaningfully under the leaves", not a pixel-exact hit test.
+   */
+  private crownRadius(r: ResourceState): number {
+    const def = GRID_RESOURCE_DEFS.tree;
+    const { gx, gy } = resourceCell(r.x, r.y, def.span);
+    const seed = hashCell(gx, gy, def.seedSalt);
+    return (def.span / 2) * (FOREST_VARIANT.tree!.isForest(seed, r.x, r.y) ? FOREST_VARIANT.tree!.scale : 1);
+  }
+
+  /** Crown opacity for a tree this frame — eased between 1 and CANOPY_FADE_ALPHA. */
+  private canopyAlpha(id: string): number {
+    if (this.simplifyOverview) return 1;
+    const f = this.canopyFade.get(id) ?? 0;
+    return 1 - (1 - CANOPY_FADE_ALPHA) * smoothstep(f);
+  }
+
+  /**
+   * How far a plant at (x, y) is blown off its rest position right now, in
+   * whole world units — see the "Wind sway" block for the wave itself.
+   * `amp` is the calm-weather peak (TREE_SWAY etc.), boosted by the current
+   * rain; `jitter` is a stable per-plant phase nudge (radians). Zero in the
+   * overview inset (see simplifyOverview), which draws everything static.
+   */
+  private windSway(x: number, y: number, amp: number, jitter: number): { dx: number; dy: number } {
+    if (this.simplifyOverview) return { dx: 0, dy: 0 };
+    const strength = amp * (1 + this.atmosphere.rain * SWAY_RAIN_BOOST);
+    const along = x * WIND_DIR_X + y * WIND_DIR_Y;
+    const phase = (along / SWAY_WAVELENGTH - this.windClock) * Math.PI * 2 + jitter;
+    // A main swell plus a faster, smaller flutter on top, so the motion
+    // doesn't read as a perfect metronome.
+    const wave = 0.7 * Math.sin(phase) + 0.3 * Math.sin(phase * 2.3 + jitter * 3);
+    const s = (SWAY_LEAN + (1 - SWAY_LEAN) * wave) * strength;
+    return { dx: Math.round(WIND_DIR_X * s), dy: Math.round(WIND_DIR_Y * s) };
+  }
+
+  /**
+   * Every tree crown, drawn as its own layer over players and mobs (see
+   * drawWorld) — `sorted` is the resource layer's own draw order, so crowns
+   * still overlap each other in the same y order as before. Each tree's
+   * shadow, chips and fire shadows were already drawn on the ground in the
+   * main resource pass; this is only the leaves.
+   */
+  private drawTreeCanopy(sorted: ResourceState[]): void {
+    for (const r of sorted) if (r.type === 'tree') this.drawResource(r, 'body');
+  }
+
+  /**
+   * `part` splits a resource into what sits on the ground (shadow, pebbles,
+   * wood chips) and its body, so a tree's crown can be drawn later as a
+   * canopy over players (see drawTreeCanopy) while its shadow stays down in
+   * the main resource pass. 'all' is both, in that order — what every other
+   * resource (and every tree in the overview inset) uses.
+   */
+  private drawResource(r: ResourceState, part: ResourcePart = 'all'): void {
     const { ox, oy } = this.recoilOffset(r.id);
     if (r.type === 'tree' || r.type === 'rock' || r.type === 'wheat' || r.type === 'gold' || r.type === 'diamond') {
-      this.drawGridResource(r, r.type, ox, oy);
+      this.drawGridResource(r, r.type, ox, oy, part);
       return;
     }
     this.drawImageResource(r, r.type, ox, oy);
@@ -5522,9 +5901,10 @@ export class Renderer {
    * Procedural top-down tree crown / rock patch / wheat clump, grid-aligned
    * and pixel-crisp. (ox, oy) is the harvest recoil — applied to the body
    * only, so the shadow and a rock's loose pebbles stay planted on the ground
-   * the object is bouncing above rather than sliding around with it.
+   * the object is bouncing above rather than sliding around with it. Wind
+   * sway (trees, wheat) follows the same rule. See drawResource for `part`.
    */
-  private drawGridResource(r: ResourceState, type: GridResourceType, ox: number, oy: number): void {
+  private drawGridResource(r: ResourceState, type: GridResourceType, ox: number, oy: number, part: ResourcePart = 'all'): void {
     const { ctx, camera } = this;
     const { sx, sy } = camera.toScreen(r.x, r.y);
     const def = GRID_RESOURCE_DEFS[type];
@@ -5543,9 +5923,11 @@ export class Renderer {
 
     const shadow = SHADOW_PROFILE[type];
     const shadowScale = forest && variant ? variant.scale : 1;
+    const ground = part !== 'body';
+    const stage = damageStage(r.hp, r.maxHp);
     ctx.save();
     ctx.translate(sx, sy);
-    this.drawShadow(ctx, shadow.width * shadowScale, shadow.length * shadowScale);
+    if (ground) this.drawShadow(ctx, shadow.width * shadowScale, shadow.length * shadowScale);
 
     // Non-interactive pebble clutter scattered around a rock — drawn
     // underneath it so any near-edge overlap still reads as the boulder
@@ -5554,7 +5936,7 @@ export class Renderer {
     // highlight, same simulated-light convention boulderCells uses, so it
     // reads as a tiny rounded stone instead of a flat tinted square. See
     // rockPebbles.
-    if (type === 'rock') {
+    if (type === 'rock' && ground) {
       const pieceSize = block * 0.75;
       const highlightSize = pieceSize * 0.45;
       const bodyPaths: Record<Shade, Path2D> = { light: new Path2D(), base: new Path2D(), dark: new Path2D() };
@@ -5573,9 +5955,43 @@ export class Renderer {
       ctx.fill(highlightPath);
     }
 
+    // Wood chips knocked loose from a damaged tree, lying on the ground just
+    // past its crown — TREE_CHIPS_PER_STAGE more per damage stage. Ground
+    // layer, so they stay put under the swaying canopy like the shadow does.
+    if (type === 'tree' && ground && stage > 0) {
+      const chips = getTreeChips(seed).slice(0, stage * TREE_CHIPS_PER_STAGE);
+      drawBlockShape(ctx, chips, LOG_PALETTE, block * TREE_CHIP_BLOCK_RATIO);
+    }
+
+    if (part === 'ground') {
+      ctx.restore();
+      return;
+    }
+
     ctx.translate(ox, oy);
 
-    drawBlockShape(ctx, cells, palette, block);
+    if (type === 'tree') {
+      // Per-tree phase jitter on top of the shared travelling wave (see
+      // windSway) — enough that neighbors don't move as one rigid sheet.
+      const sway = this.windSway(r.x, r.y, TREE_SWAY, (seed % 1000) / 1000 * 1.2);
+      const alpha = this.canopyAlpha(r.id);
+      ctx.translate(sway.dx, sway.dy);
+      if (alpha < 1) ctx.globalAlpha *= alpha;
+      const crown = getDamagedCrown(seed, cells, stage);
+      if (crown.bare.length) drawBlockShape(ctx, crown.bare, forest ? FOREST_TREE_BARE_PALETTE : TREE_BARE_PALETTE, block);
+      drawBlockShape(ctx, crown.leaves, palette, block);
+    } else if (type === 'wheat') {
+      const sway = this.windSway(r.x, r.y, WHEAT_SWAY, (seed % 1000) / 1000 * 1.5);
+      drawSwayedShape(ctx, cells, palette, block, sway.dx, sway.dy);
+    } else {
+      drawBlockShape(ctx, cells, palette, block);
+      // Boulder cracks, each stage's on top of the last's (see boulderCrackCells).
+      const crackPalette = CRACK_PALETTES[type];
+      if (crackPalette && stage > 0) {
+        const cracks = getBoulderCracks(seed, cells);
+        for (let i = 0; i < stage; i++) drawBlockShape(ctx, cracks[i], crackPalette, block);
+      }
+    }
 
     ctx.restore();
   }
@@ -5619,7 +6035,12 @@ export class Renderer {
     ctx.save();
     ctx.translate(sx, sy);
     drawBlockShape(ctx, FARM_PLOT_SOIL_CELLS, plot.wet ? WET_SOIL_PALETTE : SOIL_PALETTE, FARM_PLOT_BLOCK);
-    if (plot.crop === 'wheat') this.drawWheatCrop(plot.growth, plot.mature);
+    if (plot.crop === 'wheat') {
+      // Same wind as the wild wheat (see windSway) — the soil stays put,
+      // only the crop bends.
+      const sway = this.windSway(plot.x, plot.y, WHEAT_SWAY, ((plot.x * 7 + plot.y * 13) % 100) / 100 * 1.5);
+      this.drawWheatCrop(plot.growth, plot.mature, sway.dx, sway.dy);
+    }
     else if (plot.crop === 'berry') this.drawBerryCrop(plot);
     ctx.restore();
   }
@@ -5644,18 +6065,19 @@ export class Renderer {
   private static readonly WHEAT_SPROUT_BLOCK: [number, number] = [1.6, 2.6];
   private static readonly WHEAT_MATURE_BLOCK: [number, number] = [2.4, 4.2];
 
-  private drawWheatCrop(growth: number, mature: boolean): void {
+  /** (swayX, swayY) is the wind's whole-unit offset for the heads — see drawSwayedShape. */
+  private drawWheatCrop(growth: number, mature: boolean, swayX = 0, swayY = 0): void {
     const { ctx } = this;
     if (growth < 0.3) {
       const [from, to] = Renderer.WHEAT_SPROUT_BLOCK;
       const block = from + (growth / 0.3) * (to - from);
-      drawBlockShape(ctx, SPROUT_CELLS, SPROUT_PALETTE, block);
+      drawSwayedShape(ctx, SPROUT_CELLS, SPROUT_PALETTE, block, Math.round(swayX / 2), Math.round(swayY / 2));
       return;
     }
     const t = (growth - 0.3) / 0.7;
     const [from, to] = Renderer.WHEAT_MATURE_BLOCK;
     const block = from + t * (to - from);
-    drawBlockShape(ctx, WHEAT_ICON_CELLS, mature ? WHEAT_PALETTE : SPROUT_PALETTE, block);
+    drawSwayedShape(ctx, WHEAT_ICON_CELLS, mature ? WHEAT_PALETTE : SPROUT_PALETTE, block, swayX, swayY);
   }
 
   /**
@@ -6575,6 +6997,20 @@ export class Renderer {
     // they doing" UI, meaningless for a decorative background character —
     // see render()'s hideChrome.
     if (hideChrome) return;
+    this.drawPlayerChrome(p);
+  }
+
+  /**
+   * A player's name tag, HP bar and chat bubble. Split out of drawPlayer so
+   * drawWorld can put them on top of the tree canopy (which itself draws
+   * over player bodies) — drawPlayer still draws them itself unless told
+   * not to via hideChrome, which is how drawWorld uses it.
+   */
+  private drawPlayerChrome(p: PlayerState): void {
+    const { ctx, camera } = this;
+    const { sx, sy } = camera.toScreen(p.x, p.y);
+    const R = PLAYER_RADIUS * PLAYER_VISUAL_SCALE; // layout radius only — gameplay hitbox is untouched
+    const isMe = !!p.isMe;
 
     // ── Name tag ────────────────────────────────────────────────────────────
     ctx.save();
