@@ -4408,11 +4408,20 @@ export class Renderer {
     // top of it.
     for (const p of state.farmPlots) this.drawFarmPlot(p);
     this.drawMapBorder(mapSize);
+    // Lights that cast shadows this frame — needed before any resource,
+    // structure, mob or player draws its own (see drawLightShadows).
+    this.collectShadowLights(
+      state.structures.filter((s) => s.type === 'campfire'),
+      state.players.filter((p) => p.torch),
+      now,
+    );
     this.drawTreeBranches(resources);
     this.drawTreeLeafLitter(resources);
     // Ripple rings lie on the ground/water — under resources, mobs and
     // players, so a wading player's wake never draws over them.
     if (!this.simplifyOverview) this.fx.drawGround(ctx);
+    // Fire and torch shadows for everything, on the ground beneath it all.
+    this.drawLightShadowPass(state, resources);
 
     // Resources (sorted by Y so overlapping looks natural, with berries/
     // mushrooms always layered under everything else — see resourceDrawOrder)
@@ -5825,6 +5834,9 @@ export class Renderer {
 
   private readonly bloomSprites = new Map<number, HTMLCanvasElement>();
 
+  /** This frame's campfires and torches, for shadows cast away from them (see drawLightShadows). */
+  private readonly shadowLights: { x: number; y: number; radius: number; strength: number }[] = [];
+
   /**
    * A soft radial glow baked at GLOW_BLOCK resolution and scaled up
    * nearest-neighbor — so it's a smooth falloff that still steps in the
@@ -6729,20 +6741,149 @@ export class Renderer {
     // Fades out gradually across dusk/dawn instead of cutting off right at
     // the horizon — full strength in daylight, gone by deep night.
     const strength = smoothstep(clamp01((this.sunHeight + 0.3) / 0.6));
-    if (strength <= 0.01) return;
+    if (strength > 0.01) {
+      const lenFactor = clamp01(1 - this.sunHeight);
+      this.drawShadowShape(ctx, width, length, this.sunAngle, lenFactor, `rgba(10,18,12,${((0.22 + lenFactor * 0.1) * strength).toFixed(3)})`);
+    }
+  }
 
+  /**
+   * Every object's campfire/torch shadows, drawn in one pass on the ground
+   * *before* any of the objects themselves — so a long fire shadow lies
+   * under the trees, rocks and players it reaches, the same way the sun's
+   * shadows sit under everything, rather than being painted over whatever
+   * happened to be drawn before the object casting it. Sizes match each
+   * object's own sun shadow (see SHADOW_PROFILE).
+   */
+  private drawLightShadowPass(state: GameState, resources: ResourceState[]): void {
+    if (this.shadowLights.length === 0) return;
+    const { ctx, camera } = this;
+    const cast = (x: number, y: number, width: number, length: number): void => {
+      const { sx, sy } = camera.toScreen(x, y);
+      ctx.save();
+      ctx.translate(sx, sy);
+      this.drawLightShadows(ctx, width, length, x, y);
+      ctx.restore();
+    };
+
+    for (const r of resources) {
+      const profile = SHADOW_PROFILE[r.type];
+      const scale = this.resourceShadowScale(r);
+      cast(r.x, r.y, profile.width * scale, profile.length * scale);
+    }
+    for (const st of state.structures) {
+      const profile = st.type === 'wall' ? SHADOW_PROFILE.wall : SHADOW_PROFILE.campfire;
+      cast(st.x, st.y, profile.width, profile.length);
+    }
+    for (const sp of state.spiders) {
+      const { x, y } = this.fx.held(sp);
+      cast(x, y, SHADOW_PROFILE.spider.width, SHADOW_PROFILE.spider.length);
+    }
+    for (const f of state.foxes) {
+      const { x, y } = this.fx.held(f);
+      cast(x, y, SHADOW_PROFILE.fox.width, SHADOW_PROFILE.fox.length);
+    }
+    for (const b of state.beetles) {
+      const { x, y } = this.fx.held(b);
+      cast(x, y, SHADOW_PROFILE.beetle.width, SHADOW_PROFILE.beetle.length);
+    }
+    for (const p of state.players) {
+      const { x, y } = this.fx.held(p);
+      cast(x, y, SHADOW_PROFILE.player.width * PLAYER_VISUAL_SCALE, SHADOW_PROFILE.player.length * PLAYER_VISUAL_SCALE);
+    }
+  }
+
+  /** Dark-forest trees/rocks are drawn bigger (see FOREST_VARIANT) — their shadows scale to match, same as drawGridResource's own. */
+  private resourceShadowScale(r: ResourceState): number {
+    const type = r.type as GridResourceType;
+    const def = GRID_RESOURCE_DEFS[type];
+    const variant = FOREST_VARIANT[type];
+    if (!def || !variant) return 1;
+    const { gx, gy } = resourceCell(r.x, r.y, def.span);
+    return variant.isForest(hashCell(gx, gy, def.seedSalt), r.x, r.y) ? variant.scale : 1;
+  }
+
+  /**
+   * Shadows thrown by the nearby campfires and torches (see
+   * collectShadowLights), each pointing straight away from its light. The
+   * further from the light, the longer the shadow — a low point light
+   * stretches shadows the way a low sun does — and the dimmer, fading out
+   * at the edge of the light's reach. Only the two strongest lights on an
+   * object cast, so a cluster of fires doesn't stack into a dark star.
+   */
+  private drawLightShadows(ctx: CanvasRenderingContext2D, width: number, length: number, wx: number, wy: number): void {
+    const lights = this.shadowLights;
+    if (lights.length === 0) return;
+
+    let first: { angle: number; reach: number; alpha: number } | null = null;
+    let second: { angle: number; reach: number; alpha: number } | null = null;
+    for (const light of lights) {
+      const dx = wx - light.x;
+      const dy = wy - light.y;
+      const d = Math.hypot(dx, dy);
+      // The light's own source (the fire itself, the torch-bearer) casts no
+      // shadow from it, and nothing past the light's edge does either.
+      if (d < 12 || d >= light.radius) continue;
+      // Full strength through the inner half of the light, fading across the outer half.
+      const falloff = smoothstep(clamp01((1 - d / light.radius) / 0.5));
+      const alpha = light.strength * falloff;
+      if (alpha <= 0.02) continue;
+      // Even right beside the fire a shadow has some length — the flame sits
+      // low, so it stretches everything — growing further out from there.
+      const cast = { angle: Math.atan2(dy, dx), reach: 0.35 + 0.65 * clamp01(d / light.radius), alpha };
+      if (!first || alpha > first.alpha) {
+        second = first;
+        first = cast;
+      } else if (!second || alpha > second.alpha) {
+        second = cast;
+      }
+    }
+    for (const cast of [first, second]) {
+      if (!cast) continue;
+      // Same color and darkness as a sun shadow (see drawShadow), so fire and
+      // sun shadows read as one kind of shadow, day or night.
+      this.drawShadowShape(ctx, width, length, cast.angle, cast.reach, `rgba(10,18,12,${((0.22 + cast.reach * 0.1) * cast.alpha).toFixed(3)})`);
+    }
+  }
+
+  /**
+   * Gathers this frame's shadow-casting lights — campfires and worn torches
+   * — with their reach and how strongly they cast. They cast day and night
+   * alike, at the same darkness as the sun's own shadows (see
+   * drawLightShadows); by day they sit alongside the sun's.
+   */
+  private collectShadowLights(fires: StructureState[], torchBearers: PlayerState[], now: number): void {
+    this.shadowLights.length = 0;
+    if (this.simplifyOverview) return;
+    const flicker = Renderer.flicker(now);
+    for (const f of fires) {
+      // A dying fire's shadows fade with its light (see burnFade).
+      const strength = flicker * Renderer.burnFade(f);
+      if (strength > 0.02) this.shadowLights.push({ x: f.x, y: f.y, radius: CAMPFIRE_LIGHT_RADIUS, strength });
+    }
+    for (const p of torchBearers) {
+      this.shadowLights.push({ x: p.x, y: p.y, radius: TORCH_LIGHT_RADIUS, strength: flicker });
+    }
+  }
+
+  /**
+   * One pixel-grid shadow: an ellipse pointing along `angle` from the
+   * object's base, stretched by `lenFactor` (0 = short, 1 = long), filled in
+   * `color`. Every filled pixel is an axis-aligned BLOCK square — only
+   * *which* squares are chosen rotates, so it stays on the pixel grid at
+   * any angle.
+   */
+  private drawShadowShape(ctx: CanvasRenderingContext2D, width: number, length: number, angle: number, lenFactor: number, color: string): void {
     // The shadow should sit almost entirely on the far side of the object
-    // from the sun — only a small "anchor" radius pokes out on the near
+    // from the light — only a small "anchor" radius pokes out on the near
     // side, where the object's own base would touch the ground. An ellipse
     // symmetric around its center would bulge out equally on both sides,
     // which reads as two shadows instead of one.
-    const lenFactor = clamp01(1 - this.sunHeight);
     const reach = length * (0.6 + lenFactor * 2.5); // forward extent of the shadow's tip
     const baseR = Math.max(BLOCK, width * 0.3); // small anchor behind the object
     const a = (reach + baseR) / 2; // semi-major axis, along the shadow
     const b = Math.max(BLOCK, width / 2); // semi-minor axis, across it
     const offset = a - baseR; // shifts the ellipse so its back edge sits at -baseR, not the center
-    const angle = this.sunAngle;
 
     // Test cells against an ellipse padded out by half a block — cell
     // *centers* sample the shape at only BLOCK-unit resolution, so without
@@ -6778,9 +6919,10 @@ export class Renderer {
       }
     }
 
-    ctx.fillStyle = `rgba(10,18,12,${((0.22 + lenFactor * 0.1) * strength).toFixed(3)})`;
+    ctx.fillStyle = color;
     ctx.fill(path);
   }
+
 }
 
 
