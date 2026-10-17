@@ -7,6 +7,8 @@ import {
   InventoryPayload,
   ChatMessage,
   PreviewState,
+  ChestPayload,
+  DiedPayload,
 } from '@io-game/shared';
 
 type Listener<T> = (data: T) => void;
@@ -19,7 +21,9 @@ export class Network {
   private onStateCb: Listener<GameState> | null = null;
   private onHarvestCb: Listener<HarvestPayload> | null = null;
   private onInventoryCb: Listener<InventoryPayload> | null = null;
-  private onDiedCb: Listener<void> | null = null;
+  private onDiedCb: Listener<DiedPayload> | null = null;
+  private onChestCb: Listener<ChestPayload> | null = null;
+  private onChestClosedCb: Listener<void> | null = null;
   private onChatCb: Listener<ChatMessage> | null = null;
   private onPreviewCb: Listener<PreviewState> | null = null;
   private onSystemCb: Listener<string> | null = null;
@@ -60,8 +64,16 @@ export class Network {
       this.onSystemCb?.(text);
     });
 
-    this.socket.on('died', () => {
-      this.onDiedCb?.();
+    this.socket.on('died', (data: DiedPayload) => {
+      this.onDiedCb?.(data);
+    });
+
+    this.socket.on('chest', (data: ChestPayload) => {
+      this.onChestCb?.(data);
+    });
+
+    this.socket.on('chestClosed', () => {
+      this.onChestClosedCb?.();
     });
 
     this.socket.on('connect_error', (err) => {
@@ -120,13 +132,28 @@ export class Network {
     this.socket.emit('chat', { text });
   }
 
+  /** Opens a storage chest — or loots an island treasure chest. */
+  openChest(structureId: string): void {
+    this.socket.emit('chestOpen', { structureId });
+  }
+
+  moveChestItem(structureId: string, itemId: string, count: number, toChest: boolean): void {
+    this.socket.emit('chestMove', { structureId, itemId, count, toChest });
+  }
+
+  closeChest(): void {
+    this.socket.emit('chestClose');
+  }
+
   // ── Listeners ──────────────────────────────────────────────────────────────
 
   onJoined(cb: Listener<JoinedPayload>): void { this.onJoinedCb = cb; }
   onState(cb: Listener<GameState>): void { this.onStateCb = cb; }
   onHarvest(cb: Listener<HarvestPayload>): void { this.onHarvestCb = cb; }
   onInventory(cb: Listener<InventoryPayload>): void { this.onInventoryCb = cb; }
-  onDied(cb: Listener<void>): void { this.onDiedCb = cb; }
+  onDied(cb: Listener<DiedPayload>): void { this.onDiedCb = cb; }
+  onChest(cb: Listener<ChestPayload>): void { this.onChestCb = cb; }
+  onChestClosed(cb: Listener<void>): void { this.onChestClosedCb = cb; }
   onChat(cb: Listener<ChatMessage>): void { this.onChatCb = cb; }
   /** The menu-screen backdrop, sent only before this socket has joined — see PreviewState. */
   onPreview(cb: Listener<PreviewState>): void { this.onPreviewCb = cb; }

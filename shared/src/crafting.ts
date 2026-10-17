@@ -39,6 +39,13 @@ export const GOLD_AXE_ID = 'gold_axe';
 export const GOLD_PICKAXE_ID = 'gold_pickaxe';
 export const GOLD_SWORD_ID = 'gold_sword';
 
+// Diamond tools: the top tier, upgraded from gold the same way gold is
+// upgraded from stone. Diamonds only come from the far desert's deposits,
+// and only a gold pickaxe can mine them — this is the endgame set.
+export const DIAMOND_AXE_ID = 'diamond_axe';
+export const DIAMOND_PICKAXE_ID = 'diamond_pickaxe';
+export const DIAMOND_SWORD_ID = 'diamond_sword';
+
 export const FISHING_ROD_ID = 'fishing_rod';
 
 export const WALL_ID = 'wall';
@@ -51,6 +58,14 @@ export const WALL_ID = 'wall';
 export const WOODEN_ARMOR_ID = 'wooden_armor';
 export const STONE_ARMOR_ID = 'stone_armor';
 export const GOLD_ARMOR_ID = 'gold_armor';
+export const DIAMOND_ARMOR_ID = 'diamond_armor';
+
+// A placeable storage chest (see Game.handleChestOpen/handleChestMove) —
+// holds up to CHEST_SLOTS item types for anyone who walks up to it. Unlike
+// everything else a player builds it survives its owner's death (it's the
+// one place to keep things safe from it), and is only cleared when they
+// leave the server.
+export const CHEST_ID = 'chest';
 
 // The torch is the same kind of equip slot as armor — worn (in the off
 // hand) rather than held, so it doesn't compete with the hotbar's held
@@ -104,11 +119,13 @@ export const BREAD_ID = 'bread';
 export const AXE_WOOD_MULTIPLIER = 1.5;
 export const STONE_AXE_WOOD_MULTIPLIER = 2;
 export const GOLD_AXE_WOOD_MULTIPLIER = 2.5;
+export const DIAMOND_AXE_WOOD_MULTIPLIER = 3.5;
 
 /** Stone yield multiplier while a pickaxe is the held item. */
 export const PICKAXE_STONE_MULTIPLIER = 1.5;
 export const STONE_PICKAXE_STONE_MULTIPLIER = 2;
 export const GOLD_PICKAXE_STONE_MULTIPLIER = 2.5;
+export const DIAMOND_PICKAXE_STONE_MULTIPLIER = 3.5;
 
 /**
  * Gold yield multiplier for the gold pickaxe. The stone pickaxe deliberately
@@ -119,6 +136,9 @@ export const GOLD_PICKAXE_STONE_MULTIPLIER = 2.5;
  * place.
  */
 export const GOLD_PICKAXE_GOLD_MULTIPLIER = 2;
+/** The diamond pickaxe is better at every deposit — including the diamonds the gold pickaxe only just scratches. */
+export const DIAMOND_PICKAXE_GOLD_MULTIPLIER = 3;
+export const DIAMOND_PICKAXE_DIAMOND_MULTIPLIER = 2;
 
 /**
  * Combat damage multiplier vs spiders and other players while a sword is
@@ -128,6 +148,7 @@ export const GOLD_PICKAXE_GOLD_MULTIPLIER = 2;
 export const SWORD_DAMAGE_MULTIPLIER = 2;
 export const STONE_SWORD_DAMAGE_MULTIPLIER = 3;
 export const GOLD_SWORD_DAMAGE_MULTIPLIER = 4;
+export const DIAMOND_SWORD_DAMAGE_MULTIPLIER = 5.5;
 
 /**
  * Fraction of incoming damage a worn suit blocks — applies to fox bites,
@@ -138,6 +159,7 @@ export const GOLD_SWORD_DAMAGE_MULTIPLIER = 4;
 export const WOODEN_ARMOR_DAMAGE_REDUCTION = 0.15;
 export const STONE_ARMOR_DAMAGE_REDUCTION = 0.3;
 export const GOLD_ARMOR_DAMAGE_REDUCTION = 0.45;
+export const DIAMOND_ARMOR_DAMAGE_REDUCTION = 0.6;
 
 /** How close a player must be to a crafting bench to use bench-gated recipes. */
 export const BENCH_USE_RADIUS = 160;
@@ -169,6 +191,14 @@ export const RECIPES: Recipe[] = [
     cost: { wood: 25 },
     craftTime: 5,
     placeAs: WALL_ID,
+  },
+  {
+    id: CHEST_ID,
+    name: 'Storage Chest',
+    icon: '📦',
+    cost: { wood: 50, stone: 10 },
+    craftTime: 6,
+    placeAs: CHEST_ID,
   },
   {
     id: WOODEN_AXE_ID,
@@ -244,6 +274,34 @@ export const RECIPES: Recipe[] = [
     craftTime: 12,
     requiresBench: true,
   },
+  // Diamond tools: upgraded from gold, consuming the gold tool. A deposit
+  // yields only 2 diamonds (4 with a diamond pickaxe) and there are ~10 of
+  // them, all in the far desert — plus a few from island treasure — so even
+  // these halved-from-gold prices make the full set a real expedition.
+  {
+    id: DIAMOND_AXE_ID,
+    name: 'Diamond Axe',
+    icon: '🪓',
+    cost: { [GOLD_AXE_ID]: 1, diamond: 5, wood: 20 },
+    craftTime: 15,
+    requiresBench: true,
+  },
+  {
+    id: DIAMOND_PICKAXE_ID,
+    name: 'Diamond Pickaxe',
+    icon: '⛏️',
+    cost: { [GOLD_PICKAXE_ID]: 1, diamond: 6, wood: 20 },
+    craftTime: 15,
+    requiresBench: true,
+  },
+  {
+    id: DIAMOND_SWORD_ID,
+    name: 'Diamond Sword',
+    icon: '⚔️',
+    cost: { [GOLD_SWORD_ID]: 1, diamond: 8, wood: 20 },
+    craftTime: 15,
+    requiresBench: true,
+  },
   // Armor: same three-tier shape as the tools above — wooden is unbenched,
   // stone/gold are bench-gated and consume the tier below them — but priced
   // higher, since a suit is worn continuously rather than swung once per hit.
@@ -268,6 +326,14 @@ export const RECIPES: Recipe[] = [
     icon: '🥋',
     cost: { [STONE_ARMOR_ID]: 1, gold: 35, wood: 20 },
     craftTime: 16,
+    requiresBench: true,
+  },
+  {
+    id: DIAMOND_ARMOR_ID,
+    name: 'Diamond Armor',
+    icon: '🥋',
+    cost: { [GOLD_ARMOR_ID]: 1, diamond: 10, wood: 20 },
+    craftTime: 20,
     requiresBench: true,
   },
   {

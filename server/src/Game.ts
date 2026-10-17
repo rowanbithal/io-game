@@ -76,6 +76,16 @@ import {
   GOLD_PICKAXE_GOLD_MULTIPLIER,
   GOLD_SWORD_ID,
   GOLD_SWORD_DAMAGE_MULTIPLIER,
+  DIAMOND_AXE_ID,
+  DIAMOND_AXE_WOOD_MULTIPLIER,
+  DIAMOND_PICKAXE_ID,
+  DIAMOND_PICKAXE_STONE_MULTIPLIER,
+  DIAMOND_PICKAXE_GOLD_MULTIPLIER,
+  DIAMOND_PICKAXE_DIAMOND_MULTIPLIER,
+  DIAMOND_SWORD_ID,
+  DIAMOND_SWORD_DAMAGE_MULTIPLIER,
+  DIAMOND_ARMOR_ID,
+  DIAMOND_ARMOR_DAMAGE_REDUCTION,
   WOODEN_ARMOR_ID,
   STONE_ARMOR_ID,
   GOLD_ARMOR_ID,
@@ -191,11 +201,25 @@ import {
   FARM_PLOT_SPAN,
   FARM_PLOT_INTERACT_RADIUS,
   WATERING_CAN_MAX_CHARGES,
+  naturalRainAt,
+  secondsUntilRainStops,
+  RAINING_THRESHOLD,
+  RAIN_OVERRIDE_SECONDS,
+  RAIN_CANCEL_MAX_SECONDS,
+  CHEST_USE_RADIUS,
+  CHEST_SLOTS,
+  TREASURE_REFILL_SECONDS,
+  RAIN_CAMPFIRE_BURN_MULTIPLIER,
+  RAIN_MAX_TEMPERATURE,
+  ChestOpenRequest,
+  ChestMoveRequest,
+  ChestPayload,
+  DiedPayload,
 } from '@io-game/shared';
 
 import { ServerPlayer } from './entities/Player';
 import { ServerResource } from './entities/Resource';
-import { ServerStructure } from './entities/Structure';
+import { ServerStructure, WORLD_OWNER } from './entities/Structure';
 import { ServerFarmPlot } from './entities/FarmPlot';
 import { ServerSpider } from './entities/Spider';
 import { ServerFox } from './entities/Fox';
@@ -230,6 +254,12 @@ const TOOL_BONUS: Record<string, Record<string, number>> = {
     stone: GOLD_PICKAXE_STONE_MULTIPLIER,
     gold: GOLD_PICKAXE_GOLD_MULTIPLIER,
   },
+  [DIAMOND_AXE_ID]: { wood: DIAMOND_AXE_WOOD_MULTIPLIER },
+  [DIAMOND_PICKAXE_ID]: {
+    stone: DIAMOND_PICKAXE_STONE_MULTIPLIER,
+    gold: DIAMOND_PICKAXE_GOLD_MULTIPLIER,
+    diamond: DIAMOND_PICKAXE_DIAMOND_MULTIPLIER,
+  },
 };
 
 // Gold is the one resource with a hard tool requirement rather than the
@@ -239,21 +269,22 @@ const TOOL_BONUS: Record<string, Record<string, number>> = {
 // too: a set rather than one exact id, so upgrading to the gold pickaxe can
 // never lock a player out of a resource their strictly better tool obviously
 // ought to handle. See canMineGold in processHarvest.
-const GOLD_CAPABLE_TOOLS = new Set<string>([STONE_PICKAXE_ID, GOLD_PICKAXE_ID]);
+const GOLD_CAPABLE_TOOLS = new Set<string>([STONE_PICKAXE_ID, GOLD_PICKAXE_ID, DIAMOND_PICKAXE_ID]);
 
 // Diamond is gated even harder than gold: only the top pickaxe tier scratches
 // it, full stop — there's no lower tier that "still works, just worse" the
 // way a wooden axe still chops wood. See canMineDiamond in processHarvest.
-const DIAMOND_CAPABLE_TOOLS = new Set<string>([GOLD_PICKAXE_ID]);
+const DIAMOND_CAPABLE_TOOLS = new Set<string>([GOLD_PICKAXE_ID, DIAMOND_PICKAXE_ID]);
 
 /** Gold-capable pickaxes, weakest first — the tier list bots pick their best from. */
-const BOT_GOLD_PICKAXE_TIERS = [STONE_PICKAXE_ID, GOLD_PICKAXE_ID];
+const BOT_GOLD_PICKAXE_TIERS = [STONE_PICKAXE_ID, GOLD_PICKAXE_ID, DIAMOND_PICKAXE_ID];
 
 // Held weapons that multiply damage dealt to spiders and other players.
 const WEAPON_DAMAGE: Record<string, number> = {
   [WOODEN_SWORD_ID]: SWORD_DAMAGE_MULTIPLIER,
   [STONE_SWORD_ID]: STONE_SWORD_DAMAGE_MULTIPLIER,
   [GOLD_SWORD_ID]: GOLD_SWORD_DAMAGE_MULTIPLIER,
+  [DIAMOND_SWORD_ID]: DIAMOND_SWORD_DAMAGE_MULTIPLIER,
 };
 
 // Score per unit of a resource actually collected — read both by the wild-
@@ -294,6 +325,7 @@ const ARMOR_DAMAGE_REDUCTION: Record<string, number> = {
   [WOODEN_ARMOR_ID]: WOODEN_ARMOR_DAMAGE_REDUCTION,
   [STONE_ARMOR_ID]: STONE_ARMOR_DAMAGE_REDUCTION,
   [GOLD_ARMOR_ID]: GOLD_ARMOR_DAMAGE_REDUCTION,
+  [DIAMOND_ARMOR_ID]: DIAMOND_ARMOR_DAMAGE_REDUCTION,
 };
 const ARMOR_IDS = new Set(Object.keys(ARMOR_DAMAGE_REDUCTION));
 
@@ -333,9 +365,24 @@ const MAX_INTERACT_RADIUS = Math.max(...Object.values(INTERACT_RADIUS));
 const CAMPFIRE_ID = 'campfire';
 
 /** Tool tiers, weakest first — used both to pick the best one owned and to skip recrafting outclassed ones. */
-const BOT_AXE_TIERS = [WOODEN_AXE_ID, STONE_AXE_ID, GOLD_AXE_ID];
-const BOT_PICKAXE_TIERS = [WOODEN_PICKAXE_ID, STONE_PICKAXE_ID, GOLD_PICKAXE_ID];
-const BOT_SWORD_TIERS = [WOODEN_SWORD_ID, STONE_SWORD_ID, GOLD_SWORD_ID];
+const BOT_AXE_TIERS = [WOODEN_AXE_ID, STONE_AXE_ID, GOLD_AXE_ID, DIAMOND_AXE_ID];
+const BOT_PICKAXE_TIERS = [WOODEN_PICKAXE_ID, STONE_PICKAXE_ID, GOLD_PICKAXE_ID, DIAMOND_PICKAXE_ID];
+const BOT_SWORD_TIERS = [WOODEN_SWORD_ID, STONE_SWORD_ID, GOLD_SWORD_ID, DIAMOND_SWORD_ID];
+
+// What an island treasure chest can hold — each entry rolls independently
+// (chance, then a count in [min, max]), so a haul is a random mix. Weighted
+// toward the materials that are otherwise slow to farm.
+const TREASURE_LOOT: { type: string; chance: number; min: number; max: number }[] = [
+  { type: 'gold', chance: 0.9, min: 4, max: 10 },
+  { type: 'diamond', chance: 0.55, min: 2, max: 6 },
+  { type: 'string', chance: 0.5, min: 2, max: 5 },
+  { type: 'leather', chance: 0.4, min: 1, max: 3 },
+  { type: 'cooked_meat', chance: 0.5, min: 2, max: 4 },
+  { type: 'berry_seed', chance: 0.3, min: 3, max: 6 },
+  { type: 'wheat_seed', chance: 0.3, min: 3, max: 6 },
+];
+/** Score for looting an island treasure chest. */
+const TREASURE_SCORE = 150;
 const BOT_TOOL_TIERS = [BOT_AXE_TIERS, BOT_PICKAXE_TIERS, BOT_SWORD_TIERS];
 
 /**
@@ -470,6 +517,10 @@ export class Game {
 
   private tick = 0;
   private dayTime = 0; // 0 = noon, wraps 0..1
+  // A "/rain" in effect: forces rain on (or holds it off) until `untilTick`,
+  // overriding the natural tick-driven weather (see naturalRainAt). Sent to
+  // every client as GameState.rainOverride; null means natural weather.
+  private rainOverride: { raining: boolean; untilTick: number } | null = null;
   private lastTime = Date.now();
   private interval: ReturnType<typeof setInterval> | null = null;
 
@@ -496,6 +547,14 @@ export class Game {
   constructor(private readonly io: Server) {
     this.world = new World();
     this.world.generate();
+    this.spawnTreasureChests();
+  }
+
+  /** One treasure chest at the heart of each sea island — the world's, so it's never cleared. */
+  private spawnTreasureChests(): void {
+    for (const island of this.world.islands) {
+      this.structures.push(new ServerStructure('treasure_chest', island.x, island.y, WORLD_OWNER));
+    }
   }
 
   // ── Lifecycle ──────────────────────────────────────────────────────────────
@@ -547,6 +606,7 @@ export class Game {
     // is a new player and could never own these again. Without this a
     // crafting bench (which has no lifetime of its own) would sit on the map
     // for the rest of the server's uptime, one more every time anyone quits.
+    this.openChests.delete(id);
     this.removeStructuresOwnedBy(id);
     this.removeFarmPlotsOwnedBy(id);
     if (player) console.log(`[Game] - ${player.name} (${id})`);
@@ -786,7 +846,13 @@ export class Game {
 
   /** Ages every farm plot's growth/wetness — see ServerFarmPlot.update. */
   private updateFarmPlots(dt: number): void {
-    for (const plot of this.farmPlots.values()) plot.update(dt);
+    // Rain waters every exposed plot for free, keeping it topped up for as
+    // long as it falls (and WATERING_WET_DURATION after).
+    const raining = this.isRaining();
+    for (const plot of this.farmPlots.values()) {
+      if (raining && !isInDesert(plot.x, plot.y)) plot.water();
+      plot.update(dt);
+    }
   }
 
   /** Removes every farm plot a given player tilled — see checkDeath/removePlayer, same "nothing survives" rule as removeStructuresOwnedBy. */
@@ -804,8 +870,12 @@ export class Game {
    */
   private updateStructures(dt: number): void {
     for (let i = this.structures.length - 1; i >= 0; i--) {
-      if (this.structures[i].update(dt)) this.removeStructure(i);
+      const s = this.structures[i];
+      // Rain douses an exposed campfire faster (see RAIN_CAMPFIRE_BURN_MULTIPLIER).
+      const burn = s.type === 'campfire' && this.isRainingAt(s.x, s.y) ? RAIN_CAMPFIRE_BURN_MULTIPLIER : 1;
+      if (s.update(dt * burn)) this.removeStructure(i);
     }
+    this.refreshOpenChests();
   }
 
   /** Splices out structure `index`, undoing whatever handlePlace set up for it. */
@@ -815,9 +885,12 @@ export class Game {
   }
 
   /** Removes everything a given player built — see checkDeath. */
-  private removeStructuresOwnedBy(ownerId: string): void {
+  private removeStructuresOwnedBy(ownerId: string, keepChests = false): void {
     for (let i = this.structures.length - 1; i >= 0; i--) {
-      if (this.structures[i].ownerId === ownerId) this.removeStructure(i);
+      const s = this.structures[i];
+      if (s.ownerId !== ownerId) continue;
+      if (keepChests && s.type === 'chest') continue;
+      this.removeStructure(i);
     }
   }
 
@@ -1045,7 +1118,173 @@ export class Game {
       return;
     }
 
+    if (cmd === 'rain') {
+      this.toggleRain(player);
+      return;
+    }
+
     this.sendSystem(player, `Unknown command: /${cmd}`);
+  }
+
+  /**
+   * "/rain": if it's raining (naturally or from an earlier /rain), stop it;
+   * otherwise make it rain for RAIN_OVERRIDE_SECONDS. A cancel holds off
+   * only until the natural front it interrupted would have ended (capped at
+   * RAIN_CANCEL_MAX_SECONDS) — after that, ordinary weather resumes. Weather
+   * is shared, so everyone is told who changed it.
+   */
+  private toggleRain(player: ServerPlayer): void {
+    const seconds = this.tick / TICK_RATE;
+    const raining = this.rainOverride ? this.rainOverride.raining : naturalRainAt(seconds) > RAINING_THRESHOLD;
+    if (raining) {
+      const hold = this.rainOverride?.raining ? 0 : secondsUntilRainStops(seconds, RAIN_CANCEL_MAX_SECONDS);
+      // Cancelling a /rain with no natural front behind it just drops the
+      // override — natural (dry) weather is already what's left.
+      this.rainOverride = hold > 0 ? { raining: false, untilTick: this.tick + hold * TICK_RATE } : null;
+      this.io.emit('system', `🌤 ${player.name} cleared the rain`);
+    } else {
+      this.rainOverride = { raining: true, untilTick: this.tick + RAIN_OVERRIDE_SECONDS * TICK_RATE };
+      this.io.emit('system', `🌧 ${player.name} called in the rain`);
+    }
+  }
+
+  /** True while it's raining anywhere — /rain's override if one is in effect, else the natural weather. */
+  private isRaining(): boolean {
+    if (this.rainOverride) return this.rainOverride.raining;
+    return naturalRainAt(this.tick / TICK_RATE) > RAINING_THRESHOLD;
+  }
+
+  /** True where rain actually falls right now — never in the desert (the client draws none there either). */
+  private isRainingAt(x: number, y: number): boolean {
+    return this.isRaining() && !isInDesert(x, y);
+  }
+
+  // ── Chests ─────────────────────────────────────────────────────────────────
+
+  /**
+   * Storage chests currently open, player id → chest id — so changes to a
+   * chest's contents can be pushed to everyone looking at it, and so a
+   * player who walks away stops being sent updates (see refreshOpenChests).
+   */
+  private readonly openChests = new Map<string, string>();
+
+  private chestNear(player: ServerPlayer, structureId: string): ServerStructure | null {
+    const chest = this.structures.find((s) => s.id === structureId);
+    if (!chest || (chest.type !== 'chest' && chest.type !== 'treasure_chest')) return null;
+    if (Math.hypot(chest.x - player.x, chest.y - player.y) > CHEST_USE_RADIUS) return null;
+    return chest;
+  }
+
+  /** Opens a storage chest's panel — or, for an island treasure chest, loots it on the spot. */
+  handleChestOpen(id: string, { structureId }: ChestOpenRequest): void {
+    if (this.spectators.has(id)) return;
+    const player = this.players.get(id);
+    const inv = this.inventories.get(id);
+    if (!player || !inv) return;
+    const chest = this.chestNear(player, structureId);
+    if (!chest) return;
+
+    if (chest.type === 'treasure_chest') {
+      this.lootTreasure(player, inv, chest);
+      return;
+    }
+    this.openChests.set(player.id, chest.id);
+    this.sendChest(player, chest);
+  }
+
+  private lootTreasure(player: ServerPlayer, inv: Map<string, number>, chest: ServerStructure): void {
+    if (chest.looted) {
+      this.sendInventory(player, `Empty — refills in ${Math.ceil(chest.refillRemaining / 60)} min`);
+      return;
+    }
+    const drops: { type: string; count: number }[] = [];
+    for (const loot of TREASURE_LOOT) {
+      if (Math.random() > loot.chance) continue;
+      const count = loot.min + Math.floor(Math.random() * (loot.max - loot.min + 1));
+      const got = this.gainItem(player, inv, loot.type, count);
+      if (got > 0) drops.push({ type: loot.type, count: got });
+    }
+    if (drops.length === 0) {
+      // A full hotbar takes nothing — leave the chest for someone with room.
+      this.sendInventory(player, 'Hotbar full — no room for the treasure');
+      return;
+    }
+    chest.refillRemaining = TREASURE_REFILL_SECONDS;
+    player.score += TREASURE_SCORE;
+    // Same payload a harvest uses, so the client's pickup arcs fly the loot in.
+    this.io.sockets.sockets.get(player.id)?.emit('harvest', { drops, inventory: Object.fromEntries(inv) });
+    this.io.emit('system', `💰 ${player.name} found island treasure!`);
+  }
+
+  /**
+   * Moves items between the open storage chest and the player's inventory.
+   * Deposits respect CHEST_SLOTS; withdrawals respect the hotbar's own cap
+   * (see gainItem). Anyone in reach can use any chest — keeping a stash
+   * safe means keeping people away from it.
+   */
+  handleChestMove(id: string, { structureId, itemId, count, toChest }: ChestMoveRequest): void {
+    if (this.spectators.has(id)) return;
+    const player = this.players.get(id);
+    const inv = this.inventories.get(id);
+    if (!player || !inv) return;
+    const chest = this.chestNear(player, structureId);
+    const storage = chest?.storage;
+    if (!chest || !storage) return;
+    const want = Math.floor(count);
+    if (!(want > 0)) return;
+
+    if (toChest) {
+      const have = inv.get(itemId) ?? 0;
+      const n = Math.min(want, have);
+      if (n <= 0) return;
+      if (!storage.has(itemId) && storage.size >= CHEST_SLOTS) {
+        this.sendInventory(player, 'Chest is full');
+        return;
+      }
+      // Can't stash something you're wearing — take it off first.
+      if (n === have && (player.armor === itemId || player.torch === itemId || player.backpack === itemId)) {
+        this.sendInventory(player, 'Unequip it first');
+        return;
+      }
+      storage.set(itemId, (storage.get(itemId) ?? 0) + n);
+      if (have - n > 0) inv.set(itemId, have - n);
+      else inv.delete(itemId);
+    } else {
+      const stored = storage.get(itemId) ?? 0;
+      const n = Math.min(want, stored);
+      if (n <= 0) return;
+      if (this.gainItem(player, inv, itemId, n) === 0) {
+        this.sendInventory(player, 'Hotbar full');
+        return;
+      }
+      if (stored - n > 0) storage.set(itemId, stored - n);
+      else storage.delete(itemId);
+    }
+    this.sendInventory(player);
+    for (const [viewerId, chestId] of this.openChests) {
+      const viewer = this.players.get(viewerId);
+      if (viewer && chestId === chest.id) this.sendChest(viewer, chest);
+    }
+  }
+
+  /** Closes a chest panel (the client's Esc / walking away). */
+  handleChestClose(id: string): void {
+    this.openChests.delete(id);
+  }
+
+  private sendChest(player: ServerPlayer, chest: ServerStructure): void {
+    const payload: ChestPayload = { structureId: chest.id, items: Object.fromEntries(chest.storage ?? []), capacity: CHEST_SLOTS };
+    this.io.sockets.sockets.get(player.id)?.emit('chest', payload);
+  }
+
+  /** Drops open-chest tracking for anyone who walked off or whose chest is gone, telling their client to close it. */
+  private refreshOpenChests(): void {
+    for (const [playerId, chestId] of this.openChests) {
+      const player = this.players.get(playerId);
+      if (player && this.chestNear(player, chestId)) continue;
+      this.openChests.delete(playerId);
+      this.io.sockets.sockets.get(playerId)?.emit('chestClosed');
+    }
   }
 
   /** Returns whether they actually were spectating, so callers can tailor the feedback. */
@@ -1157,6 +1396,7 @@ export class Game {
     const dt = Math.min((now - this.lastTime) / 1000, 0.1) * this.speedMultiplier;
     this.lastTime = now;
     this.tick++;
+    if (this.rainOverride && this.tick >= this.rainOverride.untilTick) this.rainOverride = null;
 
     // Day/night cycle
     this.dayTime = (this.dayTime + dt / DAY_DURATION) % 1;
@@ -1176,7 +1416,8 @@ export class Game {
       const speedMultiplier = this.getSpeedMultiplier(player);
       const thirstMultiplier = this.getThirstMultiplier(player);
       const inWater = this.world.isInWater(player.x, player.y);
-      player.update(dt, isDay, speedMultiplier, this.isNearFire(player), inWater, thirstMultiplier);
+      const maxTemperature = this.isRainingAt(player.x, player.y) ? RAIN_MAX_TEMPERATURE : 100;
+      player.update(dt, isDay, speedMultiplier, this.isNearFire(player), inWater, thirstMultiplier, maxTemperature);
       this.refillWateringCan(player, inWater);
       const pushed = this.pushOutOfResources(player.x, player.y, PLAYER_RADIUS);
       const structPushed = this.pushOutOfStructures(pushed.x, pushed.y, PLAYER_RADIUS);
@@ -1521,7 +1762,7 @@ export class Game {
       const victimInv = this.inventories.get(victim.id);
       const reduction = victimInv ? this.armorReduction(victim, victimInv) : 0;
       const wasAlive = victim.health > 0;
-      victim.health = Math.max(0, victim.health - combatDamage * (1 - reduction));
+      victim.hurt(combatDamage * (1 - reduction), player.name);
       // Credited on the killing blow itself, before checkDeath resets the
       // victim's score back to 0 on respawn.
       if (wasAlive && victim.health === 0) {
@@ -1799,13 +2040,23 @@ export class Game {
   private checkDeath(player: ServerPlayer): void {
     if (player.health > 0) return;
 
+    // Captured before respawn() resets them, for the death screen.
+    const died: DiedPayload = {
+      cause: player.lastDamageCause,
+      score: Math.floor(player.score),
+      survived: Math.round((Date.now() - player.spawnedAt) / 1000),
+    };
+
     player.respawn();
     this.inventories.set(player.id, new Map());
+    this.openChests.delete(player.id);
     // Dying costs you what you built, not just what you carried — otherwise a
     // player could seed the map with fires and benches and keep the benefit
     // of every one of them across any number of deaths. Applies to bots too,
-    // which is why it sits above the bot branch below.
-    this.removeStructuresOwnedBy(player.id);
+    // which is why it sits above the bot branch below. Storage chests are
+    // the exception: they're the one way to keep things through a death
+    // (see CHEST_ID) — they only go when their owner leaves the server.
+    this.removeStructuresOwnedBy(player.id, true);
     this.removeFarmPlotsOwnedBy(player.id);
 
     const bot = this.bots.find((b) => b.id === player.id);
@@ -1817,7 +2068,7 @@ export class Game {
     if (this.spectators.has(player.id)) return; // see doc comment above
 
     const socket = this.io.sockets.sockets.get(player.id);
-    if (socket) socket.emit('died', {});
+    if (socket) socket.emit('died', died);
   }
 
   // ── Spiders ────────────────────────────────────────────────────────────────
@@ -1956,7 +2207,7 @@ export class Game {
       } else if (spider.attackCooldown <= 0) {
         const victimInv = this.inventories.get(nearest.id);
         const reduction = victimInv ? this.armorReduction(nearest, victimInv) : 0;
-        nearest.health = Math.max(0, nearest.health - SPIDER_DAMAGE * (1 - reduction));
+        nearest.hurt(SPIDER_DAMAGE * (1 - reduction), 'a spider');
         spider.attackCooldown = SPIDER_ATTACK_COOLDOWN;
       }
     } else {
@@ -2168,7 +2419,7 @@ export class Game {
       if (fox.attackCooldown <= 0) {
         const victimInv = this.inventories.get(nearest.id);
         const reduction = victimInv ? this.armorReduction(nearest, victimInv) : 0;
-        nearest.health = Math.max(0, nearest.health - FOX_DAMAGE * (1 - reduction));
+        nearest.hurt(FOX_DAMAGE * (1 - reduction), 'a fox');
         fox.attackCooldown = FOX_ATTACK_COOLDOWN;
       }
       return;
@@ -2403,7 +2654,7 @@ export class Game {
       if (beetle.attackCooldown <= 0) {
         const victimInv = this.inventories.get(nearest.id);
         const reduction = victimInv ? this.armorReduction(nearest, victimInv) : 0;
-        nearest.health = Math.max(0, nearest.health - BEETLE_DAMAGE * (1 - reduction));
+        nearest.hurt(BEETLE_DAMAGE * (1 - reduction), 'a beetle');
         beetle.attackCooldown = BEETLE_ATTACK_COOLDOWN;
       }
       return;
@@ -3808,6 +4059,7 @@ export class Game {
         spectating: anchor.id !== player.id,
         cameraMode: isCameraViewer,
         cameraResources,
+        rainOverride: this.rainOverride?.raining,
       };
 
       socket.emit('state', state);
@@ -3852,6 +4104,7 @@ export class Game {
       farmPlots: Array.from(this.farmPlots.values())
         .filter(p => Math.hypot(p.x - x, p.y - y) <= VIEW_DISTANCE)
         .map(p => p.toState()),
+      rainOverride: this.rainOverride?.raining,
       focus: this.previewBot.id,
       lakes: this.world.lakes,
       islands: this.world.islands,

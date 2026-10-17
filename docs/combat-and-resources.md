@@ -28,12 +28,13 @@ Hit counts are rounded up (`⌈Max HP ÷ damage⌉`) — a killing blow only nee
 | Weapon / Item                              | Damage per hit | Multiplier |
 |---------------------------------------------|:--------------:|:----------:|
 | Fist (bare hands)                            |       30        |     ×1     |
-| Wooden Axe / Stone Axe / Gold Axe            |       30        |     ×1     |
-| Wooden Pickaxe / Stone Pickaxe / Gold Pickaxe|       30        |     ×1     |
+| Any axe (wooden → diamond)                   |       30        |     ×1     |
+| Any pickaxe (wooden → diamond)               |       30        |     ×1     |
 | Fishing Rod                                  |       30        |     ×1     |
 | Wooden Sword                                 |       60        |     ×2     |
 | Stone Sword                                  |       90        |     ×3     |
 | Gold Sword                                   |      120        |     ×4     |
+| Diamond Sword                                |      165        |    ×5.5    |
 
 Axes and pickaxes carry **no combat bonus** — holding one to fight is identical
 to fighting bare-handed. Swords carry **no harvest bonus** — they never speed up
@@ -47,11 +48,12 @@ yield once fully harvested. Axes only boost **wood**, pickaxes only boost
 **stone** and **gold** — nothing boosts berries, mushrooms, wheat, or purple
 berries, and a tree's bonus berry drop is unaffected by axe tier.
 
-| Resource            | HP  | Hits to clear | Base yield (any tool / fist) | Wooden tier | Stone tier | Gold tier |
-|----------------------|----:|:--------------:|-------------------------------|:-----------:|:----------:|:---------:|
-| Tree                 |  90 |     3 hits      | 3 wood + 1 berry               |  5 wood †    |  6 wood     |  8 wood †  |
-| Rock                 | 150 |     5 hits      | 3 stone                        |  5 stone †   |  6 stone    |  8 stone † |
-| Gold Deposit         | 260 |     9 hits      | **0** — wrong tool bounces off ‡ |     —      |  2 gold ⁂   |  4 gold    |
+| Resource            | HP  | Hits to clear | Base yield (any tool / fist) | Wooden tier | Stone tier | Gold tier | Diamond tier |
+|----------------------|----:|:--------------:|-------------------------------|:-----------:|:----------:|:---------:|:------------:|
+| Tree                 |  90 |     3 hits      | 3 wood + 1 berry               |  5 wood †    |  6 wood     |  8 wood †  | 11 wood †    |
+| Rock                 | 150 |     5 hits      | 3 stone                        |  5 stone †   |  6 stone    |  8 stone † | 11 stone †   |
+| Gold Deposit         | 260 |     9 hits      | **0** — wrong tool bounces off ‡ |     —      |  2 gold ⁂   |  4 gold    |  6 gold      |
+| Diamond Deposit      | 340 |    12 hits      | **0** — needs a gold pickaxe   |     —       |     —      | 2 diamond  | 4 diamond    |
 | Berry Bush           |  30 |     1 hit       | 1 berry                        |      —      |     —      |     —     |
 | Mushroom             |  20 |     1 hit       | 1 mushroom                     |      —      |     —      |     —     |
 | Wheat                |  15 |     1 hit       | 2 wheat                        |      —      |     —      |     —     |
@@ -67,7 +69,11 @@ berries, and a tree's bonus berry drop is unaffected by axe tier.
   pickaxe both do 0 against it. Stone pickaxe or better is mandatory just to
   dent it.
 - **⁂** Stone Pickaxe can mine gold (it clears the requirement above) but
-  gets no yield bonus for it — only Gold Pickaxe doubles the gold payout.
+  gets no yield bonus for it — only Gold Pickaxe doubles the gold payout
+  (Diamond Pickaxe triples it).
+- Diamond tier tools are upgraded from the gold ones at a bench, costing
+  5 (axe) / 6 (pickaxe) / 8 (sword) diamonds plus 20 wood. ×3.5 on wood
+  and stone lands on half-items the same way † describes.
 
 Dark forest trees/rocks spawn oversized (1.32× and 1.5× respectively) and
 scale both their HP and yield up accordingly — the rows above are the
@@ -85,6 +91,7 @@ spider bites, and PvP alike, by a flat fraction:
 | Wooden Armor  |        15%         | 40 wood                              |   No   |
 | Stone Armor   |        30%         | 1 Wooden Armor + 35 stone + 20 wood  |  Yes   |
 | Gold Armor    |        45%         | 1 Stone Armor + 35 gold + 20 wood    |  Yes   |
+| Diamond Armor |        60%         | 1 Gold Armor + 10 diamond + 20 wood  |  Yes   |
 
 Same "authority is the inventory" rule as everything else held/worn: crafting
 away the currently-equipped suit (upgrading it to the next tier) silently

@@ -1,5 +1,8 @@
-import { GameState, PlayerState, ResourceState, StructureState, SpiderState, FoxState, BeetleState, LakeState, IslandState, FishingState, FarmPlotState, PLAYER_RADIUS, FOX_RADIUS, BEETLE_RADIUS, GRID_CELL, TREE_SPAN, ROCK_SPAN, WHEAT_SPAN, GOLD_SPAN, DIAMOND_SPAN, HARVEST_RANGE, HARVEST_ANGLE, HARVEST_COOLDOWN, STRUCTURE_SPAN, PLACE_RANGE, CAMPFIRE_LIGHT_RADIUS, CAMPFIRE_BURNOUT_FADE, SPIDER_RADIUS, CAST_RANGE, FOX_AGGRO_RANGE, FOX_LOSE_INTEREST_RANGE, RECIPES_BY_ID, WOODEN_AXE_ID, WOODEN_PICKAXE_ID, WOODEN_SWORD_ID, STONE_AXE_ID, STONE_PICKAXE_ID, STONE_SWORD_ID, GOLD_AXE_ID, GOLD_PICKAXE_ID, GOLD_SWORD_ID, WOODEN_ARMOR_ID, STONE_ARMOR_ID, GOLD_ARMOR_ID, TORCH_LIGHT_RADIUS, CRAFTING_BENCH_ID, FISHING_ROD_ID, WOODEN_HOE_ID, WATERING_CAN_ID, FARM_PLOT_SPAN, FARM_PLOT_INTERACT_RADIUS, MAP_SIZE, DARK_FOREST_BAND, DARK_FOREST_TRANSITION, GOLD_TOP_BAND, FOREST_TREE_SCALE, FOREST_ROCK_SCALE, darkForestBandAt, DARK_FOREST_EDGE_AMPLITUDE, SEA_BAND, SEA_SAND_WIDTH, seaCoastAt, seaSandStartAt, SEA_EDGE_AMPLITUDE, DESERT_BAND, DESERT_TRANSITION, DESERT_EDGE_AMPLITUDE, desertBandAt, isInDesert, OASIS_VERTICAL_STRETCH, dayPhase, hashCell, clamp01, smoothstep, forestFactor, isForestTree, isForestRock, resourceCell, RESOURCE_SEED_SALT, mulberry32, lakeHarmonics, lobeRadius, LakeHarmonic } from '@io-game/shared';
+import { GameState, PlayerState, ResourceState, StructureState, SpiderState, FoxState, BeetleState, LakeState, IslandState, FishingState, FarmPlotState, PLAYER_RADIUS, FOX_RADIUS, BEETLE_RADIUS, GRID_CELL, TREE_SPAN, ROCK_SPAN, WHEAT_SPAN, GOLD_SPAN, DIAMOND_SPAN, HARVEST_RANGE, HARVEST_ANGLE, HARVEST_COOLDOWN, STRUCTURE_SPAN, PLACE_RANGE, CAMPFIRE_LIGHT_RADIUS, CAMPFIRE_BURNOUT_FADE, SPIDER_RADIUS, CAST_RANGE, FOX_AGGRO_RANGE, FOX_LOSE_INTEREST_RANGE, RECIPES_BY_ID, WOODEN_AXE_ID, WOODEN_PICKAXE_ID, WOODEN_SWORD_ID, STONE_AXE_ID, STONE_PICKAXE_ID, STONE_SWORD_ID, GOLD_AXE_ID, GOLD_PICKAXE_ID, GOLD_SWORD_ID, DIAMOND_AXE_ID, DIAMOND_PICKAXE_ID, DIAMOND_SWORD_ID, WOODEN_ARMOR_ID, STONE_ARMOR_ID, GOLD_ARMOR_ID, DIAMOND_ARMOR_ID, CHEST_ID, TORCH_LIGHT_RADIUS, CRAFTING_BENCH_ID, FISHING_ROD_ID, WOODEN_HOE_ID, WATERING_CAN_ID, FARM_PLOT_SPAN, FARM_PLOT_INTERACT_RADIUS, MAP_SIZE, DARK_FOREST_BAND, DARK_FOREST_TRANSITION, GOLD_TOP_BAND, FOREST_TREE_SCALE, FOREST_ROCK_SCALE, darkForestBandAt, DARK_FOREST_EDGE_AMPLITUDE, SEA_BAND, SEA_SAND_WIDTH, seaCoastAt, seaSandStartAt, SEA_EDGE_AMPLITUDE, DESERT_BAND, DESERT_TRANSITION, DESERT_EDGE_AMPLITUDE, desertBandAt, isInDesert, OASIS_VERTICAL_STRETCH, dayPhase, hashCell, clamp01, smoothstep, forestFactor, isForestTree, isForestRock, resourceCell, RESOURCE_SEED_SALT, mulberry32, lakeHarmonics, lobeRadius, LakeHarmonic } from '@io-game/shared';
 import { Camera } from './Camera';
+import { Effects } from './fx/Effects';
+import { Atmosphere } from './fx/Atmosphere';
+import { isHigh } from './fx/quality';
 
 import berryUrl from './assets/sprites/berry.png';
 import mushroomUrl from './assets/sprites/mushroom.png';
@@ -323,6 +326,9 @@ const TOOL_VISUALS: Record<string, ToolVisual> = {
   [WOODEN_SWORD_ID]: { shape: 'sword', head: P.logDark, guard: P.treeBranch, scale: 1 },
   [STONE_SWORD_ID]: { shape: 'sword', head: P.rock, guard: P.rockHighlight, scale: 1.2 },
   [GOLD_SWORD_ID]: { shape: 'sword', head: P.gold, guard: P.goldHighlight, scale: 1.35 },
+  [DIAMOND_AXE_ID]: { shape: 'axe', head: P.diamond, guard: P.diamondDark, scale: 1.5 },
+  [DIAMOND_PICKAXE_ID]: { shape: 'pickaxe', head: P.diamond, guard: P.diamondDark, scale: 1.5 },
+  [DIAMOND_SWORD_ID]: { shape: 'sword', head: P.diamond, guard: P.diamondLight, scale: 1.5 },
   [FISHING_ROD_ID]: { shape: 'rod', head: P.rockShadow, guard: P.stringDark, scale: 1 },
   [WOODEN_HOE_ID]: { shape: 'hoe', head: P.rockShadow, guard: P.logDark, scale: 1 },
   [WATERING_CAN_ID]: { shape: 'wateringcan', head: P.tinLight, guard: P.tin, scale: 1 },
@@ -2055,6 +2061,66 @@ export function drawWallSprite(ctx: CanvasRenderingContext2D, block: number = BL
 /** Half-width of the wall sprite, in blocks — used to size HUD icons. */
 export const WALL_SPRITE_HALF_BLOCKS = WALL_HALF_BLOCKS + 0.5;
 
+// ── Chests ───────────────────────────────────────────────────────────────────
+// Seen from above: a plank lid with a dark rim and a latch on the front
+// (south) edge. The storage chest is plain wood with a stone latch; the
+// island treasure chest is bigger, banded in gold, and shows its dark empty
+// interior with the lid flipped back while it's waiting to refill.
+
+function chestCells(halfW: number, halfH: number): Cell[] {
+  const cells: Cell[] = [];
+  for (let gy = -halfH; gy <= halfH; gy++) {
+    for (let gx = -halfW; gx <= halfW; gx++) {
+      const edge = Math.abs(gx) === halfW || Math.abs(gy) === halfH;
+      // Planks run across the lid; the rim is dark.
+      const shade: Shade = edge ? 'dark' : gy % 2 === 0 ? 'light' : 'base';
+      cells.push({ gx, gy, shade });
+    }
+  }
+  return cells;
+}
+
+const CHEST_CELLS = chestCells(3, 2);
+const TREASURE_CELLS = chestCells(4, 3);
+
+/** A player's storage chest, centred on the current origin. Exported for the HUD icon too. */
+export function drawChestSprite(ctx: CanvasRenderingContext2D, block: number = BLOCK): void {
+  drawBlockShape(ctx, CHEST_CELLS, LOG_PALETTE, block);
+  // Stone latch on the front edge.
+  ctx.fillStyle = P.rockShadow;
+  ctx.fillRect(-block * 0.6, block * 1.6, block * 1.2, block * 1.2);
+  ctx.fillStyle = P.rockHighlight;
+  ctx.fillRect(-block * 0.3, block * 1.9, block * 0.6, block * 0.6);
+}
+export const CHEST_SPRITE_HALF_BLOCKS = 3.6;
+
+/** An island treasure chest. `opened` = looted and refilling: lid thrown back, insides empty. */
+export function drawTreasureChestSprite(ctx: CanvasRenderingContext2D, opened: boolean, block: number = BLOCK): void {
+  if (opened) {
+    // The lid, flipped open behind the box.
+    ctx.fillStyle = P.logDark;
+    ctx.fillRect(-block * 4.5, -block * 6.5, block * 9, block * 3);
+    ctx.fillStyle = P.goldShadow;
+    ctx.fillRect(-block * 4.5, -block * 5.5, block * 9, block);
+  }
+  drawBlockShape(ctx, TREASURE_CELLS, LOG_PALETTE, block);
+  if (opened) {
+    // Empty, shadowed interior.
+    ctx.fillStyle = '#2a1a0e';
+    ctx.fillRect(-block * 3.5, -block * 2.5, block * 7, block * 5);
+  } else {
+    // Gold bands across the closed lid, and a gold lock.
+    ctx.fillStyle = P.gold;
+    ctx.fillRect(-block * 2.5, -block * 3.5, block, block * 7);
+    ctx.fillRect(block * 1.5, -block * 3.5, block, block * 7);
+    ctx.fillStyle = P.goldHighlight;
+    ctx.fillRect(-block * 0.8, block * 2.3, block * 1.6, block * 1.6);
+    ctx.fillStyle = P.goldShadow;
+    ctx.fillRect(-block * 0.3, block * 2.8, block * 0.6, block * 0.6);
+  }
+}
+export const TREASURE_SPRITE_HALF_BLOCKS = 4.6;
+
 // ── Armor ────────────────────────────────────────────────────────────────────
 // Worn rather than held (see PlayerState.armor) — reuses the exact same
 // tiered material palettes the tools already use (wood/stone/gold), so a
@@ -2064,6 +2130,7 @@ const ARMOR_PALETTES: Record<string, Palette3> = {
   [WOODEN_ARMOR_ID]: LOG_PALETTE,
   [STONE_ARMOR_ID]: STONE_PALETTE,
   [GOLD_ARMOR_ID]: GOLD_PALETTE,
+  [DIAMOND_ARMOR_ID]: DIAMOND_PALETTE,
 };
 
 // A vest/chestplate silhouette for the HUD/crafting icon: a rounded torso
@@ -2715,7 +2782,26 @@ const GLOW_BANDS = 5;
 // Arm/tool swing timing.
 const WALK_SWING_SPEED = 0.12; // radians of phase per world-unit moved
 const WALK_EASE = 0.22; // per-frame ease toward the moving/idle walk amplitude
-const STRIKE_WINDOW = 0.18; // seconds — how long the harvest lunge takes to swing out and back
+const STRIKE_WINDOW = 0.34; // seconds — how long a harvest swing takes: wind-up, sweep, recover
+
+/**
+ * How far round the tool arm has swung at `u` (0..1 through STRIKE_WINDOW),
+ * in radians — 0 is the arm's resting place at the player's right side,
+ * positive sweeps it round to the front. A short wind-up back, a fast sweep
+ * across the front, then an eased recovery: an actual swing rather than a
+ * straight jab forward.
+ */
+function swingAngle(u: number): number {
+  const WIND = -0.4;
+  const FOLLOW = 1.1;
+  if (u < 0.22) return WIND * smoothstep(u / 0.22);
+  if (u < 0.5) {
+    // Ease-in on the sweep so it whips through the strike.
+    const t = (u - 0.22) / 0.28;
+    return WIND + (FOLLOW - WIND) * t * t * (2 - t);
+  }
+  return FOLLOW * (1 - smoothstep((u - 0.5) / 0.5));
+}
 
 interface PlayerAnim {
   lastX: number;
@@ -3130,6 +3216,14 @@ function inSwingRange(me: PlayerState, x: number, y: number, radius: number): bo
 
 export class Renderer {
   private ctx: CanvasRenderingContext2D;
+
+  /** Impact particles, hit flashes, damage numbers, ambient leaves/embers — see fx/Effects. */
+  readonly fx: Effects;
+  /** Color grade, clouds, rain, vignette — see fx/Atmosphere. */
+  readonly atmosphere = new Atmosphere();
+  // Which way the sun is going (true from noon through midnight), so dusk
+  // and dawn can be graded differently even though they share a sun height.
+  private sunSetting = true;
   private groundPattern: CanvasPattern | null = null;
   // The dark forest's bare dirt floor, and the three grass-shade rings
   // (outer → mid → inner, see RING_OUTER/RING_MID/RING_INNER) that step down
@@ -3163,6 +3257,11 @@ export class Renderer {
    * only belongs to the night — fireflies and the forest fog — so they fade
    * in and out on exactly the same curve rather than each rolling their own.
    */
+  /** Public read of nightness (0 day … 1 night) — the soundscape keys its crickets and birds off it. */
+  get nightLevel(): number {
+    return this.nightness;
+  }
+
   private get nightness(): number {
     return smoothstep(clamp01(0.5 - this.sunHeight));
   }
@@ -3185,7 +3284,7 @@ export class Renderer {
   // Lakes are static for the whole session (set once via setLakes), so their
   // shoreline shapes are precomputed once rather than rebuilt every frame.
   private lakes: LakeState[] = [];
-  private readonly lakeShapes = new Map<string, { water: Cell[]; shore: ShoreCell[] }>();
+  private readonly lakeShapes = new Map<string, { water: Cell[]; shore: ShoreCell[]; edge: Cell[] }>();
 
   // Islands are static for the whole session too (set once via setIslands),
   // same reasoning as lakeShapes. `hole` is every cell (gx, gy offset from
@@ -3262,6 +3361,7 @@ export class Renderer {
   ) {
     this.ctx = canvas.getContext('2d')!;
     this.ctx.imageSmoothingEnabled = false;
+    this.fx = new Effects(camera);
     this.buildGroundPattern();
     this.spawnFireflies();
     this.spawnSandParticles();
@@ -3372,9 +3472,16 @@ export class Renderer {
       const waterRadiusBlocks = Math.max(1, Math.round(lake.radius / BLOCK));
       const shoreWidthBlocks = Math.max(1, Math.round(lake.shoreWidth / BLOCK));
       const harmonics = lakeHarmonics(lake.seed);
+      const water = lakeWaterCells(lake.seed + 2000, waterRadiusBlocks, harmonics);
+      // The water's outermost ring of cells — where shoreline foam laps (see drawLakeFoam).
+      const keys = new Set(water.map((c) => `${c.gx},${c.gy}`));
+      const edge = water.filter(
+        (c) => !keys.has(`${c.gx + 1},${c.gy}`) || !keys.has(`${c.gx - 1},${c.gy}`) || !keys.has(`${c.gx},${c.gy + 1}`) || !keys.has(`${c.gx},${c.gy - 1}`),
+      );
       this.lakeShapes.set(lake.id, {
-        water: lakeWaterCells(lake.seed + 2000, waterRadiusBlocks, harmonics),
+        water,
         shore: lakeShoreCells(lake.seed + 3000, waterRadiusBlocks, shoreWidthBlocks, harmonics),
+        edge,
       });
 
       // A few fish per lake, scattered within a safely-inside-the-coastline
@@ -4222,9 +4329,11 @@ export class Renderer {
   private updateAnimations(state: GameState): void {
     // dayTime: 0 = noon, 0.5 = midnight, wraps 0..1. dayPhase warps it so the
     // sun spends DAY_FRACTION of the cycle above the horizon (see shared/daycycle.ts).
-    const turn = dayPhase(state.dayTime) * Math.PI * 2;
+    const phase = dayPhase(state.dayTime);
+    const turn = phase * Math.PI * 2;
     this.sunAngle = turn;
     this.sunHeight = Math.cos(turn);
+    this.sunSetting = phase < 0.5;
 
     this.prunePlayerAnim(state.players);
     this.pruneSpiderAnim(state.spiders);
@@ -4243,6 +4352,11 @@ export class Renderer {
     this.updateSandParticles(dt);
     this.updateFishSplashes(state.players, now);
     this.updateResourceRecoil(state.resources, state.players, dt);
+
+    const viewW = this.canvas.width / this.camera.zoom;
+    const viewH = this.canvas.height / this.camera.zoom;
+    this.fx.update(dt, state, viewW, viewH);
+    this.atmosphere.update(dt, state.tick, state.rainOverride, this.camera, viewW, viewH, this.fx);
   }
 
   /**
@@ -4283,6 +4397,7 @@ export class Renderer {
       this.drawFish();
       this.drawSeaRipples(W / zoom, H / zoom);
       this.drawSeaFish(W / zoom, H / zoom);
+      if (isHigh()) this.drawWaterShine(W / zoom, H / zoom, now);
     }
     // Tilled soil is excluded from actual water and from the dark forest/
     // desert biomes (see Game.isTillable), but a beach's sand — sea or lake
@@ -4295,6 +4410,9 @@ export class Renderer {
     this.drawMapBorder(mapSize);
     this.drawTreeBranches(resources);
     this.drawTreeLeafLitter(resources);
+    // Ripple rings lie on the ground/water — under resources, mobs and
+    // players, so a wading player's wake never draws over them.
+    if (!this.simplifyOverview) this.fx.drawGround(ctx);
 
     // Resources (sorted by Y so overlapping looks natural, with berries/
     // mushrooms always layered under everything else — see resourceDrawOrder)
@@ -4303,11 +4421,13 @@ export class Renderer {
 
     for (const s of state.structures) this.drawStructure(s, now);
 
-    for (const s of state.spiders) this.drawSpider(s);
+    // Mobs and players draw through withFlash/held: a white flash and a
+    // brief freeze in place (hit-stop) when they take a hit — see fx/Effects.
+    for (const s of state.spiders) this.withFlash(s.id, () => this.drawSpider(this.fx.held(s)));
 
-    for (const f of state.foxes) this.drawFox(f);
+    for (const f of state.foxes) this.withFlash(f.id, () => this.drawFox(this.fx.held(f)));
 
-    for (const b of state.beetles) this.drawBeetle(b);
+    for (const b of state.beetles) this.withFlash(b.id, () => this.drawBeetle(this.fx.held(b)));
 
     const me = state.players.find((p) => p.isMe);
     if (this.simplifyOverview) {
@@ -4326,10 +4446,10 @@ export class Renderer {
       }
     } else {
       // Other players then self on top
-      for (const p of state.players) if (!p.isMe) this.drawPlayer(p, hideChrome, now);
+      for (const p of state.players) if (!p.isMe) this.withFlash(p.id, () => this.drawPlayer(this.fx.held(p), hideChrome, now));
       if (me) {
         this.drawReachGrid(me);
-        this.drawPlayer(me, hideChrome, now);
+        this.withFlash(me.id, () => this.drawPlayer(me, hideChrome, now));
         this.drawPlacementGhost(me, now);
         this.drawCastPreview(me);
         this.drawFarmActionGhost(me, state.farmPlots);
@@ -4338,6 +4458,13 @@ export class Renderer {
       for (const p of state.players) this.drawFishingLine(p, now);
       this.drawFishSplashes(now);
       this.drawSandParticles(W / zoom, H / zoom);
+
+      // Debris/dust/leaves, then the sky's own contributions over the whole
+      // scene — cloud shadows and rain — all still before the night tint so
+      // they darken with everything else.
+      this.fx.drawWorld(ctx);
+      this.atmosphere.drawClouds(ctx, this.camera, W / zoom, H / zoom, this.sunHeight);
+      this.atmosphere.drawRain(ctx, this.camera);
     }
 
     ctx.restore();
@@ -4369,9 +4496,36 @@ export class Renderer {
     // Renderer.flicker(now) always comes out the same instead of animating.
     for (const s of fires) this.drawCampfireLight(s, now);
     for (const p of torchBearers) this.drawTorchLight(p, now);
+    if (!this.simplifyOverview && isHigh()) this.drawLightBloom(fires, torchBearers, now);
     // Fireflies belong in this same post-darkness pass too — they're their
     // own little light sources, so the night (and the fog) shouldn't dim them.
     this.drawFireflies(W / zoom, H / zoom);
+    // Embers and pollen are lights too, for the same reason.
+    if (!this.simplifyOverview) this.fx.drawLit(ctx, this.nightness, Atmosphere.golden(this.sunHeight));
+    ctx.restore();
+
+    if (!this.simplifyOverview) {
+      // Screen-space finishing: damage numbers, then the lens vignette last
+      // so it frames everything (numbers included).
+      this.fx.drawNumbers(ctx);
+      this.atmosphere.drawVignette(ctx, W, H, this.nightness, this.fx.hurt);
+    }
+  }
+
+  /** Draws an entity with a white hit-flash applied, if it was just struck. */
+  private withFlash(id: string, draw: () => void): void {
+    const f = this.simplifyOverview ? 0 : this.fx.flashOf(id);
+    if (f <= 0) {
+      draw();
+      return;
+    }
+    const { ctx } = this;
+    ctx.save();
+    // Contrast down pulls every color toward mid-grey, brightness up then
+    // pushes that toward white — a near-white silhouette that still keeps
+    // a hint of the sprite's detail.
+    ctx.filter = `contrast(${(1 - 0.7 * f).toFixed(2)}) brightness(${(1 + 1.6 * f).toFixed(2)})`;
+    draw();
     ctx.restore();
   }
 
@@ -4689,13 +4843,24 @@ export class Renderer {
 
     const sandPaths: Record<Shade, Path2D> = { light: new Path2D(), base: new Path2D(), dark: new Path2D() };
     const waterPaths: Record<Shade, Path2D> = { light: new Path2D(), base: new Path2D(), dark: new Path2D() };
+    // Shoreline foam: a water cell is on the waterline if the cell above it
+    // wasn't water (the coast), or it touches an island's footprint.
+    const foam: Cell[] = [];
+    const wetAbove: boolean[] = [];
+    const nearIsland = (wx: number, wy: number): boolean =>
+      this.islands.some((island) => {
+        const shapes = this.islandShapes.get(island.id);
+        return !!shapes && Math.hypot(wx - island.x, wy - island.y) < shapes.holeReach + BLOCK * 2;
+      });
 
     for (let wy = topWorldY; wy < bottomWorldY; wy += BLOCK) {
       const gy = Math.round(wy / BLOCK);
       const py = wy - camera.y;
 
-      for (let wx = leftWorldX; wx < rightWorldX; wx += BLOCK) {
+      for (let wx = leftWorldX, col = 0; wx < rightWorldX; wx += BLOCK, col++) {
         const gx = Math.round(wx / BLOCK);
+        const wasWet = wetAbove[col] ?? false;
+        wetAbove[col] = false;
         const coast = seaCoastAt(wx);
         const wobbledY = wy + seaEdgeWobble(gx, gy);
         const sandStart = seaSandStartAt(wx);
@@ -4708,6 +4873,21 @@ export class Renderer {
           // land/shore fill (drawn afterward) shows through instead of open
           // water covering it. See setIslands' `hole`.
           if (this.isInIslandHole(gx, gy, wx, wy)) continue;
+          wetAbove[col] = true;
+          if (!this.simplifyOverview) {
+            const onShore =
+              (!wasWet && wy > topWorldY) ||
+              (nearIsland(wx, wy) &&
+                (this.isInIslandHole(gx + 1, gy, wx + BLOCK, wy) ||
+                  this.isInIslandHole(gx - 1, gy, wx - BLOCK, wy) ||
+                  this.isInIslandHole(gx, gy + 1, wx, wy + BLOCK) ||
+                  this.isInIslandHole(gx, gy - 1, wx, wy - BLOCK)));
+            // In world blocks, so the foam's travelling pulse is anchored to
+            // the shore rather than the screen. drawFoam centers cells on
+            // gx*BLOCK while these rects are left-aligned — the half-block
+            // offset passed below lines the two back up.
+            if (onShore) foam.push({ gx: wx / BLOCK, gy: wy / BLOCK, shade: 'base' });
+          }
 
           // Water, shading from shallow (light) near the coastline to deep
           // (dark) further out — same three-band idea lakeWaterCells uses.
@@ -4742,6 +4922,7 @@ export class Renderer {
       ctx.fillStyle = WATER_PALETTE[shade];
       ctx.fill(waterPaths[shade]);
     }
+    this.drawFoam(foam, BLOCK / 2 - camera.x, BLOCK / 2 - camera.y, performance.now());
   }
 
   /**
@@ -4969,8 +5150,101 @@ export class Renderer {
       drawShoreShape(ctx, shapes.shore, oasis ? MUD_PALETTE : SAND_PALETTE, oasis ? P.mudDark : P.pebble, BLOCK);
       if (oasis) this.drawOasisPlants(lake);
       drawBlockShape(ctx, shapes.water, WATER_PALETTE, BLOCK);
+      if (!this.simplifyOverview) this.drawFoam(shapes.edge, 0, 0, performance.now());
       ctx.restore();
     }
+  }
+
+  /**
+   * Shoreline foam: a line of white cells along the water's edge, pulsing
+   * in a slow wave that travels along the shore. Cells are local block
+   * coordinates; (ox, oy) offsets them. Bucketed into a few alpha levels so
+   * it stays a handful of fills, not one per cell.
+   */
+  private drawFoam(cells: Cell[], ox: number, oy: number, now: number): void {
+    if (cells.length === 0) return;
+    const { ctx } = this;
+    const t = now / 1000;
+    const buckets = [new Path2D(), new Path2D(), new Path2D()];
+    for (const c of cells) {
+      const v = 0.5 + 0.5 * Math.sin(t * 1.7 + c.gx * 0.33 + c.gy * 0.21);
+      const b = v < 0.33 ? 0 : v < 0.7 ? 1 : 2;
+      buckets[b].rect(ox + c.gx * BLOCK - BLOCK / 2, oy + c.gy * BLOCK - BLOCK / 2, BLOCK, BLOCK);
+    }
+    const alphas = [0.12, 0.3, 0.5];
+    for (let i = 0; i < 3; i++) {
+      ctx.fillStyle = `rgba(240,250,255,${alphas[i]})`;
+      ctx.fill(buckets[i]);
+    }
+  }
+
+  /**
+   * Sun glints dancing on open water — sparse cells that flare and fade on
+   * their own rhythms. Sea and lakes both; drawn before the night tint, so
+   * by night they dim to faint moonlit sparkles on their own.
+   */
+  private drawWaterShine(viewW: number, viewH: number, now: number): void {
+    const { ctx, camera } = this;
+    const t = now / 1000;
+    const golden = Atmosphere.golden(this.sunHeight);
+    // Warmer at golden hour, cooler otherwise.
+    const color = golden > 0.3 ? 'rgba(255,225,170,1)' : 'rgba(255,255,240,1)';
+    const glint = new Path2D();
+    const flare = new Path2D();
+
+    const add = (wx: number, wy: number, seedA: number, seedB: number): void => {
+      const phase = blockRandom(seedA, seedB, 912) * Math.PI * 2;
+      const speed = 1.2 + blockRandom(seedA, seedB, 913) * 1.8;
+      const v = Math.sin(t * speed + phase);
+      if (v < 0.82) return;
+      const sx = Math.round(wx - camera.x);
+      const sy = Math.round(wy - camera.y);
+      glint.rect(sx, sy, BLOCK * 0.6, BLOCK * 0.6);
+      if (v > 0.95) {
+        // Peak of the twinkle: a little cross.
+        flare.rect(sx - BLOCK * 0.6, sy, BLOCK * 1.8, BLOCK * 0.6);
+        flare.rect(sx, sy - BLOCK * 0.6, BLOCK * 0.6, BLOCK * 1.8);
+      }
+    };
+
+    // Sea: a coarse grid over the visible water.
+    const G = BLOCK * 3;
+    const bottom = camera.y + viewH;
+    if (bottom > SEA_BAND - SEA_EDGE_AMPLITUDE) {
+      for (let gx = Math.floor(camera.x / G); gx * G < camera.x + viewW; gx++) {
+        const wx = gx * G;
+        const coast = seaCoastAt(wx) + BLOCK * 2;
+        for (let gy = Math.max(Math.floor(camera.y / G), Math.floor(coast / G) + 1); gy * G < bottom; gy++) {
+          if (blockRandom(gx, gy, 911) > 0.08) continue;
+          const wy = gy * G;
+          if (this.isInIslandHole(Math.round(wx / BLOCK), Math.round(wy / BLOCK), wx, wy)) continue;
+          add(wx, wy, gx, gy);
+        }
+      }
+    }
+
+    // Lakes: sparse picks from each visible lake's own water cells.
+    for (const lake of this.lakes) {
+      const reach = lake.radius * OASIS_VERTICAL_STRETCH;
+      if (lake.x + reach < camera.x || lake.x - reach > camera.x + viewW) continue;
+      if (lake.y + reach < camera.y || lake.y - reach > camera.y + viewH) continue;
+      const shapes = this.lakeShapes.get(lake.id);
+      if (!shapes) continue;
+      const stretch = isInDesert(lake.x, lake.y) ? OASIS_VERTICAL_STRETCH : 1;
+      for (const c of shapes.water) {
+        if (blockRandom(c.gx + lake.seed, c.gy, 914) > 0.025) continue;
+        add(lake.x + c.gx * BLOCK, lake.y + c.gy * BLOCK * stretch, c.gx + lake.seed, c.gy);
+      }
+    }
+
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.fillStyle = color;
+    ctx.globalAlpha = 0.55;
+    ctx.fill(glint);
+    ctx.globalAlpha = 0.35;
+    ctx.fill(flare);
+    ctx.restore();
   }
 
   /**
@@ -5421,7 +5695,8 @@ export class Renderer {
     // own (see SHADOW_PROFILE.wall).
     const shadow = s.type === 'wall' ? SHADOW_PROFILE.wall : SHADOW_PROFILE.campfire;
     this.drawShadow(ctx, shadow.width, shadow.length);
-    this.drawStructureSprite(s.type, now);
+    if (s.type === 'treasure_chest') drawTreasureChestSprite(this.ctx, !!s.opened);
+    else this.drawStructureSprite(s.type, now);
     ctx.restore();
   }
 
@@ -5429,6 +5704,8 @@ export class Renderer {
   private drawStructureSprite(type: StructureState['type'], now: number): void {
     if (type === CRAFTING_BENCH_ID) drawCraftingBenchSprite(this.ctx);
     else if (type === 'wall') drawWallSprite(this.ctx);
+    else if (type === CHEST_ID) drawChestSprite(this.ctx);
+    else if (type === 'treasure_chest') drawTreasureChestSprite(this.ctx, false);
     else drawCampfireSprite(this.ctx, now);
   }
 
@@ -5545,6 +5822,61 @@ export class Renderer {
    * — a torch doesn't go out on its own.
    */
   private static readonly TORCH_LIGHT_BRIGHTNESS = 0.55;
+
+  private readonly bloomSprites = new Map<number, HTMLCanvasElement>();
+
+  /**
+   * A soft radial glow baked at GLOW_BLOCK resolution and scaled up
+   * nearest-neighbor — so it's a smooth falloff that still steps in the
+   * same chunky blocks as the rest of the lighting.
+   */
+  private bloomSprite(radius: number): HTMLCanvasElement {
+    const cached = this.bloomSprites.get(radius);
+    if (cached) return cached;
+    const n = Math.max(2, Math.ceil((radius * 2) / GLOW_BLOCK));
+    const c = document.createElement('canvas');
+    c.width = n;
+    c.height = n;
+    const g = c.getContext('2d')!;
+    const grad = g.createRadialGradient(n / 2, n / 2, 0, n / 2, n / 2, n / 2);
+    grad.addColorStop(0, 'rgba(255,190,110,1)');
+    grad.addColorStop(0.3, 'rgba(255,140,60,0.45)');
+    grad.addColorStop(1, 'rgba(255,110,40,0)');
+    g.fillStyle = grad;
+    g.fillRect(0, 0, n, n);
+    this.bloomSprites.set(radius, c);
+    return c;
+  }
+
+  /**
+   * Additive bloom around every fire and torch, on top of the overlay-gain
+   * light — the overlay brightens what's there, this is the glow of the
+   * flame itself spilling into the air. Stronger at night, faint by day.
+   */
+  private drawLightBloom(fires: StructureState[], torchBearers: PlayerState[], now: number): void {
+    const { ctx, camera } = this;
+    const night = 0.2 + 0.5 * this.nightness;
+    const flicker = Renderer.flicker(now);
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.imageSmoothingEnabled = false;
+    const draw = (x: number, y: number, radius: number, strength: number): void => {
+      if (strength <= 0.01) return;
+      const sx = Math.round(x / GLOW_BLOCK) * GLOW_BLOCK - camera.x;
+      const sy = Math.round(y / GLOW_BLOCK) * GLOW_BLOCK - camera.y;
+      ctx.globalAlpha = clamp01(strength);
+      ctx.drawImage(this.bloomSprite(radius), sx - radius, sy - radius, radius * 2, radius * 2);
+    };
+    for (const s of fires) {
+      const burn = flicker * Renderer.burnFade(s);
+      draw(s.x, s.y, CAMPFIRE_LIGHT_RADIUS * 0.8, 0.45 * night * burn);
+      draw(s.x, s.y, 40, 0.6 * night * burn); // hot core
+    }
+    for (const p of torchBearers) {
+      draw(p.x, p.y, TORCH_LIGHT_RADIUS * 0.75, 0.35 * night * flicker);
+    }
+    ctx.restore();
+  }
 
   private drawTorchLight(p: PlayerState, now: number): void {
     const { ctx } = this;
@@ -6099,11 +6431,11 @@ export class Renderer {
     return anim;
   }
 
-  /** 0 at rest; eases out to 1 and back to 0 over STRIKE_WINDOW right after a harvest swing. */
+  /** Swing angle of the tool arm right now (see swingAngle) — 0 at rest, animated over STRIKE_WINDOW after a harvest swing. */
   private harvestStrike(p: PlayerState): number {
     const elapsed = HARVEST_COOLDOWN - p.harvestCooldown;
     if (elapsed < 0 || elapsed >= STRIKE_WINDOW) return 0;
-    return Math.sin((elapsed / STRIKE_WINDOW) * Math.PI);
+    return swingAngle(elapsed / STRIKE_WINDOW);
   }
 
   /** Drops walk-cycle state for players who are no longer in the snapshot. */
@@ -6164,7 +6496,7 @@ export class Renderer {
 
     // Arms + tool, in the facing-rotated frame: +x = forward, +y = the
     // player's right side. Arms swing opposite each other while walking,
-    // and the tool hand lunges forward while striking.
+    // and the tool arm swings round in an arc while striking.
     ctx.save();
     ctx.rotate(p.angle);
 
@@ -6188,7 +6520,15 @@ export class Renderer {
       drawHeldTorch(ctx, offArmX, -armSide, BLOCK, now);
     }
 
-    const toolArmX = armRest - walkSwing + strike * R * 0.85;
+    // The swing pivots the whole tool arm (and the tool in its hand) round
+    // the body: rotating by -strike carries the right-side hand forward
+    // across the front, the tool sweeping through the arc with it. The
+    // walk-cycle sway fades out during a swing so the two don't fight.
+    ctx.save();
+    ctx.rotate(-strike);
+    const swinging = strike !== 0;
+    const toolArmX = armRest - (swinging ? 0 : walkSwing) + Math.max(0, strike) * R * 0.2;
+    ctx.fillStyle = P.playerSkin;
     ctx.fillRect(toolArmX - armSize / 2, armSide - armSize / 2, armSize, armSize);
 
     const toolX = toolArmX + armSize * 0.25;
@@ -6213,6 +6553,7 @@ export class Renderer {
       ctx.fillStyle = heldColor ?? (isMe ? P.playerTool : '#f0a0a0');
       ctx.fillRect(toolX, toolY, BLOCK * 2.2, BLOCK);
     }
+    ctx.restore(); // swing rotation
 
     ctx.restore();
 
@@ -6277,26 +6618,33 @@ export class Renderer {
     const { ctx } = this;
     const height = this.sunHeight;
 
-    const darkness = smoothstep(clamp01((0.15 - height) / 0.3)) * 0.7;
-    const warmth = smoothstep(clamp01(1 - Math.abs(height) / 0.35)) * 0.20;
+    // Night is *multiplied* toward a deep blue rather than washed with
+    // semi-transparent black: a black wash greys colors out, a multiply
+    // keeps them saturated and just pulls them down into blue, which reads
+    // as moonlight instead of murk. The overview inset stays on the plain
+    // path — it's pinned to noon anyway (see renderCameraOverview).
+    const darkness = Atmosphere.nightStrength(height);
+    const nightColor = Atmosphere.nightColor(this.atmosphere.rain);
 
     if (darkness > 0) {
+      ctx.save();
+      ctx.globalCompositeOperation = 'multiply';
       if (fires.length > 0 || torchBearers.length > 0) {
         // Build the darkness on its own layer and erase the lit areas from
         // it, so those pixels keep their original brightness and contrast.
         // Painting light on top of the darkness instead would only ever
         // wash out an image whose range has already been crushed.
-        ctx.drawImage(this.buildNightLayer(W, H, darkness, fires, torchBearers, now), 0, 0);
+        ctx.drawImage(this.buildNightLayer(W, H, darkness, nightColor, fires, torchBearers, now), 0, 0);
       } else {
-        ctx.fillStyle = `rgba(8,10,30,${darkness.toFixed(3)})`;
+        ctx.globalAlpha = darkness;
+        ctx.fillStyle = nightColor;
         ctx.fillRect(0, 0, W, H);
       }
+      ctx.restore();
     }
 
-    if (warmth > 0) {
-      ctx.fillStyle = `rgba(255,140,60,${warmth.toFixed(3)})`;
-      ctx.fillRect(0, 0, W, H);
-    }
+    // Golden hour, dusk/dawn hue, and rain — see Atmosphere.applyGrade.
+    if (!this.simplifyOverview) this.atmosphere.applyGrade(ctx, W, H, height, this.sunSetting);
   }
 
   /** Full-screen night tint with a hole punched out around every campfire and torch-bearing player. */
@@ -6304,6 +6652,7 @@ export class Renderer {
     W: number,
     H: number,
     darkness: number,
+    nightColor: string,
     fires: StructureState[],
     torchBearers: PlayerState[],
     now: number,
@@ -6318,8 +6667,10 @@ export class Renderer {
     const lctx = layer.getContext('2d')!;
     lctx.setTransform(1, 0, 0, 1, 0, 0);
     lctx.clearRect(0, 0, W, H);
-    lctx.fillStyle = `rgba(8,10,30,${darkness.toFixed(3)})`;
+    lctx.globalAlpha = darkness;
+    lctx.fillStyle = nightColor;
     lctx.fillRect(0, 0, W, H);
+    lctx.globalAlpha = 1;
 
     const flicker = Renderer.flicker(now);
 

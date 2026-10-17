@@ -1,4 +1,4 @@
-import { TICK_RATE, RECIPES_BY_ID, FISHING_ROD_ID, WOODEN_HOE_ID, WATERING_CAN_ID, BERRY_SEED_ID, WHEAT_SEED_ID, PreviewState, ResourceState } from '@io-game/shared';
+import { TICK_RATE, seaCoastAt, isInDesert, forestFactor, DiedPayload, RECIPES_BY_ID, FISHING_ROD_ID, WOODEN_HOE_ID, WATERING_CAN_ID, BERRY_SEED_ID, WHEAT_SEED_ID, PreviewState, ResourceState } from '@io-game/shared';
 import { Network } from './Network';
 import { Input } from './Input';
 import { Camera } from './Camera';
@@ -6,6 +6,9 @@ import { Renderer } from './Renderer';
 import { StateManager } from './StateManager';
 import { HUD } from './ui/HUD';
 import { ChatBox } from './ui/ChatBox';
+import { DeathCinematic, DEATH_CINEMATIC_MS } from './fx/DeathCinematic';
+import { autoTune, toggleQuality } from './fx/quality';
+import { sound } from './fx/Sound';
 
 const INPUT_INTERVAL_MS = 1000 / TICK_RATE;
 
@@ -38,6 +41,15 @@ class ClientGame {
   // something instead of flashing empty on the ticks it's omitted.
   private cachedCameraResources: ResourceState[] = [];
 
+  // Cinematic presentation state (see fx/).
+  private readonly death = new DeathCinematic();
+  private lastFrameTime = 0;
+  // Shift held — a shift-click in the chest panel moves one item, not a stack.
+  private shiftHeld = false;
+  // Set when C is pressed on an island treasure chest, so the loot's harvest
+  // event that follows plays the treasure fanfare instead of a plain pickup.
+  private expectTreasureUntil = 0;
+
   constructor() {
     this.canvas = document.getElementById('game-canvas') as HTMLCanvasElement;
     this.network = new Network();
@@ -53,6 +65,10 @@ class ClientGame {
     this.setupMenu();
     this.setupHotbar();
     this.setupChat();
+
+    const trackShift = (e: KeyboardEvent): void => { this.shiftHeld = e.shiftKey; };
+    window.addEventListener('keydown', trackShift);
+    window.addEventListener('keyup', trackShift);
 
     // Starts immediately rather than waiting for 'joined' — loop() itself
     // branches on `running` to draw the menu-screen backdrop until then.
@@ -86,6 +102,9 @@ class ClientGame {
     this.network.onState((snapshot) => {
       if (snapshot.cameraResources) this.cachedCameraResources = snapshot.cameraResources;
       this.state.push(snapshot);
+      // Raw (un-interpolated) snapshots are what hit/kill detection diffs —
+      // see Effects.ingest.
+      this.renderer.fx.ingest(snapshot);
     });
 
     // The menu-screen backdrop (see loop()'s !running branch). The server
@@ -104,6 +123,8 @@ class ClientGame {
 
     this.network.onHarvest(({ drops, inventory }) => {
       this.hud.updateInventory(inventory);
+      this.flyPickups(drops);
+      if (drops.length > 0) sound.play(performance.now() < this.expectTreasureUntil ? 'treasure' : 'pickup');
       if (drops.length > 0) {
         const text = drops.map((d) => `+${d.count} ${d.type}`).join('  ');
         this.hud.notify(text, '#f1c40f');
@@ -112,6 +133,8 @@ class ClientGame {
 
     this.network.onInventory(({ inventory, message }) => {
       this.hud.updateInventory(inventory);
+      if (message?.startsWith('+1 ')) sound.play('craft');
+      else if (message?.endsWith(' placed')) sound.play('place');
       if (message) this.hud.notify(message, '#f1c40f');
     });
 
@@ -119,10 +142,23 @@ class ClientGame {
       this.hud.pushChat(name, text, id === this.network.myId);
     });
 
-    this.network.onDied(() => {
-      this.hud.notify('☠ You died! Respawning…', '#e74c3c', 2500);
+    this.network.onChest((payload) => this.hud.openChest(payload));
+    this.network.onChestClosed(() => this.hud.closeChest());
+
+    this.network.onDied((info) => {
+      sound.play('death');
+      this.hud.closeChest();
+      // Freeze the frame as it was the moment before death and play it out
+      // (see DeathCinematic) — the "You died" card comes in on top as it ends.
+      const me = this.state.interpolated()?.players.find((p) => p.isMe);
+      const focus = me ? this.camera.toScreen(me.x, me.y) : null;
+      this.death.capture(
+        this.canvas,
+        focus ? focus.sx * this.camera.zoom : this.canvas.width / 2,
+        focus ? focus.sy * this.camera.zoom : this.canvas.height / 2,
+      );
       this.hud.updateInventory({});
-      this.flashDeathScreen();
+      setTimeout(() => this.showDeathScreen(info), DEATH_CINEMATIC_MS * 0.6);
     });
 
     this.network.onSystem((text) => {
@@ -211,7 +247,38 @@ class ClientGame {
         this.network.chat('/camera');
         return;
       }
+      // C opens the storage chest in reach (or closes the open one), or
+      // loots an island treasure chest — see HUD.getNearChest.
+      if (e.code === 'KeyC') {
+        if (this.hud.getOpenChestId()) {
+          this.closeChest();
+          return;
+        }
+        const chest = this.hud.getNearChest();
+        if (!chest || this.state.interpolated()?.spectating) return;
+        if (chest.type === 'treasure_chest') this.expectTreasureUntil = performance.now() + 1500;
+        this.network.openChest(chest.id);
+        sound.play('click');
+        return;
+      }
+      // N mutes/unmutes all sound (see fx/Sound).
+      if (e.code === 'KeyN') {
+        const muted = sound.toggleMute();
+        this.hud.notify(muted ? 'Sound off (N)' : 'Sound on (N)', '#56c9ff');
+        return;
+      }
+      // G flips graphics quality (see fx/quality) — the heavy cinematic
+      // effects off for slower machines, or back on.
+      if (e.code === 'KeyG') {
+        const q = toggleQuality();
+        this.hud.notify(q === 'high' ? 'Graphics: high' : 'Graphics: low (faster)', '#56c9ff');
+        return;
+      }
       if (e.code === 'Escape') {
+        if (this.hud.getOpenChestId()) {
+          this.closeChest();
+          return;
+        }
         if (this.state.interpolated()?.cameraMode) {
           this.network.chat('/camera');
           return;
@@ -258,6 +325,26 @@ class ClientGame {
       // checked first since it's a full-screen modal with nothing clickable
       // behind it, same reasoning as the recipe book/trading post below.
       if (this.hud.handleBestiaryClick(x, y)) return true;
+
+      // While a storage chest is open: click its items to take them, click
+      // hotbar items to store them (shift-click moves just one).
+      const chestId = this.hud.getOpenChestId();
+      if (chestId) {
+        const taken = this.hud.hitTestChestItem(x, y);
+        if (taken) {
+          this.network.moveChestItem(chestId, taken, this.shiftHeld ? 1 : Number.MAX_SAFE_INTEGER, false);
+          sound.play('click');
+          return true;
+        }
+        if (this.hud.isOverChest(x, y)) return true;
+        const storeSlot = this.hud.hitTestHotbar(x, y);
+        const stored = storeSlot !== null ? this.hud.hotbarItemAt(storeSlot) : null;
+        if (stored) {
+          this.network.moveChestItem(chestId, stored, this.shiftHeld ? 1 : this.hud.getItemCount(stored), true);
+          sound.play('click');
+          return true;
+        }
+      }
 
       const slot = this.hud.hitTestHotbar(x, y);
       if (slot !== null) {
@@ -355,21 +442,26 @@ class ClientGame {
   // ── Game loop ──────────────────────────────────────────────────────────────
 
   private loop(timestamp: number): void {
+    const dt = this.lastFrameTime ? Math.min((timestamp - this.lastFrameTime) / 1000, 0.1) : 0;
+    this.lastFrameTime = timestamp;
+    if (autoTune(dt)) this.hud.notify('Graphics lowered to keep things smooth (G to change)', '#56c9ff', 4000);
     if (this.running) {
-      this.loopGame(timestamp);
+      this.loopGame(timestamp, dt);
     } else {
-      this.loopMenuBackdrop();
+      this.loopMenuBackdrop(dt);
     }
     requestAnimationFrame((t) => this.loop(t));
   }
 
   /** The ordinary in-game frame: input, camera-follow, world + HUD render. */
-  private loopGame(timestamp: number): void {
+  private loopGame(timestamp: number, dt: number): void {
     const snapshot = this.state.interpolated();
     const me = snapshot?.players.find((p) => p.isMe);
-    if (me) {
-      this.camera.follow(me.x, me.y, this.canvas.width, this.canvas.height);
+    if (me && snapshot) {
+      this.camera.track({ x: me.x, y: me.y }, dt, this.canvas.width, this.canvas.height);
+      this.updateSound(dt, me.x, me.y, snapshot.structures);
     }
+
 
     // Send input at server tick rate (not every frame)
     if (timestamp - this.lastInputSend >= INPUT_INTERVAL_MS) {
@@ -385,6 +477,14 @@ class ClientGame {
 
     if (this.hotbarDragActive) {
       this.hud.updateHotbarDrag(this.input.mouseX, this.input.mouseY);
+    }
+
+    if (this.death.active) {
+      // The freeze-frame owns the screen (input above still goes out, so
+      // the respawned player isn't stuck) — nothing else draws over it.
+      this.death.draw(this.canvas.getContext('2d')!, this.canvas.width, this.canvas.height);
+      this.hud.render(null);
+      return;
     }
 
     if (!snapshot) return;
@@ -463,7 +563,7 @@ class ClientGame {
    * login form. drawPlayer's hideChrome strips the per-player UI (name tag,
    * HP bar, chat bubble) too, so it's just a character wandering the world.
    */
-  private loopMenuBackdrop(): void {
+  private loopMenuBackdrop(dt: number): void {
     const snapshot = this.previewState.interpolated();
     if (!snapshot) return;
 
@@ -475,9 +575,45 @@ class ClientGame {
     // where he's currently rendered.
     const target = snapshot.players.find((p) => p.id === snapshot.focus);
     if (target) {
-      this.camera.follow(target.x, target.y, this.canvas.width, this.canvas.height);
+      // Same eased, leading camera as in-game — the menu backdrop is the
+      // first thing anyone sees, so it should glide, not lock on.
+      this.camera.track({ x: target.x, y: target.y }, dt, this.canvas.width, this.canvas.height);
     }
     this.renderer.render(snapshot, this.mapSize, true);
+  }
+
+  // ── Cinematic helpers ──────────────────────────────────────────────────────
+
+  private closeChest(): void {
+    this.hud.closeChest();
+    this.network.closeChest();
+  }
+
+  /** Steers the ambient soundscape from what's around the listener. */
+  private updateSound(dt: number, x: number, y: number, structures: { type: string; x: number; y: number }[]): void {
+    let fireDistance = Infinity;
+    for (const s of structures) {
+      if (s.type === 'campfire') fireDistance = Math.min(fireDistance, Math.hypot(s.x - x, s.y - y));
+    }
+    sound.updateAmbience(dt, {
+      rain: this.renderer.atmosphere.rain,
+      nightness: this.renderer.nightLevel,
+      seaDistance: Math.max(0, seaCoastAt(x) - y),
+      fireDistance,
+      inForest: !isInDesert(x, y) && forestFactor(x, y) > 0.5,
+      inDesert: isInDesert(x, y),
+    });
+  }
+
+  /** Harvest drops fly from where the hit landed into the hotbar. */
+  private flyPickups(drops: { type: string; count: number }[]): void {
+    if (drops.length === 0) return;
+    const hit = this.renderer.fx.lastHitWorld;
+    const me = this.state.interpolated()?.players.find((p) => p.isMe);
+    const from = hit && performance.now() - hit.at < 1200 ? hit : me;
+    if (!from) return;
+    const { sx, sy } = this.camera.toScreen(from.x, from.y);
+    this.hud.spawnPickups(drops, sx * this.camera.zoom, sy * this.camera.zoom);
   }
 
   // ── UI helpers ─────────────────────────────────────────────────────────────
@@ -489,10 +625,32 @@ class ClientGame {
     setTimeout(() => { menu.style.display = 'none'; }, 500);
   }
 
-  private flashDeathScreen(): void {
+  /**
+   * The death screen: what killed you, your score, and how long you lasted.
+   * The server has already respawned you behind it — any click or key (or
+   * eight seconds) dismisses it and you're straight back in.
+   */
+  private showDeathScreen(info: DiedPayload): void {
     const overlay = document.getElementById('death-overlay')!;
+    document.getElementById('death-cause')!.textContent = `Killed by ${info.cause}`;
+    document.getElementById('death-score')!.textContent = info.score.toLocaleString();
+    const m = Math.floor(info.survived / 60);
+    const s = info.survived % 60;
+    document.getElementById('death-time')!.textContent = m > 0 ? `${m}m ${s}s` : `${s}s`;
     overlay.style.display = 'flex';
-    setTimeout(() => { overlay.style.display = 'none'; }, 2000);
+
+    const hide = (): void => {
+      overlay.style.display = 'none';
+      clearTimeout(timer);
+      window.removeEventListener('keydown', hide);
+      overlay.removeEventListener('pointerdown', hide);
+    };
+    const timer = setTimeout(hide, 8000);
+    // Armed a beat late, so a key held at the moment of death doesn't skip it.
+    setTimeout(() => {
+      window.addEventListener('keydown', hide);
+      overlay.addEventListener('pointerdown', hide);
+    }, 600);
   }
 }
 

@@ -107,6 +107,11 @@ export class ServerPlayer {
   // CHAT_COOLDOWN) — one player can't flood everyone else's log.
   chatCooldown = 0;
 
+  // What last hurt this player (for the death screen — see Game.checkDeath)
+  // and when they last spawned, so it can say how long they lasted.
+  lastDamageCause = 'unknown causes';
+  spawnedAt = Date.now();
+
   constructor(id: string, name: string, maxHealth: number = MAX_HEALTH) {
     this.id = id;
     this.name = name;
@@ -115,6 +120,13 @@ export class ServerPlayer {
     // Spawn in the safe middle band of the map
     this.x = MAP_SIZE * (0.3 + Math.random() * 0.4);
     this.y = MAP_SIZE * (0.3 + Math.random() * 0.4);
+  }
+
+  /** Takes `amount` health, remembering `cause` for the death screen. */
+  hurt(amount: number, cause: string): void {
+    if (amount <= 0) return;
+    this.health = Math.max(0, this.health - amount);
+    this.lastDamageCause = cause;
   }
 
   get canHarvest(): boolean {
@@ -126,6 +138,8 @@ export class ServerPlayer {
   }
 
   respawn(): void {
+    this.spawnedAt = Date.now();
+    this.lastDamageCause = 'unknown causes';
     this.health = this.maxHealth;
     this.hunger = MAX_HUNGER;
     this.temperature = 100;
@@ -151,6 +165,7 @@ export class ServerPlayer {
     nearFire = false,
     inWater = false,
     thirstMultiplier = 1,
+    maxTemperature = 100,
   ): void {
     // ── Movement ────────────────────────────────────────────────────────────
     let dx = 0;
@@ -198,6 +213,12 @@ export class ServerPlayer {
     } else {
       this.temperature = Math.min(100, this.temperature + TEMP_REGEN_RATE * dt);
     }
+    // Rain caps how warm you can get (see RAIN_MAX_TEMPERATURE) — Game only
+    // lowers maxTemperature when it's raining here and there's no fire to
+    // shelter by. Above the cap you cool off at the night rate, not instantly.
+    if (!nearFire && this.temperature > maxTemperature) {
+      this.temperature = Math.max(maxTemperature, this.temperature - TEMP_DECAY_RATE * dt);
+    }
 
     // Health regen when comfortable — but only for the living. Damage lands
     // after the death check each tick (mobs and PvP both resolve later in the
@@ -215,10 +236,10 @@ export class ServerPlayer {
     }
 
     // Damage from starvation / cold / dehydration
-    if (this.hunger <= 0) this.health = Math.max(0, this.health - STARVATION_DAMAGE * dt);
-    if (this.temperature <= 0) this.health = Math.max(0, this.health - COLD_DAMAGE * dt);
-    if (this.thirst <= 0) this.health = Math.max(0, this.health - DEHYDRATION_DAMAGE * dt);
-    if (this.air <= 0) this.health = Math.max(0, this.health - DROWNING_DAMAGE * dt);
+    if (this.hunger <= 0) this.hurt(STARVATION_DAMAGE * dt, 'starvation');
+    if (this.temperature <= 0) this.hurt(COLD_DAMAGE * dt, 'the cold');
+    if (this.thirst <= 0) this.hurt(DEHYDRATION_DAMAGE * dt, 'thirst');
+    if (this.air <= 0) this.hurt(DROWNING_DAMAGE * dt, 'drowning');
 
     // ── Cooldowns ────────────────────────────────────────────────────────────
     if (this.harvestCooldown > 0) {

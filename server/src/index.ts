@@ -3,7 +3,7 @@ import { createServer } from 'http';
 import { Server } from 'socket.io';
 import path from 'path';
 import { Game, LOBBY_ROOM } from './Game';
-import { PlayerInput, CraftRequest, PlaceRequest, CastRequest, TillRequest, PlantRequest, TradeRequest, EatRequest, EquipRequest, ChatRequest } from '@io-game/shared';
+import { PlayerInput, CraftRequest, PlaceRequest, CastRequest, TillRequest, PlantRequest, TradeRequest, EatRequest, EquipRequest, ChatRequest, ChestOpenRequest, ChestMoveRequest } from '@io-game/shared';
 
 const app = express();
 const httpServer = createServer(app);
@@ -87,6 +87,18 @@ io.on('connection', (socket) => {
 
   socket.on('equip', (req: EquipRequest) => {
     game.handleEquip(socket.id, req);
+  });
+
+  socket.on('chestOpen', (req: ChestOpenRequest) => {
+    game.handleChestOpen(socket.id, req);
+  });
+
+  socket.on('chestMove', (req: ChestMoveRequest) => {
+    game.handleChestMove(socket.id, req);
+  });
+
+  socket.on('chestClose', () => {
+    game.handleChestClose(socket.id);
   });
 
   socket.on('chat', (req: ChatRequest) => {

@@ -54,6 +54,18 @@ import {
   lakeHarmonics,
   lobeRadius,
   LakeHarmonic,
+  DIAMOND_AXE_ID,
+  DIAMOND_PICKAXE_ID,
+  DIAMOND_SWORD_ID,
+  DIAMOND_ARMOR_ID,
+  CHEST_ID,
+  CHEST_USE_RADIUS,
+  ChestPayload,
+  StructureState,
+  TICK_RATE,
+  naturalRainAt,
+  RAINING_THRESHOLD,
+  RAIN_MAX_TEMPERATURE,
 } from '@io-game/shared';
 import {
   drawCampfireSprite,
@@ -62,6 +74,8 @@ import {
   BENCH_SPRITE_HALF_BLOCKS,
   drawWallSprite,
   WALL_SPRITE_HALF_BLOCKS,
+  drawChestSprite,
+  CHEST_SPRITE_HALF_BLOCKS,
   drawToolIcon,
   toolIconHalfBlocks,
   drawArmorIcon,
@@ -120,10 +134,10 @@ import {
   drawLeatherTab,
 } from './wood';
 import { ANIMALS } from './animals';
-import { RECIPE_BOOK_CATEGORIES, itemDisplayName, noteFor } from './recipeBook';
+import { RECIPE_BOOK_CATEGORIES, itemDisplayName, noteFor, describeItem } from './recipeBook';
 
 /** Armor items — worn via a toggle (see EquipRequest) rather than held like a tool. */
-const ARMOR_ITEM_IDS = new Set([WOODEN_ARMOR_ID, STONE_ARMOR_ID, GOLD_ARMOR_ID]);
+const ARMOR_ITEM_IDS = new Set([WOODEN_ARMOR_ID, STONE_ARMOR_ID, GOLD_ARMOR_ID, DIAMOND_ARMOR_ID]);
 
 /** The torch — same worn-via-toggle shape as armor, just a separate equip slot (see PlayerState.torch). */
 const TORCH_ITEM_IDS = new Set([TORCH_ID]);
@@ -414,6 +428,19 @@ export class HUD {
   private pointerX = -1;
   private pointerY = -1;
 
+  // Harvested items flying from where they were picked up into their
+  // hotbar slot (see spawnPickups), and each slot's landing "pop".
+  // The storage chest panel, while one is open (see openChest), and the
+  // chest the player is close enough to use with C, if any (see render).
+  private chest: ChestPayload | null = null;
+  private nearChest: StructureState | null = null;
+  // Out in the rain right now (and not by a fire) — the temperature bar
+  // shows the cap it imposes (see RAIN_MAX_TEMPERATURE).
+  private rainCapped = false;
+
+  private pickups: { item: string; sx: number; sy: number; start: number; dur: number; arc: number }[] = [];
+  private readonly slotPop = new Map<string, number>();
+
   constructor() {
     this.canvas = document.createElement('canvas');
     this.canvas.style.cssText =
@@ -632,9 +659,16 @@ export class HUD {
 
     if (state.spectating) this.drawSpectateBanner(me, W);
 
+    this.nearChest = this.findNearChest(state, me);
+    const raining = state.rainOverride ?? naturalRainAt(state.tick / TICK_RATE) > RAINING_THRESHOLD;
+    this.rainCapped = !!me && raining && !isInDesert(me.x, me.y) && !this.nearFire;
+
     this.drawAirBar(me, W, H);
     this.drawStatBars(me, W, H);
     this.drawHotbar(state.spectating ? me?.held ?? null : undefined, me?.armor ?? null, me?.torch ?? null, me?.backpack ?? null);
+    this.drawPickups();
+    this.drawChestPanel(W, H);
+    this.drawInteractPrompt(W, H);
     this.drawCrafting(H);
     this.drawBookTile(W);
     this.drawBestiaryTile(W);
@@ -650,6 +684,8 @@ export class HUD {
     this.drawRecipeBook(W, H);
     this.drawBestiary(W, H);
     this.drawTradePanel(W, H);
+    // Very last, so it sits over everything — including an open book.
+    this.drawTooltip(W, H);
 
     // Prune expired notifications
     const now = Date.now();
@@ -742,12 +778,21 @@ export class HUD {
         this.ctx.fill();
       }
 
+      // Rain caps how warm you can get — mark the ceiling on the Temp bar.
+      if (bar.label === '❄ Temp' && this.rainCapped) {
+        const cx = x + bW * (RAIN_MAX_TEMPERATURE / 100);
+        this.ctx.fillStyle = 'rgba(20,30,50,0.55)';
+        this.ctx.fillRect(cx, y + 2, x + bW - 2 - cx, bH - 4);
+        this.ctx.fillStyle = '#cfe8ff';
+        this.ctx.fillRect(Math.round(cx) - 1, y - 3, 2, bH + 6);
+      }
+
       // Label
       this.ctx.font = 'bold 12px "Courier New"';
       this.ctx.textAlign = 'center';
       this.ctx.textBaseline = 'middle';
       this.ctx.fillStyle = '#fff';
-      this.ctx.fillText(bar.label, x + bW / 2, y + bH / 2);
+      this.ctx.fillText(bar.label + (bar.label === '❄ Temp' && this.rainCapped ? ' 🌧' : ''), x + bW / 2, y + bH / 2);
 
       x += bW + gap;
     }
@@ -760,6 +805,335 @@ export class HUD {
    * Shared by the renderer and the click hit-test so they can never drift
    * apart (same pattern as craftRows).
    */
+  /**
+   * Fly each harvested item from (sx, sy) — screen pixels, where it was
+   * picked up — into its hotbar slot. Several icons per stack, staggered,
+   * so a big haul reads as a big haul. Call after updateInventory so the
+   * slot already exists.
+   */
+  spawnPickups(drops: { type: string; count: number }[], sx: number, sy: number): void {
+    const now = performance.now();
+    let delay = 0;
+    for (const d of drops) {
+      const n = Math.min(4, Math.max(1, d.count));
+      for (let i = 0; i < n; i++) {
+        this.pickups.push({
+          item: d.type,
+          sx: sx + (Math.random() - 0.5) * 24,
+          sy: sy + (Math.random() - 0.5) * 24,
+          start: now + delay,
+          dur: 520 + Math.random() * 120,
+          arc: 70 + Math.random() * 60,
+        });
+        delay += 60;
+      }
+    }
+  }
+
+  private drawPickups(): void {
+    if (this.pickups.length === 0 && this.slotPop.size === 0) return;
+    const now = performance.now();
+    const rects = this.hotbarSlotRects();
+    const { ctx } = this;
+
+    this.pickups = this.pickups.filter((p) => {
+      const u = (now - p.start) / p.dur;
+      if (u < 0) return true;
+      const idx = this.hotbarOrder.indexOf(p.item);
+      const r = rects[idx];
+      const tx = r ? r.x + r.w / 2 : this.canvas.width / 2;
+      const ty = r ? r.y + r.h / 2 - 6 : this.canvas.height - 50;
+      if (u >= 1) {
+        this.slotPop.set(p.item, now);
+        return false;
+      }
+      // Ease-in so it lifts off gently and snaps into the slot, along a
+      // quadratic arc bowed upward.
+      const e = u * u * (3 - 2 * u);
+      const cx = (p.sx + tx) / 2;
+      const cy = Math.min(p.sy, ty) - p.arc;
+      const x = (1 - e) * (1 - e) * p.sx + 2 * (1 - e) * e * cx + e * e * tx;
+      const y = (1 - e) * (1 - e) * p.sy + 2 * (1 - e) * e * cy + e * e * ty;
+      ctx.save();
+      ctx.globalAlpha = Math.min(1, u * 6);
+      this.drawItemIcon(p.item, x, y, 26 + 8 * (1 - e));
+      ctx.restore();
+      return true;
+    });
+
+    for (const [item, t] of this.slotPop) if (now - t > 220) this.slotPop.delete(item);
+  }
+
+  /** 0..1 landing bounce for a slot, for drawHotbar's icon scale. */
+  private popOf(item: string): number {
+    const t = this.slotPop.get(item);
+    if (t === undefined) return 0;
+    const u = (performance.now() - t) / 220;
+    return u >= 1 ? 0 : Math.sin(u * Math.PI);
+  }
+
+  // ── Chests ─────────────────────────────────────────────────────────────────
+
+  /** The closest chest (storage or island treasure) within reach of `me`, or null. */
+  private findNearChest(state: GameState, me: PlayerState | undefined): StructureState | null {
+    if (!me || state.spectating) return null;
+    let best: StructureState | null = null;
+    let bestDist = CHEST_USE_RADIUS;
+    for (const s of state.structures) {
+      if (s.type !== CHEST_ID && s.type !== 'treasure_chest') continue;
+      const d = Math.hypot(s.x - me.x, s.y - me.y);
+      if (d <= bestDist) {
+        best = s;
+        bestDist = d;
+      }
+    }
+    return best;
+  }
+
+  /** The chest C would act on right now, or null — see main.ts's interact key. */
+  getNearChest(): StructureState | null {
+    return this.nearChest;
+  }
+
+  openChest(payload: ChestPayload): void {
+    this.chest = payload;
+  }
+
+  closeChest(): void {
+    this.chest = null;
+  }
+
+  /** The id of the open storage chest, or null. */
+  getOpenChestId(): string | null {
+    return this.chest?.structureId ?? null;
+  }
+
+  private chestLayout(W: number, H: number): { panel: Rect; slots: Rect[] } {
+    const cols = 6;
+    const slot = 48;
+    const gap = 6;
+    const capacity = this.chest?.capacity ?? 12;
+    const rows = Math.ceil(capacity / cols);
+    const pad = 12;
+    const header = 26;
+    const w = cols * slot + (cols - 1) * gap + pad * 2;
+    const h = header + rows * slot + (rows - 1) * gap + pad + 18;
+    // Above the stat bars, which sit above the hotbar.
+    const panel = { x: Math.round((W - w) / 2), y: H - 78 - 16 - 22 - 16 - h, w, h };
+    const slots: Rect[] = [];
+    for (let i = 0; i < capacity; i++) {
+      const c = i % cols;
+      const r = Math.floor(i / cols);
+      slots.push({ x: panel.x + pad + c * (slot + gap), y: panel.y + header + r * (slot + gap), w: slot, h: slot });
+    }
+    return { panel, slots };
+  }
+
+  private chestItems(): [string, number][] {
+    return Object.entries(this.chest?.items ?? {});
+  }
+
+  private drawChestPanel(W: number, H: number): void {
+    if (!this.chest) return;
+    const { ctx } = this;
+    const { panel, slots } = this.chestLayout(W, H);
+
+    ctx.fillStyle = 'rgba(28,18,10,0.88)';
+    this.pill(panel.x, panel.y, panel.w, panel.h, 10);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(200,150,90,0.6)';
+    ctx.lineWidth = 2;
+    this.pill(panel.x + 1, panel.y + 1, panel.w - 2, panel.h - 2, 9);
+    ctx.stroke();
+
+    ctx.font = 'bold 13px "Courier New"';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#f0d9b5';
+    ctx.fillText('📦 Storage Chest', panel.x + 12, panel.y + 14);
+    ctx.textAlign = 'right';
+    ctx.font = '10px "Courier New"';
+    ctx.fillStyle = 'rgba(255,255,255,0.45)';
+    ctx.fillText('Esc to close', panel.x + panel.w - 12, panel.y + 14);
+
+    const items = this.chestItems();
+    slots.forEach((r, i) => {
+      ctx.fillStyle = 'rgba(0,0,0,0.4)';
+      this.pill(r.x, r.y, r.w, r.h, 6);
+      ctx.fill();
+      const entry = items[i];
+      if (!entry) return;
+      const [item, count] = entry;
+      const hover = rectHas(r, this.pointerX, this.pointerY);
+      if (hover) {
+        ctx.strokeStyle = '#f1c40f';
+        ctx.lineWidth = 2;
+        this.pill(r.x + 1, r.y + 1, r.w - 2, r.h - 2, 5);
+        ctx.stroke();
+      }
+      this.drawItemIcon(item, r.x + r.w / 2, r.y + r.h / 2 - 5, 30);
+      ctx.font = 'bold 11px "Courier New"';
+      ctx.textAlign = 'center';
+      ctx.fillStyle = '#e0e0e0';
+      ctx.fillText(`${count}`, r.x + r.w / 2, r.y + r.h - 8);
+    });
+
+    ctx.font = '10px "Courier New"';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = 'rgba(255,255,255,0.5)';
+    ctx.fillText('Click to take · Shift-click takes 1 · Click hotbar items to store', panel.x + panel.w / 2, panel.y + panel.h - 10);
+  }
+
+  /** The chest item under (x, y) in the open chest panel, or null. */
+  hitTestChestItem(x: number, y: number): string | null {
+    if (!this.chest) return null;
+    const { slots } = this.chestLayout(this.canvas.width, this.canvas.height);
+    const items = this.chestItems();
+    for (let i = 0; i < slots.length; i++) {
+      if (rectHas(slots[i], x, y)) return items[i]?.[0] ?? null;
+    }
+    return null;
+  }
+
+  /** True anywhere over the open chest panel — so clicks there don't swing. */
+  isOverChest(x: number, y: number): boolean {
+    return !!this.chest && rectHas(this.chestLayout(this.canvas.width, this.canvas.height).panel, x, y);
+  }
+
+  /** The item in hotbar slot `index`, or null. */
+  hotbarItemAt(index: number): string | null {
+    return this.hotbarOrder[index] ?? null;
+  }
+
+  /** "Press C to …" over the hotbar while a chest is in reach. */
+  private drawInteractPrompt(W: number, H: number): void {
+    const c = this.nearChest;
+    if (!c || this.chest) return;
+    const text = c.type === 'treasure_chest'
+      ? c.opened ? 'Treasure chest — looted, refilling…' : 'Press C to loot the treasure chest'
+      : 'Press C to open chest';
+    const { ctx } = this;
+    ctx.font = 'bold 13px "Courier New"';
+    const w = ctx.measureText(text).width + 24;
+    const x = (W - w) / 2;
+    const y = H - 78 - 16 - 22 - 16 - 30;
+    ctx.fillStyle = 'rgba(0,0,0,0.55)';
+    this.pill(x, y, w, 26, 8);
+    ctx.fill();
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = c.type === 'treasure_chest' && !c.opened ? '#f1c40f' : '#ffffff';
+    ctx.fillText(text, W / 2, y + 13);
+  }
+
+  // ── Tooltips ───────────────────────────────────────────────────────────────
+
+  /**
+   * Whatever item is under the pointer — a hotbar slot, a crafting row, a
+   * recipe-book entry, or a chest slot — gets a tooltip with its name, what
+   * it does, and (for anything craftable) what it costs and where.
+   */
+  private drawTooltip(W: number, H: number): void {
+    const x = this.pointerX;
+    const y = this.pointerY;
+    if (x < 0 || this.draggingIndex !== null) return;
+
+    let itemId: string | null = null;
+    let count: number | null = null;
+    const hotbar = this.hitTestHotbar(x, y);
+    if (hotbar !== null) {
+      itemId = this.hotbarOrder[hotbar] ?? null;
+      count = itemId ? this.inventory[itemId] ?? 0 : null;
+    }
+    if (!itemId && this.chest) {
+      itemId = this.hitTestChestItem(x, y);
+      if (itemId) count = this.chest.items[itemId] ?? 0;
+    }
+    if (!itemId) {
+      const targets: (Rect & { recipe: Recipe | null; itemId?: string })[] = this.bookOpen
+        ? this.recipeBookLayout(W, H).entries
+        : this.tradeOpen || this.bestiaryOpen
+          ? []
+          : this.craftRows(H);
+      for (const t of targets) {
+        if (!rectHas(t, x, y)) continue;
+        itemId = t.recipe?.id ?? t.itemId ?? null;
+        break;
+      }
+    }
+    if (!itemId) return;
+
+    const recipe = RECIPES_BY_ID[itemId];
+    const title = itemDisplayName(itemId) + (count !== null ? `  ×${count}` : '');
+    const lines: { text: string; color: string }[] = [];
+    const desc = describeItem(itemId);
+    const { ctx } = this;
+    const maxW = 260;
+    ctx.font = '12px "Courier New"';
+    for (const line of this.wrap(desc, maxW)) lines.push({ text: line, color: 'rgba(255,255,255,0.8)' });
+
+    if (recipe) {
+      lines.push({ text: '', color: '' });
+      for (const [ing, need] of Object.entries(recipe.cost)) {
+        const have = this.inventory[ing] ?? 0;
+        lines.push({ text: `${have >= need ? '✓' : '✗'} ${need} ${itemDisplayName(ing)}  (have ${have})`, color: have >= need ? '#7ee787' : '#ff8080' });
+      }
+      const where = recipe.requiresBench ? 'At a crafting bench · ' : recipe.requiresCampfire ? 'At a campfire · ' : '';
+      const ok = recipe.requiresBench ? this.nearBench : recipe.requiresCampfire ? this.nearFire : true;
+      lines.push({ text: `${where}${recipe.craftTime}s to craft`, color: ok ? 'rgba(255,255,255,0.5)' : '#ffb070' });
+    }
+
+    ctx.font = 'bold 13px "Courier New"';
+    const titleW = ctx.measureText(title).width;
+    ctx.font = '12px "Courier New"';
+    const w = Math.min(maxW, Math.max(titleW, ...lines.map((l) => ctx.measureText(l.text).width))) + 20;
+    const h = 30 + lines.length * 15;
+    // Beside the pointer, flipped to stay on screen.
+    let tx = x + 16;
+    let ty = y - h - 8;
+    if (tx + w > W - 8) tx = x - w - 16;
+    if (ty < 8) ty = y + 20;
+    if (ty + h > H - 8) ty = H - 8 - h;
+
+    ctx.fillStyle = 'rgba(12,14,20,0.94)';
+    this.pill(tx, ty, w, h, 8);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.18)';
+    ctx.lineWidth = 1;
+    this.pill(tx + 0.5, ty + 0.5, w - 1, h - 1, 8);
+    ctx.stroke();
+
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.font = 'bold 13px "Courier New"';
+    ctx.fillStyle = '#f1c40f';
+    ctx.fillText(title, tx + 10, ty + 15);
+    ctx.font = '12px "Courier New"';
+    lines.forEach((l, i) => {
+      if (!l.text) return;
+      ctx.fillStyle = l.color;
+      ctx.fillText(l.text, tx + 10, ty + 32 + i * 15);
+    });
+  }
+
+  /** Greedy word wrap to `maxW` pixels in the current font. */
+  private wrap(text: string, maxW: number): string[] {
+    if (!text) return [];
+    const out: string[] = [];
+    let line = '';
+    for (const word of text.split(' ')) {
+      const next = line ? `${line} ${word}` : word;
+      if (line && this.ctx.measureText(next).width > maxW) {
+        out.push(line);
+        line = word;
+      } else {
+        line = next;
+      }
+    }
+    if (line) out.push(line);
+    return out;
+  }
+
   private hotbarSlotRects(): { x: number; y: number; w: number; h: number }[] {
     const slotSize = 56;
     const gap = 8;
@@ -814,7 +1188,7 @@ export class HUD {
         ctx.stroke();
       }
 
-      this.drawItemIcon(item, x + slotSize / 2, y + slotSize / 2 - 6, 38);
+      this.drawItemIcon(item, x + slotSize / 2, y + slotSize / 2 - 6, 38 * (1 + 0.22 * this.popOf(item)));
 
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
@@ -2191,10 +2565,13 @@ export class HUD {
       ctx.fillRect(Math.round(toMapX(r.x)), Math.round(toMapY(r.y)), 1, 1);
     }
 
-    // Campfires and benches you can see, in ember orange.
-    ctx.fillStyle = '#ff9b2f';
+    // Structures you can see, in ember orange — an island treasure chest
+    // that's ready to loot in bright gold, so it stands out.
     for (const s of state.structures) {
-      ctx.fillRect(Math.round(toMapX(s.x)) - 1, Math.round(toMapY(s.y)) - 1, 3, 3);
+      const treasure = s.type === 'treasure_chest' && !s.opened;
+      ctx.fillStyle = treasure ? '#ffe14d' : '#ff9b2f';
+      const r = treasure ? 2 : 1;
+      ctx.fillRect(Math.round(toMapX(s.x)) - r, Math.round(toMapY(s.y)) - r, r * 2 + 1, r * 2 + 1);
     }
 
     // Other players
@@ -2315,6 +2692,11 @@ export class HUD {
 
     if (item === WALL_ID) {
       drawSprite(WALL_SPRITE_HALF_BLOCKS, (block) => drawWallSprite(ctx, block));
+      return;
+    }
+
+    if (item === CHEST_ID) {
+      drawSprite(CHEST_SPRITE_HALF_BLOCKS, (block) => drawChestSprite(ctx, block));
       return;
     }
 
@@ -2460,6 +2842,9 @@ const TOOL_ITEM_IDS = new Set([
   GOLD_AXE_ID,
   GOLD_PICKAXE_ID,
   GOLD_SWORD_ID,
+  DIAMOND_AXE_ID,
+  DIAMOND_PICKAXE_ID,
+  DIAMOND_SWORD_ID,
   FISHING_ROD_ID,
   WOODEN_HOE_ID,
   WATERING_CAN_ID,

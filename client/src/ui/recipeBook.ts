@@ -14,6 +14,29 @@ import {
   WOODEN_AXE_ID,
   STONE_AXE_ID,
   GOLD_AXE_ID,
+  DIAMOND_AXE_ID,
+  DIAMOND_PICKAXE_ID,
+  DIAMOND_SWORD_ID,
+  DIAMOND_ARMOR_ID,
+  CHEST_ID,
+  FOOD_HUNGER_RESTORE,
+  AXE_WOOD_MULTIPLIER,
+  STONE_AXE_WOOD_MULTIPLIER,
+  GOLD_AXE_WOOD_MULTIPLIER,
+  DIAMOND_AXE_WOOD_MULTIPLIER,
+  PICKAXE_STONE_MULTIPLIER,
+  STONE_PICKAXE_STONE_MULTIPLIER,
+  GOLD_PICKAXE_STONE_MULTIPLIER,
+  DIAMOND_PICKAXE_STONE_MULTIPLIER,
+  SWORD_DAMAGE_MULTIPLIER,
+  STONE_SWORD_DAMAGE_MULTIPLIER,
+  GOLD_SWORD_DAMAGE_MULTIPLIER,
+  DIAMOND_SWORD_DAMAGE_MULTIPLIER,
+  WOODEN_ARMOR_DAMAGE_REDUCTION,
+  STONE_ARMOR_DAMAGE_REDUCTION,
+  GOLD_ARMOR_DAMAGE_REDUCTION,
+  DIAMOND_ARMOR_DAMAGE_REDUCTION,
+  CHEST_SLOTS,
   WOODEN_PICKAXE_ID,
   STONE_PICKAXE_ID,
   GOLD_PICKAXE_ID,
@@ -54,12 +77,15 @@ export const RECIPE_BOOK_CATEGORIES: RecipeBookCategory[] = [
       WOODEN_AXE_ID,
       STONE_AXE_ID,
       GOLD_AXE_ID,
+      DIAMOND_AXE_ID,
       WOODEN_PICKAXE_ID,
       STONE_PICKAXE_ID,
       GOLD_PICKAXE_ID,
+      DIAMOND_PICKAXE_ID,
       WOODEN_SWORD_ID,
       STONE_SWORD_ID,
       GOLD_SWORD_ID,
+      DIAMOND_SWORD_ID,
       FISHING_ROD_ID,
       TORCH_ID,
     ],
@@ -92,13 +118,13 @@ export const RECIPE_BOOK_CATEGORIES: RecipeBookCategory[] = [
     id: 'placeable',
     name: 'Placeable Items',
     tagline: 'Built once, then left standing in the world',
-    items: ['campfire', CRAFTING_BENCH_ID, WALL_ID],
+    items: ['campfire', CRAFTING_BENCH_ID, WALL_ID, CHEST_ID],
   },
   {
     id: 'clothing',
     name: 'Clothing',
     tagline: 'Worn rather than held — armor and the backpack alike',
-    items: [WOODEN_ARMOR_ID, STONE_ARMOR_ID, GOLD_ARMOR_ID, BACKPACK_ID],
+    items: [WOODEN_ARMOR_ID, STONE_ARMOR_ID, GOLD_ARMOR_ID, DIAMOND_ARMOR_ID, BACKPACK_ID],
   },
 ];
 
@@ -148,4 +174,51 @@ export function noteFor(itemId: string): string {
   const fish = FISH_SPECIES_BY_ID[itemId];
   if (fish) return `Reeled in with a fishing rod — a ${fish.rarity} catch, from any lake or the southern sea.`;
   return ITEM_NOTES[itemId] ?? '';
+}
+
+// ── Tooltips ─────────────────────────────────────────────────────────────────
+// What an item *does*, for the hover tooltips on the hotbar, crafting panel
+// and chests (see HUD.drawTooltip). Craftable items describe their use;
+// everything else falls back to noteFor's "where it comes from".
+
+const pct = (n: number): string => `${Math.round(n * 100)}%`;
+
+const ITEM_DESCRIPTIONS: Record<string, string> = {
+  campfire: 'Warms you, heals you faster and lights the night. Burns for a minute — faster in the rain.',
+  [CRAFTING_BENCH_ID]: 'Stand near it to craft stone, gold and diamond gear.',
+  [WALL_ID]: 'A solid log barricade. Blocks players and animals alike.',
+  [CHEST_ID]: `Stores up to ${CHEST_SLOTS} item types. Survives your death — but anyone can open it. Press C beside it.`,
+  [WOODEN_AXE_ID]: `Chops ${AXE_WOOD_MULTIPLIER}× wood.`,
+  [STONE_AXE_ID]: `Chops ${STONE_AXE_WOOD_MULTIPLIER}× wood.`,
+  [GOLD_AXE_ID]: `Chops ${GOLD_AXE_WOOD_MULTIPLIER}× wood.`,
+  [DIAMOND_AXE_ID]: `Chops ${DIAMOND_AXE_WOOD_MULTIPLIER}× wood — the best axe there is.`,
+  [WOODEN_PICKAXE_ID]: `Mines ${PICKAXE_STONE_MULTIPLIER}× stone. Too soft for gold.`,
+  [STONE_PICKAXE_ID]: `Mines ${STONE_PICKAXE_STONE_MULTIPLIER}× stone, and can break gold.`,
+  [GOLD_PICKAXE_ID]: `Mines ${GOLD_PICKAXE_STONE_MULTIPLIER}× stone and 2× gold, and can break diamond.`,
+  [DIAMOND_PICKAXE_ID]: `Mines ${DIAMOND_PICKAXE_STONE_MULTIPLIER}× stone, 3× gold and 2× diamond.`,
+  [WOODEN_SWORD_ID]: `${SWORD_DAMAGE_MULTIPLIER}× damage to animals and players.`,
+  [STONE_SWORD_ID]: `${STONE_SWORD_DAMAGE_MULTIPLIER}× damage to animals and players.`,
+  [GOLD_SWORD_ID]: `${GOLD_SWORD_DAMAGE_MULTIPLIER}× damage to animals and players.`,
+  [DIAMOND_SWORD_ID]: `${DIAMOND_SWORD_DAMAGE_MULTIPLIER}× damage to animals and players.`,
+  [WOODEN_ARMOR_ID]: `Blocks ${pct(WOODEN_ARMOR_DAMAGE_REDUCTION)} of incoming damage. Select it to wear it.`,
+  [STONE_ARMOR_ID]: `Blocks ${pct(STONE_ARMOR_DAMAGE_REDUCTION)} of incoming damage. Select it to wear it.`,
+  [GOLD_ARMOR_ID]: `Blocks ${pct(GOLD_ARMOR_DAMAGE_REDUCTION)} of incoming damage. Select it to wear it.`,
+  [DIAMOND_ARMOR_ID]: `Blocks ${pct(DIAMOND_ARMOR_DAMAGE_REDUCTION)} of incoming damage. Select it to wear it.`,
+  [FISHING_ROD_ID]: 'Hold it and right-click (or F) on water to cast. Wait for a bite.',
+  [TORCH_ID]: 'Worn in your off hand: a small light, and slows the night chill. Burns out.',
+  [BACKPACK_ID]: 'Worn on your back: more hotbar slots while it’s on.',
+  [WOODEN_HOE_ID]: 'Hold it and right-click (or F) on grass to till a farm plot.',
+  [WATERING_CAN_ID]: 'Right-click (or F) to water nearby plots — wet crops grow faster. Refill in water. Rain waters crops for free.',
+  [BERRY_SEED_ID]: 'Plant in a tilled plot. Grows into a bush that keeps fruiting.',
+  [WHEAT_SEED_ID]: 'Plant in a tilled plot. Grows into wheat to harvest.',
+  [COOKED_MEAT_ID]: 'A proper meal.',
+  [BREAD_ID]: 'The most filling food in the game.',
+};
+
+/** One-paragraph "what is this / what does it do" for an item's tooltip. */
+export function describeItem(itemId: string): string {
+  let text = ITEM_DESCRIPTIONS[itemId] ?? noteFor(itemId);
+  const food = FOOD_HUNGER_RESTORE[itemId];
+  if (food) text = `${text ? text + ' ' : ''}Restores ${food} hunger. Click its slot to eat.`;
+  return text;
 }

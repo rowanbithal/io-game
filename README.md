@@ -117,6 +117,9 @@ The server sends 20 snapshots/second. The client renders at ~60fps. `StateManage
 |---|---|
 | Move | WASD or Arrow Keys |
 | Harvest | E or left-click |
+| Open / close a storage chest, loot island treasure | C |
+| Mute / unmute sound | N |
+| Graphics quality (high/low) | G |
 
 **Survival stats:**
 - **Health** — Regenerates when fed and warm. Drops to zero → respawn.

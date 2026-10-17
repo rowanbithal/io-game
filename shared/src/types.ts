@@ -75,7 +75,10 @@ export interface IslandState {
 // ── Structures ────────────────────────────────────────────────────────────────
 // Player-built objects placed into the world at runtime (unlike resources,
 // which the world generates, and lakes, which never change).
-export type StructureType = 'campfire' | 'crafting_bench' | 'wall';
+// 'chest' is a player's storage chest; 'treasure_chest' is the world's own
+// loot chest on each sea island (see Game.spawnTreasureChests) — owned by
+// nobody, never removed, refilling on a timer once looted.
+export type StructureType = 'campfire' | 'crafting_bench' | 'wall' | 'chest' | 'treasure_chest';
 
 export interface StructureState {
   id: string;
@@ -89,6 +92,8 @@ export interface StructureState {
    * the client only decides how to draw it.
    */
   life: number | null;
+  /** Treasure chests only: true while looted and waiting to refill — drawn with the lid open. */
+  opened?: boolean;
 }
 
 // ── Spiders ───────────────────────────────────────────────────────────────────
@@ -324,6 +329,12 @@ export interface GameState {
    * between (see main.ts's cachedCameraResources).
    */
   cameraResources?: ResourceState[];
+  /**
+   * Set while someone's "/rain" is in effect: true forces rain, false holds
+   * it off. Absent means the natural, tick-driven weather (see
+   * naturalRainAt) — the client only ever needs this to override it.
+   */
+  rainOverride?: boolean;
 }
 
 /**
@@ -371,6 +382,41 @@ export interface HarvestPayload {
 export interface InventoryPayload {
   inventory: Record<string, number>;
   message?: string;
+}
+
+/** Sent client → server to open (or loot, for a treasure chest) the chest with this id. */
+export interface ChestOpenRequest {
+  structureId: string;
+}
+
+/**
+ * Sent client → server to move items between the open storage chest and the
+ * player's inventory. `toChest` true deposits from the inventory; false
+ * withdraws from the chest.
+ */
+export interface ChestMoveRequest {
+  structureId: string;
+  itemId: string;
+  count: number;
+  toChest: boolean;
+}
+
+/** Sent server → client with a storage chest's contents — on open, and again whenever they change while it's open. */
+export interface ChestPayload {
+  structureId: string;
+  items: Record<string, number>;
+  /** How many distinct item types it can hold (see CHEST_SLOTS). */
+  capacity: number;
+}
+
+/** Sent server → client when the player dies — what the death screen shows. */
+export interface DiedPayload {
+  /** What did it, e.g. "a spider", "Copper", "the cold". */
+  cause: string;
+  /** Score at the moment of death (it resets on respawn). */
+  score: number;
+  /** Seconds survived since the last spawn. */
+  survived: number;
 }
 
 /** Leaderboard entry */

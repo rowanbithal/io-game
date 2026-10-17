@@ -212,11 +212,15 @@ export const STRUCTURE_SPAN: Record<StructureType, number> = {
   campfire: 40,
   crafting_bench: 40,
   wall: TREE_SPAN,
+  chest: 36,
+  treasure_chest: 44,
 };
 export const STRUCTURE_COLLISION_RADIUS: Record<StructureType, number> = {
   campfire: 14,
   crafting_bench: 14,
   wall: TREE_COLLISION_RADIUS,
+  chest: 13,
+  treasure_chest: 16,
 };
 export const PLACE_RANGE = 110; // How far from the player a structure can be placed
 export const CAMPFIRE_WARMTH_RADIUS = 190; // Distance the fire keeps you warm within
@@ -227,6 +231,21 @@ export const CAMPFIRE_WARMTH_RATE = 6; // Temperature regained per second beside
 // has to look like one, or players only find out when the light is already
 // gone and the cold has started. See Renderer.burnFade.
 export const CAMPFIRE_LIFETIME = 60;
+
+// ── Chests ───────────────────────────────────────────────────────────────────
+/** How close a player must be to a chest to open, use, or loot it. */
+export const CHEST_USE_RADIUS = 90;
+/** Distinct item types a storage chest holds. */
+export const CHEST_SLOTS = 12;
+/** Seconds an island treasure chest takes to refill once looted. */
+export const TREASURE_REFILL_SECONDS = 300;
+
+// ── Rain's effect on play ────────────────────────────────────────────────────
+// Only where it's actually raining — never in the desert (see Game.isRainingAt).
+/** Campfires burn down this many times faster in the rain. */
+export const RAIN_CAMPFIRE_BURN_MULTIPLIER = 2.5;
+/** Body temperature can't climb above this while out in the rain (a campfire still can). */
+export const RAIN_MAX_TEMPERATURE = 60;
 export const CAMPFIRE_BURNOUT_FADE = 10;
 // Visual glow reach (client-side only) — noticeably tighter than the warmth
 // radius, so the fire reads as a small pool of light you huddle around.

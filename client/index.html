@@ -127,6 +127,34 @@
     }
 
     #death-overlay p { color: rgba(255,255,255,0.5); font-size: 0.9rem; }
+
+    #death-overlay .death-cause {
+      color: rgba(255,255,255,0.85);
+      font-size: 1.1rem;
+      margin-bottom: 1.4em;
+    }
+
+    #death-overlay .death-stats {
+      display: flex;
+      gap: 2.5em;
+      margin-bottom: 1.8em;
+    }
+
+    #death-overlay .death-stat { text-align: center; }
+    #death-overlay .death-stat b {
+      display: block;
+      font-size: 1.8rem;
+      color: #f1c40f;
+      margin-bottom: 0.15em;
+    }
+    #death-overlay .death-stat span {
+      font-size: 0.75rem;
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+      color: rgba(255,255,255,0.5);
+    }
+
+    #death-overlay .death-continue { cursor: pointer; }
   </style>
 </head>
 <body>
@@ -150,7 +178,12 @@
   <!-- Death Screen -->
   <div id="death-overlay">
     <h2>☠ You Died</h2>
-    <p>Respawning…</p>
+    <p class="death-cause" id="death-cause"></p>
+    <div class="death-stats">
+      <div class="death-stat"><b id="death-score">0</b><span>Score</span></div>
+      <div class="death-stat"><b id="death-time">0s</b><span>Survived</span></div>
+    </div>
+    <p class="death-continue">Click or press any key to continue</p>
   </div>
 
   <script type="module" src="/src/main.ts"></script>
