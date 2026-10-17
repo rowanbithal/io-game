@@ -1,4 +1,4 @@
-import { TICK_RATE, seaCoastAt, isInDesert, forestFactor, DiedPayload, RECIPES_BY_ID, FISHING_ROD_ID, WOODEN_HOE_ID, WATERING_CAN_ID, BERRY_SEED_ID, WHEAT_SEED_ID, PreviewState, ResourceState } from '@io-game/shared';
+import { TICK_RATE, DAY_DURATION, seaCoastAt, isInDesert, forestFactor, DiedPayload, RECIPES_BY_ID, FISHING_ROD_ID, WOODEN_HOE_ID, WATERING_CAN_ID, BERRY_SEED_ID, WHEAT_SEED_ID, PreviewState, ResourceState } from '@io-game/shared';
 import { Network } from './Network';
 import { Input } from './Input';
 import { Camera } from './Camera';
@@ -6,6 +6,7 @@ import { Renderer } from './Renderer';
 import { StateManager } from './StateManager';
 import { HUD } from './ui/HUD';
 import { ChatBox } from './ui/ChatBox';
+import { LookPicker } from './ui/LookPicker';
 import { DeathCinematic, DEATH_CINEMATIC_MS } from './fx/DeathCinematic';
 import { autoTune, toggleQuality } from './fx/quality';
 import { sound } from './fx/Sound';
@@ -49,6 +50,9 @@ class ClientGame {
   // Set when C is pressed on an island treasure chest, so the loot's harvest
   // event that follows plays the treasure fanfare instead of a plain pickup.
   private expectTreasureUntil = 0;
+  // Set on 'joined', cleared by the first snapshot after it — which shows the
+  // "Day N" title card (see showTitleCard), since only a snapshot knows the tick.
+  private titleCardPending = false;
 
   constructor() {
     this.canvas = document.getElementById('game-canvas') as HTMLCanvasElement;
@@ -94,12 +98,18 @@ class ClientGame {
       this.renderer.setIslands(islands);
       this.hud.setIslands(islands);
       this.hideMenu();
+      this.titleCardPending = true;
       this.running = true;
       // The loop's already running (see the constructor) — no need to kick
       // off a second requestAnimationFrame chain, just switch what it draws.
     });
 
     this.network.onState((snapshot) => {
+      // The first snapshot after joining is what knows the day number.
+      if (this.titleCardPending) {
+        this.titleCardPending = false;
+        this.showTitleCard(Math.floor(snapshot.tick / TICK_RATE / DAY_DURATION) + 1);
+      }
       if (snapshot.cameraResources) this.cachedCameraResources = snapshot.cameraResources;
       this.state.push(snapshot);
       // Raw (un-interpolated) snapshots are what hit/kill detection diffs —
@@ -169,10 +179,17 @@ class ClientGame {
   private setupMenu(): void {
     const playBtn = document.getElementById('play-btn')!;
     const nameInput = document.getElementById('name-input') as HTMLInputElement;
+    // Hair / skin / hat rows and their preview — remembers the pick itself.
+    const picker = new LookPicker();
+    if (!nameInput.value) nameInput.value = LookPicker.savedName();
 
     playBtn.addEventListener('click', () => {
-      const name = nameInput.value.trim() || 'Anonymous';
-      this.network.join(name);
+      if (playBtn.hasAttribute('disabled')) return;
+      const typed = nameInput.value.trim();
+      // Only a name actually typed is worth remembering, not the fallback.
+      if (typed) LookPicker.saveName(typed);
+      const name = typed || 'Anonymous';
+      this.network.join(name, picker.current);
       playBtn.textContent = 'Joining…';
       playBtn.setAttribute('disabled', 'true');
     });
@@ -623,6 +640,22 @@ class ClientGame {
     menu.style.opacity = '0';
     menu.style.transition = 'opacity 0.5s';
     setTimeout(() => { menu.style.display = 'none'; }, 500);
+  }
+
+  /**
+   * The "Day N" card over the world just after joining — rises in as the
+   * menu finishes fading, holds a beat, then drifts out (the whole sequence
+   * is #title-card's CSS animation, ~2.5s). Purely decorative: the element
+   * is pointer-events: none, so the game is playable underneath from the
+   * first frame.
+   */
+  private showTitleCard(day: number): void {
+    const card = document.getElementById('title-card')!;
+    document.getElementById('title-card-day')!.textContent = `Day ${day}`;
+    card.classList.remove('show');
+    void card.offsetWidth; // restart the animation if it's somehow shown twice
+    card.classList.add('show');
+    card.addEventListener('animationend', () => card.classList.remove('show'), { once: true });
   }
 
   /**

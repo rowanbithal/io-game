@@ -9,6 +9,8 @@ import {
   PreviewState,
   ChestPayload,
   DiedPayload,
+  PlayerLook,
+  JoinRequest,
 } from '@io-game/shared';
 
 type Listener<T> = (data: T) => void;
@@ -83,8 +85,10 @@ export class Network {
 
   // ── Emitters ───────────────────────────────────────────────────────────────
 
-  join(name: string): void {
-    this.socket.emit('join', { name });
+  /** Joins with the name and look picked on the main menu (see JoinRequest). */
+  join(name: string, look: PlayerLook): void {
+    const req: JoinRequest = { name, look };
+    this.socket.emit('join', req);
   }
 
   sendInput(input: PlayerInput): void {

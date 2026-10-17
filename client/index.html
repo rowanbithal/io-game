@@ -24,12 +24,38 @@
       flex-direction: column;
       align-items: center;
       justify-content: center;
+      overflow-y: auto;
+      padding: 24px 16px;
       /* Translucent, not solid — the live world (see main.ts's loopMenuBackdrop)
-         shows through behind the login form instead of a flat gradient. Neutral
-         black/gray rather than tinted, so it reads as a dim scrim over the
-         world rather than recoloring it. */
-      background: linear-gradient(160deg, rgba(10, 10, 12, 0.7) 0%, rgba(30, 30, 33, 0.55) 50%, rgba(10, 10, 12, 0.7) 100%);
+         shows through behind the login form instead of a flat gradient. Two
+         layers, both neutral black so they dim rather than recolor the world:
+         a soft dark pool behind the centre column, so the title and picker
+         read cleanly over whatever's wandering past, and a vignette that
+         darkens the edges and pulls the eye inward. */
+      background:
+        radial-gradient(ellipse 46% 62% at 50% 46%, rgba(6, 8, 12, 0.62) 0%, rgba(6, 8, 12, 0.35) 55%, rgba(6, 8, 12, 0) 100%),
+        radial-gradient(ellipse 85% 85% at 50% 50%, rgba(0, 0, 0, 0.12) 0%, rgba(0, 0, 0, 0.35) 65%, rgba(0, 0, 0, 0.8) 100%);
       z-index: 100;
+    }
+
+    /* Everything on the menu rises in once on load, a beat staggered. */
+    @keyframes menu-rise {
+      from { opacity: 0; transform: translateY(14px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    #menu > * { animation: menu-rise 0.7s cubic-bezier(.2,.7,.3,1) both; }
+    #menu > :nth-child(2) { animation-delay: 0.08s; }
+    #menu > :nth-child(3) { animation-delay: 0.16s; }
+    #menu > :nth-child(4) { animation-delay: 0.24s; }
+
+    /* The title drifts gently up and down, its glow breathing out of step. */
+    @keyframes title-float {
+      0%, 100% { transform: translateY(0); }
+      50% { transform: translateY(-6px); }
+    }
+    @keyframes title-glow {
+      0%, 100% { text-shadow: 0 2px 0 #0a1520, 0 0 30px rgba(86, 201, 255, 0.45), 0 0 70px rgba(86, 201, 255, 0.18); }
+      50% { text-shadow: 0 2px 0 #0a1520, 0 0 44px rgba(86, 201, 255, 0.7), 0 0 100px rgba(86, 201, 255, 0.3); }
     }
 
     .menu-title {
@@ -37,54 +63,153 @@
       font-weight: 900;
       letter-spacing: 0.06em;
       color: #e8f4f8;
-      text-shadow:
-        0 0 40px rgba(86, 201, 255, 0.6),
-        0 0 80px rgba(86, 201, 255, 0.25);
-      margin-bottom: 0.2em;
+      margin-bottom: 0.15em;
+      text-align: center;
+      animation: title-float 5s ease-in-out infinite, title-glow 3.2s ease-in-out infinite;
     }
 
     .menu-title span { color: #56c9ff; }
 
     .menu-tagline {
       font-size: 0.85rem;
-      color: rgba(255, 255, 255, 0.4);
-      letter-spacing: 0.2em;
+      color: rgba(255, 255, 255, 0.55);
+      letter-spacing: 0.3em;
       text-transform: uppercase;
-      margin-bottom: 2.5em;
+      text-align: center;
+      margin-bottom: 1.8em;
     }
+
+    /* The card holding the look picker, name and Play — one tidy dark panel. */
+    .menu-card {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 14px;
+      padding: 18px 22px 20px;
+      background: rgba(8, 12, 18, 0.62);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 14px;
+      box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+      backdrop-filter: blur(3px);
+      max-width: 100%;
+    }
+
+    .look {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+
+    @keyframes preview-bump {
+      0% { transform: scale(1); }
+      35% { transform: scale(1.1, 0.92); }
+      100% { transform: scale(1); }
+    }
+
+    .look-preview-frame {
+      flex: none;
+      width: 104px;
+      height: 104px;
+      border-radius: 12px;
+      background:
+        radial-gradient(circle at 50% 45%, rgba(120, 170, 90, 0.35), rgba(40, 70, 40, 0.25) 70%),
+        #22331f;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: inset 0 0 18px rgba(0, 0, 0, 0.45);
+    }
+
+    #look-preview {
+      width: 96px;
+      height: 96px;
+      image-rendering: pixelated;
+    }
+    #look-preview.bump { animation: preview-bump 0.25s ease-out; }
+
+    .look-rows { display: flex; flex-direction: column; gap: 9px; }
+    /* Narrow screens: preview above the rows rather than squeezing them. */
+    @media (max-width: 480px) { .look { flex-direction: column; } }
+    .look-row { display: flex; align-items: center; gap: 10px; }
+    .look-label {
+      width: 3.2em;
+      font-size: 0.7rem;
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+      color: rgba(255, 255, 255, 0.45);
+    }
+    .look-options { display: flex; flex-wrap: wrap; gap: 6px; }
+
+    .look-swatch, .look-hat {
+      appearance: none;
+      cursor: pointer;
+      border: none;
+      padding: 0;
+      transition: transform 0.1s, box-shadow 0.15s;
+    }
+
+    .look-swatch {
+      width: 20px;
+      height: 20px;
+      border-radius: 5px;
+      box-shadow: inset 0 -3px 0 var(--ring, rgba(0,0,0,0.3)), 0 0 0 1px rgba(0, 0, 0, 0.5);
+    }
+
+    .look-hat {
+      width: 30px;
+      height: 30px;
+      border-radius: 7px;
+      background: rgba(255, 255, 255, 0.06);
+      box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .look-hat canvas { width: 26px; height: 26px; image-rendering: pixelated; }
+
+    .look-swatch:hover, .look-hat:hover { transform: translateY(-2px); }
+    .look-swatch.selected, .look-hat.selected {
+      transform: translateY(-2px);
+      box-shadow: inset 0 -3px 0 var(--ring, transparent), 0 0 0 2px #0d1b2a, 0 0 0 4px #56c9ff, 0 0 12px rgba(86, 201, 255, 0.55);
+    }
+    .look-hat.selected { background: rgba(86, 201, 255, 0.16); }
+    .look-swatch:focus-visible, .look-hat:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+
+    .menu-join { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
 
     .menu-hints {
       display: flex;
       gap: 2em;
-      margin-bottom: 2.5em;
+      margin-top: 1.8em;
       font-size: 0.75rem;
-      color: rgba(255, 255, 255, 0.3);
+      color: rgba(255, 255, 255, 0.45);
+      text-shadow: 0 1px 2px #000;
     }
 
     .menu-hint { display: flex; flex-direction: column; align-items: center; gap: 0.3em; }
     .menu-hint .icon { font-size: 1.5em; }
 
     #name-input {
-      padding: 13px 22px;
+      padding: 13px 18px;
       font-size: 1rem;
       font-family: inherit;
       background: rgba(255, 255, 255, 0.07);
       border: 1.5px solid rgba(86, 201, 255, 0.3);
       color: #fff;
       border-radius: 8px;
-      width: 260px;
+      width: 230px;
       outline: none;
       text-align: center;
       letter-spacing: 0.05em;
       transition: border-color 0.2s;
-      margin-bottom: 14px;
     }
 
-    #name-input::placeholder { color: rgba(255, 255, 255, 0.2); }
+    #name-input::placeholder { color: rgba(255, 255, 255, 0.25); }
     #name-input:focus { border-color: #56c9ff; }
 
     #play-btn {
-      padding: 14px 52px;
+      padding: 13px 34px;
       font-size: 1.05rem;
       font-family: inherit;
       font-weight: 700;
@@ -106,6 +231,61 @@
     }
 
     #play-btn:active { transform: translateY(0); }
+    #play-btn[disabled] { cursor: default; opacity: 0.75; transform: none; }
+
+    /* ── "Day N" title card ────────────────────────────────────────────── */
+    /* Shown once over the world right after joining (see main.ts's
+       showTitleCard). Never takes input — the game is live underneath. */
+    #title-card {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      /* Up in the top third, clear of the player (always screen-centre) and
+         their nameplate. */
+      justify-content: flex-start;
+      padding-top: 19vh;
+      pointer-events: none;
+      z-index: 95;
+      opacity: 0;
+      visibility: hidden;
+      /* Same soft dark pool as the menu, so the card reads over bright grass. */
+      background: radial-gradient(ellipse 34% 18% at 50% 26%, rgba(0, 0, 0, 0.38), rgba(0, 0, 0, 0) 100%);
+    }
+    #title-card.show {
+      visibility: visible;
+      /* Starts 0.3s in, as the menu's own 0.5s fade is finishing. */
+      animation: title-card 2.5s ease-in-out 0.3s both;
+    }
+    @keyframes title-card {
+      0% { opacity: 0; transform: translateY(10px) scale(0.97); letter-spacing: 0.1em; }
+      22% { opacity: 1; transform: translateY(0) scale(1); }
+      72% { opacity: 1; transform: translateY(0) scale(1); }
+      100% { opacity: 0; transform: translateY(-8px) scale(1.01); letter-spacing: 0.3em; }
+    }
+    #title-card-day {
+      font-size: clamp(2.2rem, 6vw, 3.6rem);
+      font-weight: 900;
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+      color: #f4ead2;
+      text-shadow: 0 3px 0 rgba(0, 0, 0, 0.55), 0 0 30px rgba(255, 210, 140, 0.4);
+      margin-bottom: 8px;
+    }
+    #title-card .title-card-rule {
+      width: 180px;
+      height: 2px;
+      background: linear-gradient(90deg, transparent, rgba(244, 234, 210, 0.75), transparent);
+    }
+    #title-card .title-card-sub {
+      margin-top: 10px;
+      font-size: 0.78rem;
+      letter-spacing: 0.35em;
+      text-transform: uppercase;
+      color: rgba(244, 234, 210, 0.7);
+      text-shadow: 0 1px 2px #000;
+    }
 
     /* ── Death overlay ─────────────────────────────────────────────────── */
     #death-overlay {
@@ -162,17 +342,40 @@
 
   <!-- Main Menu -->
   <div id="menu">
-    <h1 class="menu-title">Sur<span>vive</span>.io</h1>
-    <p class="menu-tagline">Gather · Craft · Outlast</p>
+    <div class="menu-title-wrap">
+      <h1 class="menu-title">Sur<span>vive</span>.io</h1>
+      <p class="menu-tagline">Gather · Craft · Outlast</p>
+    </div>
+
+    <div class="menu-card">
+      <!-- Look picker — rows filled in by ui/LookPicker.ts -->
+      <div class="look">
+        <div class="look-preview-frame"><canvas id="look-preview"></canvas></div>
+        <div class="look-rows">
+          <div class="look-row"><span class="look-label">Hair</span><div class="look-options" id="look-hair"></div></div>
+          <div class="look-row"><span class="look-label">Skin</span><div class="look-options" id="look-skin"></div></div>
+          <div class="look-row"><span class="look-label">Hat</span><div class="look-options" id="look-hat"></div></div>
+        </div>
+      </div>
+
+      <div class="menu-join">
+        <input id="name-input" type="text" placeholder="Enter your name…" maxlength="16" autocomplete="off" />
+        <button id="play-btn">▶ Play</button>
+      </div>
+    </div>
 
     <div class="menu-hints">
       <div class="menu-hint"><span class="icon">🌲</span>Gather resources</div>
       <div class="menu-hint"><span class="icon">🌙</span>Survive the night</div>
       <div class="menu-hint"><span class="icon">🍖</span>Don't starve</div>
     </div>
+  </div>
 
-    <input id="name-input" type="text" placeholder="Enter your name…" maxlength="16" autocomplete="off" />
-    <button id="play-btn">▶ Play</button>
+  <!-- "Day N" title card, shown briefly after joining -->
+  <div id="title-card" aria-hidden="true">
+    <div id="title-card-day">Day 1</div>
+    <div class="title-card-rule"></div>
+    <div class="title-card-sub">Survive the night</div>
   </div>
 
   <!-- Death Screen -->

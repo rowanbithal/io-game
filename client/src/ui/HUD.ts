@@ -441,6 +441,18 @@ export class HUD {
   private pickups: { item: string; sx: number; sy: number; start: number; dur: number; arc: number }[] = [];
   private readonly slotPop = new Map<string, number>();
 
+  // Per-bar animation state for drawStatBars, keyed by the bar's label — see
+  // StatBarAnim. statBarsFor is whose stats those are (spectating can swap
+  // `me` to someone else entirely, which should snap rather than animate),
+  // and statBarsAt the last frame's time, for a frame-rate-independent dt.
+  private readonly statBarAnim = new Map<string, StatBarAnim>();
+  private statBarsFor = '';
+  private statBarsAt = 0;
+  // Last count each hotbar slot showed, and when it last changed — drives
+  // the count text's little bump (see drawHotbar). Separate from slotPop,
+  // which is the icon's landing bounce for flying pickups.
+  private readonly countBump = new Map<string, { count: number; at: number }>();
+
   constructor() {
     this.canvas = document.createElement('canvas');
     this.canvas.style.cssText =
@@ -736,6 +748,7 @@ export class HUD {
 
   private drawStatBars(me: PlayerState | undefined, W: number, H: number): void {
     if (!me) return;
+    const { ctx } = this;
     const bars = [
       // threshold is an absolute value (see bar.value < bar.threshold below),
       // not a fraction of max — scaled off maxHealth here so a bot's bigger
@@ -748,6 +761,18 @@ export class HUD {
       { label: '💧 Thirst', value: me.thirst, max: MAX_THIRST, fill: '#2980b9', low: '#e74c3c', threshold: 30 },
     ];
 
+    // Frame time for the bars' easing. Clamped so a backgrounded tab coming
+    // back doesn't fast-forward a whole drain in one frame — it just resumes.
+    const now = performance.now();
+    const dt = this.statBarsAt === 0 ? 0 : Math.min(0.1, (now - this.statBarsAt) / 1000);
+    this.statBarsAt = now;
+    // A different player's stats (spectating switched targets) aren't a
+    // change in *these* bars — forget everything and snap to the new values.
+    if (this.statBarsFor !== me.id) {
+      this.statBarsFor = me.id;
+      this.statBarAnim.clear();
+    }
+
     const bW = 170;
     const bH = 22;
     const gap = 13;
@@ -759,43 +784,143 @@ export class HUD {
 
     for (const bar of bars) {
       const pct = Math.max(0, Math.min(1, bar.value / bar.max));
-      const color = bar.value < bar.threshold ? bar.low : bar.fill;
+      const low = bar.value < bar.threshold;
+      const color = low ? bar.low : bar.fill;
+      const anim = this.stepStatBar(bar.label, pct, now, dt);
+      // Heartbeat: only HP, only while it's in the red. 0 the rest of the time.
+      const beat = bar.label === '♥ HP' && low && me.health > 0 ? heartbeat(now, pct / 0.3) : 0;
 
-      // Shadow panel
-      this.ctx.fillStyle = 'rgba(0,0,0,0.45)';
+      ctx.save();
+      if (beat > 0) {
+        // Thump outward from the bar's own centre, label and all.
+        const s = 1 + STAT_HEARTBEAT_SCALE * beat;
+        ctx.translate(x + bW / 2, y + bH / 2);
+        ctx.scale(s, s);
+        ctx.translate(-(x + bW / 2), -(y + bH / 2));
+        ctx.shadowColor = `rgba(255,60,50,${0.85 * beat})`;
+        ctx.shadowBlur = 16 * beat;
+      }
+
+      // Shadow panel (also what carries the heartbeat's red glow, above)
+      ctx.fillStyle = 'rgba(0,0,0,0.45)';
       this.pill(x - 1, y - 1, bW + 2, bH + 2, 7);
-      this.ctx.fill();
+      ctx.fill();
+      ctx.shadowColor = 'transparent';
+      ctx.shadowBlur = 0;
 
       // Empty track
-      this.ctx.fillStyle = 'rgba(30,30,30,0.7)';
+      ctx.fillStyle = 'rgba(30,30,30,0.7)';
       this.pill(x, y, bW, bH, 6);
-      this.ctx.fill();
+      ctx.fill();
+
+      // Ghost trail — where the bar was before a hit, held for a moment and
+      // then drained down to the real value (see stepStatBar). Drawn first
+      // so the live fill covers all but the lost chunk.
+      if (anim.ghost > anim.shown + 0.002) {
+        ctx.fillStyle = bar.label === '♥ HP' ? (low ? '#ffc4b4' : '#ff5a48') : 'rgba(255,236,214,0.7)';
+        this.pill(x, y, bW * anim.ghost, bH, 6);
+        ctx.fill();
+      }
 
       // Fill
-      if (pct > 0.01) {
-        this.ctx.fillStyle = color;
-        this.pill(x, y, bW * pct, bH, 6);
-        this.ctx.fill();
+      if (anim.shown > 0.01) {
+        ctx.fillStyle = color;
+        this.pill(x, y, bW * anim.shown, bH, 6);
+        ctx.fill();
+
+        // Rising: a bright leading edge on the fill, fading out as it
+        // catches up to where it's heading.
+        const rising = Math.min(1, (pct - anim.shown) * 12);
+        if (rising > 0.02) {
+          const ex = x + bW * anim.shown;
+          ctx.fillStyle = `rgba(255,255,255,${0.75 * rising})`;
+          ctx.fillRect(Math.max(x + 2, ex - 3), y + 3, 3, bH - 6);
+        }
+
+        // The heartbeat's flush of brightness over the fill itself.
+        if (beat > 0) {
+          ctx.fillStyle = `rgba(255,255,255,${0.32 * beat})`;
+          this.pill(x, y, bW * anim.shown, bH, 6);
+          ctx.fill();
+        }
       }
 
       // Rain caps how warm you can get — mark the ceiling on the Temp bar.
       if (bar.label === '❄ Temp' && this.rainCapped) {
         const cx = x + bW * (RAIN_MAX_TEMPERATURE / 100);
-        this.ctx.fillStyle = 'rgba(20,30,50,0.55)';
-        this.ctx.fillRect(cx, y + 2, x + bW - 2 - cx, bH - 4);
-        this.ctx.fillStyle = '#cfe8ff';
-        this.ctx.fillRect(Math.round(cx) - 1, y - 3, 2, bH + 6);
+        ctx.fillStyle = 'rgba(20,30,50,0.55)';
+        ctx.fillRect(cx, y + 2, x + bW - 2 - cx, bH - 4);
+        ctx.fillStyle = '#cfe8ff';
+        ctx.fillRect(Math.round(cx) - 1, y - 3, 2, bH + 6);
       }
 
       // Label
-      this.ctx.font = 'bold 12px "Courier New"';
-      this.ctx.textAlign = 'center';
-      this.ctx.textBaseline = 'middle';
-      this.ctx.fillStyle = '#fff';
-      this.ctx.fillText(bar.label + (bar.label === '❄ Temp' && this.rainCapped ? ' 🌧' : ''), x + bW / 2, y + bH / 2);
+      ctx.font = 'bold 12px "Courier New"';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = '#fff';
+      ctx.fillText(bar.label + (bar.label === '❄ Temp' && this.rainCapped ? ' 🌧' : ''), x + bW / 2, y + bH / 2);
+      ctx.restore();
 
       x += bW + gap;
     }
+  }
+
+  /**
+   * Advances one stat bar's animation toward its real value `pct` (0..1) and
+   * returns it. The live fill eases rather than jumping — quickly on the way
+   * down, so a hit still lands as a hit, gently on the way up. The ghost is
+   * the fighting-game damage trail: a sharp drop leaves it where the bar
+   * was, it holds for STAT_GHOST_HOLD_MS, then drains down at a steady rate
+   * that takes STAT_GHOST_DRAIN_MS to close whatever gap it has. Another
+   * sharp drop mid-drain re-arms the hold, so a combo stacks into one long
+   * trail instead of several stuttering ones.
+   *
+   * "Sharp" is measured per frame, not per snapshot — StateManager hands the
+   * HUD interpolated values, so a 20-damage hit arrives smeared across a few
+   * frames, each still far steeper than any passive drain (hunger, cold)
+   * ever is. Those slow drains fall under STAT_SHARP_DROP_PER_SEC, never arm
+   * the hold, and the ghost just shadows them.
+   *
+   * Gains never leave a trail: anything at or above the ghost pulls it up
+   * with it. That's also what keeps a respawn sensible — HP jumping from 0
+   * back to full just eases up, and whatever trail the death left behind is
+   * swallowed by it rather than lingering.
+   */
+  private stepStatBar(key: string, pct: number, now: number, dt: number): StatBarAnim {
+    let a = this.statBarAnim.get(key);
+    if (!a) {
+      a = { shown: pct, ghost: pct, target: pct, holdUntil: 0, drainRate: 0 };
+      this.statBarAnim.set(key, a);
+      return a;
+    }
+
+    // Sharp drop since last frame → (re)arm the hold, ghost stays put.
+    if (dt > 0 && (a.target - pct) / dt > STAT_SHARP_DROP_PER_SEC) {
+      a.ghost = Math.max(a.ghost, a.shown);
+      a.holdUntil = now + STAT_GHOST_HOLD_MS;
+      a.drainRate = 0;
+    }
+    a.target = pct;
+
+    // Live fill: exponential ease toward the target, frame-rate independent.
+    const rate = pct < a.shown ? STAT_EASE_DOWN : STAT_EASE_UP;
+    a.shown += (pct - a.shown) * (1 - Math.exp(-rate * dt));
+    if (Math.abs(pct - a.shown) < 0.0005) a.shown = pct;
+
+    // Ghost: never below the fill, swallowed by any gain (collapsing onto the
+    // fill, not the target — a heal is the fill's to animate, never a trail's),
+    // and drains after its hold.
+    if (a.ghost <= Math.max(pct, a.shown)) {
+      a.ghost = a.shown;
+      a.drainRate = 0;
+    } else if (now >= a.holdUntil) {
+      // Fixed for the whole drain, so it closes in ~STAT_GHOST_DRAIN_MS
+      // whatever the size of the gap (with a floor so slivers don't crawl).
+      if (a.drainRate === 0) a.drainRate = Math.max(0.05, (a.ghost - pct) / (STAT_GHOST_DRAIN_MS / 1000));
+      a.ghost = Math.max(pct, a.ghost - a.drainRate * dt);
+    }
+    return a;
   }
 
   // ── Hotbar ─────────────────────────────────────────────────────────────────
@@ -862,6 +987,29 @@ export class HUD {
     });
 
     for (const [item, t] of this.slotPop) if (now - t > 220) this.slotPop.delete(item);
+  }
+
+  /**
+   * 0..1 bump for a hotbar slot's count text: records `count` and, if it
+   * differs from what the slot showed last frame, restarts the bump. A quick
+   * rise to the peak then a longer settle, over COUNT_BUMP_MS. A slot seen
+   * for the first time just records its count — a brand-new slot already
+   * gets the icon's landing pop, and the whole hotbar shouldn't bounce on join.
+   */
+  private countBumpOf(item: string, count: number): number {
+    const now = performance.now();
+    const prev = this.countBump.get(item);
+    if (!prev) {
+      this.countBump.set(item, { count, at: 0 });
+      return 0;
+    }
+    if (prev.count !== count) {
+      prev.count = count;
+      prev.at = now;
+    }
+    const u = (now - prev.at) / COUNT_BUMP_MS;
+    if (u >= 1 || u < 0) return 0;
+    return u < 0.3 ? u / 0.3 : Math.pow(1 - (u - 0.3) / 0.7, 2);
   }
 
   /** 0..1 landing bounce for a slot, for drawHotbar's icon scale. */
@@ -1190,11 +1338,18 @@ export class HUD {
 
       this.drawItemIcon(item, x + slotSize / 2, y + slotSize / 2 - 6, 38 * (1 + 0.22 * this.popOf(item)));
 
+      // Count, bumping up and settling back whenever it changes (see
+      // countBumpOf) — a glance at the number tells you something happened.
+      const bump = this.countBumpOf(item, count);
+      ctx.save();
+      ctx.translate(x + slotSize / 2, y + slotSize - 11);
+      ctx.scale(1 + COUNT_BUMP_SCALE * bump, 1 + COUNT_BUMP_SCALE * bump);
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       ctx.font = 'bold 12px "Courier New"';
-      ctx.fillStyle = '#e0e0e0';
-      ctx.fillText(`${count}`, x + slotSize / 2, y + slotSize - 11);
+      ctx.fillStyle = bump > 0.05 ? '#ffffff' : '#e0e0e0';
+      ctx.fillText(`${count}`, 0, 0);
+      ctx.restore();
 
       ctx.font = '10px "Courier New"';
       ctx.textAlign = 'left';
@@ -2831,6 +2986,51 @@ const RESOURCE_SPRITE_ICONS: Record<string, (ctx: CanvasRenderingContext2D, size
   berry: drawBerryIcon,
   mushroom: drawMushroomIcon,
 };
+
+// ── Stat bar animation ───────────────────────────────────────────────────────
+// See HUD.stepStatBar for how these fit together.
+
+/** One stat bar's animated state; all values are fractions of the bar (0..1). */
+interface StatBarAnim {
+  /** Where the live fill is drawn — eases toward `target`. */
+  shown: number;
+  /** The damage trail's edge: ≥ shown, held after a sharp drop then drained. */
+  ghost: number;
+  /** The real value as of last frame — for measuring how fast it's falling. */
+  target: number;
+  /** performance.now() until which the ghost holds still. */
+  holdUntil: number;
+  /** Ghost drain speed (fraction/second) for the current drain; 0 = not draining. */
+  drainRate: number;
+}
+
+/** How long the damage trail waits before draining. */
+const STAT_GHOST_HOLD_MS = 400;
+/** How long the trail takes to drain down once it starts. */
+const STAT_GHOST_DRAIN_MS = 500;
+/** Falling faster than this (fraction of the bar per second) counts as a hit. */
+const STAT_SHARP_DROP_PER_SEC = 0.25;
+/** Live fill easing rates (1/s) — snappy on the way down, gentle on the way up. */
+const STAT_EASE_DOWN = 18;
+const STAT_EASE_UP = 5;
+/** How much the HP bar swells at the peak of a heartbeat thump. */
+const STAT_HEARTBEAT_SCALE = 0.07;
+/** Hotbar count text bump: duration and peak extra scale. */
+const COUNT_BUMP_MS = 250;
+const COUNT_BUMP_SCALE = 0.5;
+
+/**
+ * The low-HP heartbeat as a 0..1 pulse at `now`: a double beat — a strong
+ * thump, a softer one just behind it, then a rest — the classic "lub-dub".
+ * `severity` is how far into the red HP is, 1 at the threshold down to 0 at
+ * empty, and quickens the pulse as it falls (about 75 bpm → 120 bpm).
+ */
+function heartbeat(now: number, severity: number): number {
+  const period = 500 + 300 * Math.max(0, Math.min(1, severity));
+  const t = (now % period) / period;
+  const bump = (c: number, w: number): number => Math.exp(-(((t - c) / w) ** 2));
+  return Math.min(1, bump(0.08, 0.06) + 0.7 * bump(0.3, 0.06));
+}
 
 const TOOL_ITEM_IDS = new Set([
   WOODEN_AXE_ID,
